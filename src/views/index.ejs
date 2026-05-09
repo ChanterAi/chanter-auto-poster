@@ -1,0 +1,887 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title><%= appName %></title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #050506;
+        --panel: rgba(20, 20, 22, 0.78);
+        --panel-strong: rgba(28, 28, 31, 0.9);
+        --panel-soft: rgba(255, 255, 255, 0.035);
+        --ink: #f4f1ea;
+        --muted: #a29f98;
+        --quiet: #6f6b64;
+        --line: rgba(255, 255, 255, 0.09);
+        --line-strong: rgba(255, 255, 255, 0.16);
+        --accent: #d9c99a;
+        --accent-dark: #bda969;
+        --danger: #d2766d;
+        --shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0) 220px),
+          var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .shell {
+        width: min(1160px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 22px 0 52px;
+      }
+
+      .top-status {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 58px;
+        margin: 0 0 22px;
+        padding: 10px 0;
+        background: rgba(5, 5, 6, 0.88);
+        backdrop-filter: blur(18px);
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 11px;
+        min-width: 0;
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+
+      .brand-mark {
+        display: inline-grid;
+        width: 32px;
+        height: 32px;
+        place-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: linear-gradient(145deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.03));
+        color: var(--accent);
+        font-size: 12px;
+      }
+
+      .mode-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        padding: 7px 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--muted);
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      .status-actions {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .mode-pill::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 18px rgba(217, 201, 154, 0.42);
+      }
+
+      .notice {
+        margin-bottom: 16px;
+        padding: 11px 13px;
+        border: 1px solid rgba(217, 201, 154, 0.22);
+        border-radius: 8px;
+        background: rgba(217, 201, 154, 0.08);
+        color: var(--ink);
+        box-shadow: var(--shadow);
+      }
+
+      .overview {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .panel,
+      .today-card,
+      .queue-card,
+      .metrics {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+      }
+
+      .today-card {
+        min-height: 286px;
+        overflow: hidden;
+      }
+
+      .section-head,
+      .panel-head,
+      .queue-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .section-head {
+        padding: 18px 18px 0;
+      }
+
+      .section-head h1,
+      .section-head h2,
+      .panel-head h2,
+      .queue-head h2 {
+        font-size: 16px;
+        line-height: 1.2;
+        letter-spacing: 0;
+      }
+
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .today-content {
+        display: grid;
+        grid-template-columns: 250px 1fr;
+        gap: 0;
+        min-height: 238px;
+        padding: 18px;
+      }
+
+      .today-art,
+      .queue-thumb {
+        position: relative;
+        display: block;
+        overflow: hidden;
+        border-radius: 8px;
+        background: #101010;
+      }
+
+      .today-art {
+        aspect-ratio: 4 / 5;
+      }
+
+      .today-art img,
+      .queue-thumb img {
+        width: 100%;
+        height: 100%;
+        display: block;
+        object-fit: cover;
+      }
+
+      .today-info {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-width: 0;
+        padding: 8px 0 8px 22px;
+      }
+
+      .today-info h2 {
+        max-width: 520px;
+        margin-top: 12px;
+        font-size: clamp(28px, 4vw, 48px);
+        line-height: 1;
+        letter-spacing: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .caption-preview {
+        max-width: 560px;
+        margin-top: 14px;
+        color: var(--muted);
+        line-height: 1.55;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      .empty-today {
+        display: grid;
+        min-height: 230px;
+        place-items: center;
+        padding: 28px;
+        color: var(--quiet);
+        font-size: 18px;
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        overflow: hidden;
+        background: var(--line);
+      }
+
+      .metric {
+        min-height: 94px;
+        padding: 18px;
+        background: rgba(15, 15, 17, 0.94);
+      }
+
+      .metric strong {
+        display: block;
+        font-size: 28px;
+        line-height: 1;
+      }
+
+      .metric span {
+        display: block;
+        margin-top: 8px;
+        color: var(--quiet);
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+
+      .control-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+        gap: 16px;
+        align-items: start;
+        margin-bottom: 28px;
+      }
+
+      .panel {
+        padding: 18px;
+      }
+
+      .panel-head {
+        margin-bottom: 14px;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .form-grid .wide {
+        grid-column: 1 / -1;
+      }
+
+      label {
+        display: grid;
+        gap: 7px;
+        color: var(--quiet);
+        font-size: 11px;
+        font-weight: 740;
+        text-transform: uppercase;
+      }
+
+      input,
+      textarea,
+      button,
+      .button {
+        font: inherit;
+      }
+
+      input,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        outline: none;
+        background: rgba(255, 255, 255, 0.045);
+        color: var(--ink);
+        transition:
+          border-color 160ms ease,
+          background 160ms ease,
+          box-shadow 160ms ease;
+      }
+
+      input {
+        min-height: 42px;
+        padding: 10px 11px;
+      }
+
+      input[type="file"] {
+        color: var(--muted);
+      }
+
+      input[type="file"]::file-selector-button {
+        margin-right: 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        padding: 7px 10px;
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--ink);
+      }
+
+      textarea {
+        min-height: 86px;
+        padding: 11px;
+        resize: vertical;
+      }
+
+      input:focus,
+      textarea:focus {
+        border-color: rgba(217, 201, 154, 0.5);
+        background: rgba(255, 255, 255, 0.07);
+        box-shadow: 0 0 0 3px rgba(217, 201, 154, 0.1);
+      }
+
+      .actions,
+      .card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .actions {
+        margin-top: 14px;
+      }
+
+      .inline-action {
+        display: inline-flex;
+        margin: 0;
+      }
+
+      button,
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        padding: 8px 13px;
+        cursor: pointer;
+        text-decoration: none;
+        white-space: nowrap;
+        transition:
+          transform 160ms ease,
+          border-color 160ms ease,
+          background 160ms ease,
+          color 160ms ease;
+      }
+
+      button:hover,
+      .button:hover {
+        transform: translateY(-1px);
+      }
+
+      .primary {
+        background: var(--accent);
+        color: #080807;
+      }
+
+      .primary:hover {
+        background: #eadba8;
+      }
+
+      .secondary {
+        border-color: var(--line);
+        background: rgba(255, 255, 255, 0.045);
+        color: var(--ink);
+      }
+
+      .secondary:hover {
+        border-color: var(--line-strong);
+        background: rgba(255, 255, 255, 0.075);
+      }
+
+      .compact {
+        min-height: 34px;
+        padding: 7px 11px;
+        font-size: 13px;
+      }
+
+      .danger {
+        border-color: rgba(210, 118, 109, 0.36);
+        background: rgba(210, 118, 109, 0.08);
+        color: #efb0aa;
+      }
+
+      .danger:hover {
+        border-color: rgba(210, 118, 109, 0.6);
+        background: rgba(210, 118, 109, 0.13);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        width: max-content;
+        min-height: 26px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 4px 9px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 760;
+      }
+
+      .badge.ready {
+        border-color: rgba(217, 201, 154, 0.32);
+        color: var(--accent);
+      }
+
+      .badge.posted {
+        border-color: rgba(147, 164, 144, 0.32);
+        color: #b8c4ad;
+      }
+
+      .badge.failed {
+        border-color: rgba(210, 118, 109, 0.4);
+        color: #efb0aa;
+      }
+
+      .queue-head {
+        margin-bottom: 12px;
+      }
+
+      .queue {
+        display: grid;
+        gap: 12px;
+      }
+
+      .queue-card {
+        display: grid;
+        grid-template-columns: 148px 1fr;
+        gap: 16px;
+        padding: 12px;
+      }
+
+      .queue-thumb {
+        aspect-ratio: 4 / 5;
+        min-height: 178px;
+      }
+
+      .queue-main {
+        min-width: 0;
+        padding: 4px 2px 2px 0;
+      }
+
+      .queue-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .queue-title {
+        min-width: 0;
+      }
+
+      .queue-title h3 {
+        max-width: 620px;
+        font-size: 15px;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+      }
+
+      .queue-index,
+      .queue-time {
+        color: var(--quiet);
+        font-size: 12px;
+      }
+
+      .queue-time {
+        margin-top: 4px;
+      }
+
+      .edit-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 210px 92px;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .edit-grid textarea {
+        min-height: 72px;
+      }
+
+      .save-slot {
+        display: flex;
+        align-items: flex-end;
+        height: 100%;
+      }
+
+      .save-slot .primary {
+        width: 100%;
+      }
+
+      .public-url-field {
+        grid-column: 1 / 4;
+      }
+
+      .ready-strip {
+        margin-top: 12px;
+        padding: 12px;
+        border: 1px solid rgba(217, 201, 154, 0.16);
+        border-radius: 8px;
+        background: rgba(217, 201, 154, 0.055);
+      }
+
+      .ready-strip strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 13px;
+        color: var(--accent);
+      }
+
+      .caption-copy {
+        min-height: 72px;
+        color: var(--muted);
+      }
+
+      .copy-cache {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .card-actions {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid var(--line);
+      }
+
+      .empty {
+        display: grid;
+        min-height: 180px;
+        place-items: center;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        color: var(--quiet);
+      }
+
+      @media (max-width: 980px) {
+        .overview,
+        .control-grid,
+        .today-content,
+        .queue-card,
+        .edit-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .today-info {
+          padding: 18px 0 0;
+        }
+
+        .today-art {
+          max-height: 420px;
+        }
+
+        .queue-thumb {
+          max-height: 360px;
+        }
+
+        .public-url-field {
+          grid-column: auto;
+        }
+
+        .save-slot .primary {
+          width: auto;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .shell {
+          width: min(100% - 22px, 1160px);
+          padding-top: 12px;
+        }
+
+        .top-status {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .mode-pill {
+          white-space: normal;
+        }
+
+        .status-actions {
+          justify-content: flex-start;
+        }
+
+        .metrics {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .form-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .today-info h2 {
+          font-size: 30px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="top-status">
+        <div class="brand">
+          <span class="brand-mark">CA</span>
+          <span><%= appName %></span>
+        </div>
+        <div class="status-actions">
+          <div class="mode-pill"><%- tiktokConfigured ? 'TikTok Connected' : 'Manual Mode &middot; TikTok not connected' %></div>
+          <% if (tiktokConfigured) { %>
+            <a class="button secondary compact" href="/disconnect/tiktok">Disconnect</a>
+          <% } else { %>
+            <a class="button primary compact" href="/connect/tiktok">Connect TikTok</a>
+          <% } %>
+        </div>
+      </header>
+
+      <% if (notice) { %>
+        <div class="notice"><%= notice %></div>
+      <% } %>
+
+      <section class="overview">
+        <article class="today-card">
+          <div class="section-head">
+            <h1>Today’s post</h1>
+            <% if (todayPost) { %>
+              <span class="badge <%= todayPost.status %>"><%= helpers.statusLabel(todayPost.status) %></span>
+            <% } %>
+          </div>
+
+          <% if (todayPost) { %>
+            <div class="today-content">
+              <a class="today-art" href="<%= todayPost.imagePath %>" target="_blank" rel="noreferrer">
+                <img src="<%= todayPost.imagePath %>" alt="<%= todayPost.originalName %>" />
+              </a>
+              <div class="today-info">
+                <p class="muted"><%= helpers.formatTime(todayPost.scheduledAt) %></p>
+                <h2><%= todayPost.originalName %></h2>
+                <% if (helpers.fullCaption(todayPost)) { %>
+                  <p class="caption-preview"><%= helpers.fullCaption(todayPost) %></p>
+                <% } %>
+                <textarea class="copy-cache" id="today-caption-<%= todayPost.id %>" readonly><%= helpers.fullCaption(todayPost) %></textarea>
+                <div class="actions">
+                  <a class="button secondary" href="<%= todayPost.imagePath %>" target="_blank" rel="noreferrer">Open image</a>
+                  <button type="button" class="secondary copy-button" data-target="today-caption-<%= todayPost.id %>">Copy caption</button>
+                  <% if (todayPost.status !== 'posted') { %>
+                    <form class="inline-action" action="/posts/<%= todayPost.id %>/prepare" method="post">
+                      <button type="submit" class="primary">Prepare now</button>
+                    </form>
+                    <form class="inline-action" action="/posts/<%= todayPost.id %>/posted" method="post">
+                      <button type="submit" class="secondary">Mark posted</button>
+                    </form>
+                  <% } %>
+                </div>
+              </div>
+            </div>
+          <% } else { %>
+            <div class="empty-today">No post today</div>
+          <% } %>
+        </article>
+
+        <aside class="metrics" aria-label="Queue counts">
+          <div class="metric"><strong><%= counts.total %></strong><span>Total</span></div>
+          <div class="metric"><strong><%= counts.pending %></strong><span>Pending</span></div>
+          <div class="metric"><strong><%= counts.ready %></strong><span>Ready</span></div>
+          <div class="metric"><strong><%= counts.posted %></strong><span>Posted</span></div>
+        </aside>
+      </section>
+
+      <section class="control-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Upload</h2>
+            <span class="muted">Batch</span>
+          </div>
+          <form action="/upload" method="post" enctype="multipart/form-data">
+            <div class="form-grid">
+              <label class="wide">
+                Images
+                <input type="file" name="images" accept="image/*" multiple required />
+              </label>
+              <label>
+                Caption
+                <textarea name="caption" placeholder="Caption"></textarea>
+              </label>
+              <label>
+                Hashtags
+                <textarea name="hashtags" placeholder="#chanter"></textarea>
+              </label>
+            </div>
+            <div class="actions">
+              <button type="submit" class="primary">Upload</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Schedule</h2>
+            <span class="muted"><%= settings.dailyPostTime %></span>
+          </div>
+          <form action="/settings" method="post">
+            <label>
+              Daily time
+              <input type="time" name="dailyPostTime" value="<%= settings.dailyPostTime %>" required />
+            </label>
+            <div class="actions">
+              <button type="submit" class="primary">Save</button>
+            </div>
+          </form>
+          <form action="/schedule" method="post">
+            <div class="actions">
+              <button type="submit" class="secondary">Rebuild queue</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <div class="queue-head">
+        <h2>Queue</h2>
+        <span class="muted"><%= counts.pending %> pending</span>
+      </div>
+
+      <section class="queue">
+        <% if (posts.length === 0) { %>
+          <div class="empty">Queue empty</div>
+        <% } %>
+
+        <% posts.forEach(function(post, index) { %>
+          <article class="queue-card">
+            <a class="queue-thumb" href="<%= post.imagePath %>" target="_blank" rel="noreferrer">
+              <img src="<%= post.imagePath %>" alt="<%= post.originalName %>" loading="lazy" />
+            </a>
+
+            <div class="queue-main">
+              <header class="queue-top">
+                <div class="queue-title">
+                  <p class="queue-index">#<%= index + 1 %></p>
+                  <h3><%= post.originalName %></h3>
+                  <p class="queue-time"><%= helpers.formatDateTime(post.scheduledAt) %></p>
+                </div>
+                <span class="badge <%= post.status %>"><%= helpers.statusLabel(post.status) %></span>
+              </header>
+
+              <form class="edit-grid" action="/posts/<%= post.id %>" method="post">
+                <label>
+                  Caption
+                  <textarea name="caption"><%= post.caption || '' %></textarea>
+                </label>
+                <label>
+                  Hashtags
+                  <textarea name="hashtags"><%= post.hashtags || '' %></textarea>
+                </label>
+                <label>
+                  Date
+                  <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
+                </label>
+                <label class="public-url-field">
+                  Public image URL
+                  <input
+                    type="url"
+                    name="publicImageUrl"
+                    value="<%= post.publicImageUrl || '' %>"
+                    placeholder="https://chanterr.com/media/tiktok-posts/test-image.png"
+                  />
+                </label>
+                <div class="save-slot">
+                  <button type="submit" class="primary">Save</button>
+                </div>
+              </form>
+
+              <% if (post.status === 'ready') { %>
+                <div class="ready-strip">
+                  <strong>Ready to post</strong>
+                  <textarea class="caption-copy" id="caption-<%= post.id %>" readonly><%= helpers.fullCaption(post) %></textarea>
+                  <div class="actions">
+                    <a class="button secondary" href="<%= post.imagePath %>" target="_blank" rel="noreferrer">Open image</a>
+                    <button type="button" class="secondary copy-button" data-target="caption-<%= post.id %>">Copy caption</button>
+                  </div>
+                </div>
+              <% } %>
+
+              <div class="card-actions">
+                <form class="inline-action" action="/posts/<%= post.id %>/move" method="post">
+                  <input type="hidden" name="direction" value="up" />
+                  <button type="submit" class="secondary">Move up</button>
+                </form>
+                <form class="inline-action" action="/posts/<%= post.id %>/move" method="post">
+                  <input type="hidden" name="direction" value="down" />
+                  <button type="submit" class="secondary">Move down</button>
+                </form>
+                <% if (post.status !== 'posted') { %>
+                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post">
+                    <button type="submit" class="primary">Prepare now</button>
+                  </form>
+                  <form class="inline-action" action="/posts/<%= post.id %>/posted" method="post">
+                    <button type="submit" class="secondary">Mark posted</button>
+                  </form>
+                <% } %>
+                <% if (post.status !== 'pending') { %>
+                  <form class="inline-action" action="/posts/<%= post.id %>/pending" method="post">
+                    <button type="submit" class="secondary">Back to pending</button>
+                  </form>
+                <% } %>
+                <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
+                  <button type="submit" class="danger">Delete</button>
+                </form>
+              </div>
+            </div>
+          </article>
+        <% }); %>
+      </section>
+    </main>
+
+    <script>
+      document.querySelectorAll('.copy-button').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const target = document.getElementById(button.dataset.target);
+          if (!target) return;
+
+          await navigator.clipboard.writeText(target.value);
+          const originalText = button.textContent;
+          button.textContent = 'Copied';
+          window.setTimeout(() => {
+            button.textContent = originalText;
+          }, 1200);
+        });
+      });
+    </script>
+  </body>
+</html>
