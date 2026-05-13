@@ -158,6 +158,12 @@ async function postPhotoPayload(payload, accessToken) {
     const body = await parseResponseBody(response);
 
     if (!response.ok) {
+      console.error('[tiktok] content init failed', {
+        status: response.status,
+        body,
+        payload
+      });
+
       return {
         ok: false,
         mode: 'api',
