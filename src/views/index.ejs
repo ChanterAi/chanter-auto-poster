@@ -7,26 +7,24 @@
     <style>
       :root {
         color-scheme: dark;
-        --bg: #050507;
-        --surface: rgba(12, 12, 17, 0.9);
-        --surface-strong: rgba(17, 17, 24, 0.94);
-        --surface-soft: rgba(255, 255, 255, 0.035);
+        --bg: #050506;
+        --surface: rgba(13, 13, 18, 0.86);
+        --surface-strong: rgba(18, 18, 24, 0.94);
         --field: rgba(255, 255, 255, 0.055);
-        --ink: #f7f2ff;
-        --text: #e9e2f4;
-        --muted: #a79db5;
-        --quiet: #756e82;
-        --line: rgba(221, 207, 255, 0.12);
-        --line-strong: rgba(221, 207, 255, 0.22);
+        --ink: #fbf7ff;
+        --text: #e9e3f1;
+        --muted: #aca2b8;
+        --quiet: #777080;
+        --line: rgba(226, 211, 255, 0.12);
+        --line-strong: rgba(226, 211, 255, 0.24);
         --violet: #a970ff;
-        --violet-bright: #d7c0ff;
-        --violet-soft: rgba(169, 112, 255, 0.14);
+        --violet-bright: #d8c2ff;
         --cyan: #6ee7f2;
         --green: #9de8c3;
         --amber: #ffd17a;
         --red: #ff9297;
-        --shadow: 0 22px 70px rgba(0, 0, 0, 0.52);
-        --shadow-soft: 0 14px 36px rgba(0, 0, 0, 0.34);
+        --shadow: 0 28px 80px rgba(0, 0, 0, 0.58);
+        --shadow-soft: 0 16px 38px rgba(0, 0, 0, 0.36);
       }
 
       * {
@@ -41,8 +39,8 @@
         min-height: 100vh;
         margin: 0;
         background:
-          linear-gradient(180deg, rgba(169, 112, 255, 0.12), rgba(5, 5, 7, 0) 330px),
-          linear-gradient(135deg, rgba(255, 255, 255, 0.028), transparent 42%, rgba(110, 231, 242, 0.025)),
+          linear-gradient(180deg, rgba(169, 112, 255, 0.12), rgba(5, 5, 6, 0) 260px),
+          linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent 38%, rgba(169, 112, 255, 0.035)),
           var(--bg);
         color: var(--text);
         font-family:
@@ -55,10 +53,10 @@
         z-index: -1;
         content: "";
         background-image:
-          linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
-        background-size: 54px 54px;
-        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 66%);
+          linear-gradient(rgba(255, 255, 255, 0.024) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+        background-size: 64px 64px;
+        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.52), transparent 72%);
         pointer-events: none;
       }
 
@@ -74,25 +72,21 @@
       }
 
       .shell {
-        width: min(1180px, calc(100% - 32px));
+        width: min(1040px, calc(100% - 36px));
         margin: 0 auto;
-        padding: 20px 0 56px;
+        padding: 22px 0 64px;
       }
 
       .top-status {
-        position: sticky;
-        top: 12px;
-        z-index: 5;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 16px;
-        min-height: 68px;
-        margin: 0 0 20px;
-        padding: 10px 12px;
+        gap: 18px;
+        margin-bottom: 28px;
+        padding: 12px;
         border: 1px solid var(--line);
-        border-radius: 8px;
-        background: rgba(7, 7, 11, 0.82);
+        border-radius: 12px;
+        background: rgba(5, 5, 8, 0.82);
         box-shadow: var(--shadow-soft);
         backdrop-filter: blur(22px);
       }
@@ -100,64 +94,77 @@
       .brand {
         display: inline-flex;
         align-items: center;
-        gap: 12px;
+        gap: 13px;
         min-width: 0;
-        font-weight: 780;
-        letter-spacing: 0;
       }
 
       .brand-logo {
-        width: 46px;
-        height: 46px;
+        width: 58px;
+        height: 58px;
         flex: 0 0 auto;
-        border: 1px solid rgba(215, 192, 255, 0.34);
-        border-radius: 8px;
-        background: #09080d;
+        border: 1px solid rgba(216, 194, 255, 0.34);
+        border-radius: 12px;
+        background: #08070b;
         box-shadow:
           inset 0 0 0 1px rgba(255, 255, 255, 0.05),
-          0 0 24px rgba(169, 112, 255, 0.24);
+          0 0 32px rgba(169, 112, 255, 0.25);
         object-fit: cover;
       }
 
       .brand-text {
         display: grid;
-        gap: 2px;
+        gap: 3px;
         min-width: 0;
       }
 
       .brand-title {
         color: var(--ink);
         font-size: 15px;
+        font-weight: 820;
         line-height: 1.15;
         overflow-wrap: anywhere;
       }
 
-      .brand-kicker {
+      .brand-kicker,
+      .muted {
         color: var(--quiet);
         font-size: 12px;
-        font-weight: 650;
+        font-weight: 680;
+      }
+
+      .status-actions,
+      .actions,
+      .card-actions {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 9px;
       }
 
       .status-actions {
-        display: inline-flex;
-        align-items: center;
         justify-content: flex-end;
-        gap: 8px;
-        flex-wrap: wrap;
+      }
+
+      .form-actions {
+        margin-top: 14px;
+      }
+
+      .form-actions.tight {
+        margin-top: 10px;
       }
 
       .connection-pill {
         display: inline-flex;
         align-items: center;
         gap: 8px;
-        min-height: 36px;
-        padding: 8px 12px;
+        min-height: 38px;
         border: 1px solid var(--line);
         border-radius: 999px;
+        padding: 8px 13px;
         background: rgba(255, 255, 255, 0.045);
         color: var(--muted);
         font-size: 13px;
-        font-weight: 700;
+        font-weight: 760;
         white-space: nowrap;
       }
 
@@ -185,55 +192,97 @@
         box-shadow: 0 0 16px rgba(255, 209, 122, 0.38);
       }
 
-      .notice {
-        margin-bottom: 16px;
-        padding: 12px 14px;
-        border: 1px solid rgba(169, 112, 255, 0.28);
-        border-radius: 8px;
-        background: rgba(169, 112, 255, 0.1);
-        color: var(--ink);
-        box-shadow: var(--shadow-soft);
+      .creator-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 5px 12px 5px 6px;
+        background: rgba(255, 255, 255, 0.045);
       }
 
-      .overview {
+      .creator-avatar {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        object-fit: cover;
+      }
+
+      .creator-name {
         display: grid;
-        grid-template-columns: minmax(0, 1.42fr) minmax(270px, 0.58fr);
-        gap: 16px;
-        align-items: stretch;
-        margin-bottom: 16px;
+        gap: 1px;
+        min-width: 0;
+      }
+
+      .creator-name strong,
+      .creator-name span {
+        max-width: 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .creator-name strong {
+        color: var(--ink);
+        font-size: 12px;
+        line-height: 1.1;
+      }
+
+      .creator-name span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .notice {
+        margin-bottom: 18px;
+        border: 1px solid rgba(169, 112, 255, 0.28);
+        border-radius: 10px;
+        padding: 12px 14px;
+        background: rgba(169, 112, 255, 0.09);
+        color: var(--ink);
+      }
+
+      .main-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+        gap: 18px;
+        align-items: start;
+        margin-bottom: 28px;
       }
 
       .panel,
-      .today-card,
       .queue-card,
-      .metrics {
+      .history-section {
         border: 1px solid var(--line);
-        border-radius: 8px;
-        background: var(--surface);
+        border-radius: 12px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.036), transparent),
+          var(--surface);
         box-shadow: var(--shadow);
         backdrop-filter: blur(18px);
       }
 
-      .today-card {
-        min-height: 312px;
-        overflow: hidden;
+      .panel {
+        padding: 22px;
       }
 
-      .section-head,
       .panel-head,
-      .queue-head {
+      .queue-head,
+      .history-section summary {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
       }
 
-      .section-head {
-        padding: 18px 18px 0;
+      .panel-head,
+      .queue-head {
+        margin-bottom: 16px;
       }
 
-      .section-head h1,
-      .section-head h2,
       .panel-head h2,
       .queue-head h2 {
         color: var(--ink);
@@ -242,209 +291,14 @@
         letter-spacing: 0;
       }
 
-      .muted {
-        color: var(--muted);
-        font-size: 13px;
-      }
-
-      .today-content {
-        display: grid;
-        grid-template-columns: 252px 1fr;
-        gap: 20px;
-        min-height: 262px;
-        padding: 18px;
-      }
-
-      .today-art,
-      .queue-thumb {
-        position: relative;
-        display: block;
-        overflow: hidden;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 8px;
-        background: #09090d;
-      }
-
-      .today-art {
-        aspect-ratio: 4 / 5;
-        box-shadow: 0 18px 38px rgba(0, 0, 0, 0.38);
-      }
-
-      .today-art img,
-      .today-art video,
-      .queue-thumb img,
-      .queue-thumb video {
-        width: 100%;
-        height: 100%;
-        display: block;
-        object-fit: cover;
-      }
-
-      .media-chip {
-        position: absolute;
-        right: 10px;
-        bottom: 10px;
-        max-width: calc(100% - 20px);
-        border: 1px solid rgba(215, 192, 255, 0.24);
-        border-radius: 999px;
-        padding: 5px 9px;
-        background: rgba(5, 5, 7, 0.72);
-        color: var(--violet-bright);
-        font-size: 11px;
-        font-weight: 800;
-        backdrop-filter: blur(12px);
-      }
-
-      .today-info {
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        min-width: 0;
-        padding: 6px 2px;
-      }
-
-      .today-info h2 {
-        max-width: 540px;
-        margin-top: 10px;
-        color: var(--ink);
-        font-size: 34px;
-        line-height: 1.05;
-        letter-spacing: 0;
-        overflow-wrap: anywhere;
-      }
-
-      .caption-preview {
-        max-width: 600px;
-        margin-top: 14px;
-        color: var(--muted);
-        line-height: 1.55;
-        display: -webkit-box;
-        -webkit-line-clamp: 3;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
-
-      .empty-today {
-        display: grid;
-        min-height: 256px;
-        place-items: center;
-        padding: 28px;
-        text-align: center;
-      }
-
-      .empty-today-inner {
-        display: grid;
-        justify-items: center;
-        gap: 10px;
-        max-width: 360px;
-      }
-
-      .empty-logo {
-        width: 72px;
-        height: 72px;
-        border: 1px solid rgba(215, 192, 255, 0.2);
-        border-radius: 8px;
-        opacity: 0.74;
-        object-fit: cover;
-        box-shadow: 0 0 34px rgba(169, 112, 255, 0.2);
-      }
-
-      .empty-today h2 {
-        color: var(--ink);
-        font-size: 22px;
-        letter-spacing: 0;
-      }
-
-      .empty-today p {
-        color: var(--quiet);
-        font-size: 14px;
-        line-height: 1.45;
-      }
-
-      .metrics {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 1px;
-        overflow: hidden;
-        background: var(--line);
-      }
-
-      .metric {
-        min-height: 104px;
-        padding: 18px;
-        background: rgba(13, 13, 19, 0.96);
-      }
-
-      .metric:first-child {
-        grid-column: 1 / -1;
-        min-height: 112px;
-        background:
-          linear-gradient(135deg, rgba(169, 112, 255, 0.18), rgba(255, 255, 255, 0.035)),
-          rgba(13, 13, 19, 0.96);
-      }
-
-      .metric strong {
-        display: block;
-        color: var(--ink);
-        font-size: 30px;
-        line-height: 1;
-      }
-
-      .metric span {
-        display: block;
-        margin-top: 9px;
-        color: var(--quiet);
-        font-size: 11px;
-        font-weight: 800;
-        text-transform: uppercase;
-      }
-
-      .metric[data-tone="pending"] strong {
-        color: var(--amber);
-      }
-
-      .metric[data-tone="ready"] strong {
-        color: var(--violet-bright);
-      }
-
-      .metric[data-tone="posted"] strong {
-        color: var(--green);
-      }
-
-      .metric[data-tone="failed"] strong {
-        color: var(--red);
-      }
-
-      .control-grid {
-        display: grid;
-        grid-template-columns: minmax(0, 1.42fr) minmax(270px, 0.58fr);
-        gap: 16px;
-        align-items: start;
-        margin-bottom: 28px;
-      }
-
-      .panel {
-        padding: 18px;
-        background:
-          linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
-          var(--surface);
-      }
-
-      .panel-head {
-        margin-bottom: 16px;
-      }
-
-      .panel-head .muted {
-        color: var(--violet-bright);
-      }
-
       .form-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 12px;
       }
 
-      .form-grid .wide {
+      .form-grid .wide,
+      .advanced {
         grid-column: 1 / -1;
       }
 
@@ -453,11 +307,12 @@
         gap: 8px;
         color: var(--quiet);
         font-size: 11px;
-        font-weight: 780;
+        font-weight: 820;
         text-transform: uppercase;
       }
 
       input,
+      select,
       textarea,
       button,
       .button {
@@ -465,10 +320,11 @@
       }
 
       input,
+      select,
       textarea {
         width: 100%;
         border: 1px solid var(--line);
-        border-radius: 8px;
+        border-radius: 10px;
         outline: none;
         background: var(--field);
         color: var(--ink);
@@ -483,41 +339,45 @@
         padding: 10px 12px;
       }
 
+      select {
+        min-height: 44px;
+        padding: 10px 34px 10px 12px;
+      }
+
       input[type="file"] {
-        min-height: 54px;
+        min-height: 56px;
         padding: 13px;
         color: var(--muted);
-        background:
-          linear-gradient(135deg, rgba(169, 112, 255, 0.12), rgba(255, 255, 255, 0.035)),
-          var(--field);
+        background: rgba(255, 255, 255, 0.06);
       }
 
       input[type="file"]::file-selector-button {
         margin-right: 12px;
-        border: 1px solid rgba(215, 192, 255, 0.28);
-        border-radius: 8px;
+        border: 1px solid rgba(216, 194, 255, 0.28);
+        border-radius: 9px;
         padding: 8px 11px;
-        background: rgba(215, 192, 255, 0.1);
+        background: rgba(216, 194, 255, 0.11);
         color: var(--ink);
         cursor: pointer;
       }
 
       textarea {
-        min-height: 94px;
+        min-height: 88px;
         padding: 12px;
         resize: vertical;
       }
 
       input::placeholder,
       textarea::placeholder {
-        color: #6d6678;
+        color: #6f6878;
       }
 
       input:focus,
+      select:focus,
       textarea:focus {
-        border-color: rgba(169, 112, 255, 0.56);
+        border-color: rgba(169, 112, 255, 0.58);
         background: rgba(255, 255, 255, 0.075);
-        box-shadow: 0 0 0 3px rgba(169, 112, 255, 0.14);
+        box-shadow: 0 0 0 3px rgba(169, 112, 255, 0.13);
       }
 
       .field-note {
@@ -528,64 +388,17 @@
         text-transform: none;
       }
 
-      .media-workflow {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-      }
-
-      .workflow-tile {
-        min-height: 74px;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 12px;
-        background: rgba(255, 255, 255, 0.035);
-      }
-
-      .workflow-tile strong,
-      .workflow-tile span {
-        display: block;
-      }
-
-      .workflow-tile strong {
-        color: var(--ink);
-        font-size: 13px;
-      }
-
-      .workflow-tile span {
-        margin-top: 6px;
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.4;
-      }
-
-      .actions,
-      .card-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-
-      .actions {
-        margin-top: 14px;
-      }
-
-      .inline-action {
-        display: inline-flex;
-        margin: 0;
-      }
-
       button,
       .button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 40px;
+        min-height: 42px;
         border: 1px solid transparent;
-        border-radius: 8px;
-        padding: 9px 14px;
+        border-radius: 10px;
+        padding: 10px 15px;
         cursor: pointer;
-        font-weight: 760;
+        font-weight: 820;
         text-decoration: none;
         white-space: nowrap;
         transition:
@@ -603,36 +416,47 @@
 
       button:focus-visible,
       .button:focus-visible {
-        outline: 2px solid rgba(215, 192, 255, 0.8);
+        outline: 2px solid rgba(216, 194, 255, 0.82);
         outline-offset: 2px;
       }
 
       button:disabled {
         cursor: not-allowed;
-        opacity: 0.48;
+        opacity: 0.5;
         transform: none;
       }
 
       .primary {
-        background: linear-gradient(180deg, #d8c2ff, var(--violet));
-        color: #0b0714;
-        box-shadow: 0 10px 24px rgba(169, 112, 255, 0.28);
+        background: linear-gradient(180deg, #e0cbff, var(--violet));
+        color: #0a0712;
+        box-shadow: 0 12px 26px rgba(169, 112, 255, 0.28);
       }
 
       .primary:hover {
-        background: linear-gradient(180deg, #eadfff, #b481ff);
-        box-shadow: 0 12px 30px rgba(169, 112, 255, 0.36);
+        background: linear-gradient(180deg, #efe5ff, #b884ff);
+        box-shadow: 0 14px 32px rgba(169, 112, 255, 0.36);
       }
 
       .secondary {
         border-color: var(--line);
-        background: rgba(255, 255, 255, 0.05);
+        background: rgba(255, 255, 255, 0.048);
         color: var(--ink);
       }
 
       .secondary:hover {
         border-color: var(--line-strong);
-        background: rgba(255, 255, 255, 0.085);
+        background: rgba(255, 255, 255, 0.082);
+      }
+
+      .danger {
+        border-color: rgba(255, 146, 151, 0.34);
+        background: rgba(255, 146, 151, 0.075);
+        color: #ffc1c4;
+      }
+
+      .danger:hover {
+        border-color: rgba(255, 146, 151, 0.58);
+        background: rgba(255, 146, 151, 0.13);
       }
 
       .compact {
@@ -641,15 +465,129 @@
         font-size: 13px;
       }
 
-      .danger {
-        border-color: rgba(255, 146, 151, 0.35);
-        background: rgba(255, 146, 151, 0.08);
-        color: #ffc1c4;
+      .inline-action {
+        display: inline-flex;
+        margin: 0;
       }
 
-      .danger:hover {
-        border-color: rgba(255, 146, 151, 0.58);
-        background: rgba(255, 146, 151, 0.14);
+      .queue {
+        display: grid;
+        gap: 14px;
+      }
+
+      .queue-card {
+        display: grid;
+        grid-template-columns: 128px minmax(0, 1fr);
+        gap: 18px;
+        padding: 16px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.036), transparent),
+          var(--surface-strong);
+      }
+
+      .queue-card.is-history {
+        grid-template-columns: 88px minmax(0, 1fr);
+        padding: 12px;
+        box-shadow: none;
+      }
+
+      .queue-thumb {
+        position: relative;
+        display: block;
+        width: 100%;
+        min-height: 156px;
+        aspect-ratio: 4 / 5;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 10px;
+        background: #09090d;
+      }
+
+      .is-history .queue-thumb {
+        min-height: 108px;
+      }
+
+      .queue-thumb [data-preview-media],
+      .thumb-placeholder {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      .queue-thumb [data-preview-media] {
+        display: block;
+        object-fit: cover;
+      }
+
+      .thumb-placeholder {
+        padding: 28px;
+        object-fit: contain;
+        opacity: 0;
+        filter: saturate(0.8);
+      }
+
+      .queue-thumb.is-missing [data-preview-media] {
+        display: none;
+      }
+
+      .queue-thumb.is-missing .thumb-placeholder {
+        opacity: 0.56;
+      }
+
+      .media-chip {
+        position: absolute;
+        right: 9px;
+        bottom: 9px;
+        max-width: calc(100% - 18px);
+        border: 1px solid rgba(216, 194, 255, 0.24);
+        border-radius: 999px;
+        padding: 5px 8px;
+        background: rgba(5, 5, 7, 0.74);
+        color: var(--violet-bright);
+        font-size: 11px;
+        font-weight: 820;
+        backdrop-filter: blur(12px);
+      }
+
+      .queue-main {
+        display: grid;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .queue-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .queue-title {
+        display: grid;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .queue-title h3 {
+        color: var(--ink);
+        font-size: 15px;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+      }
+
+      .queue-time,
+      .caption-preview {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .caption-preview {
+        display: -webkit-box;
+        overflow: hidden;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
       }
 
       .badge {
@@ -664,7 +602,8 @@
         background: rgba(255, 255, 255, 0.045);
         color: var(--muted);
         font-size: 12px;
-        font-weight: 800;
+        font-weight: 820;
+        white-space: nowrap;
       }
 
       .badge::before {
@@ -673,7 +612,7 @@
 
       .badge.pending,
       .badge.scheduled {
-        border-color: rgba(255, 209, 122, 0.28);
+        border-color: rgba(255, 209, 122, 0.26);
         color: #ffe2a2;
       }
 
@@ -684,7 +623,7 @@
 
       .badge.ready,
       .badge.verification {
-        border-color: rgba(215, 192, 255, 0.34);
+        border-color: rgba(216, 194, 255, 0.34);
         color: var(--violet-bright);
       }
 
@@ -696,7 +635,7 @@
 
       .badge.posted,
       .badge.accepted {
-        border-color: rgba(157, 232, 195, 0.3);
+        border-color: rgba(157, 232, 195, 0.28);
         color: #c5f5dc;
       }
 
@@ -724,214 +663,48 @@
         background: var(--red);
       }
 
-      .queue-head {
-        margin-bottom: 12px;
-        padding: 0 2px;
-      }
-
-      .queue {
+      .schedule-form {
         display: grid;
         gap: 12px;
       }
 
-      .queue-card {
+      .schedule-row {
         display: grid;
-        grid-template-columns: 152px 1fr;
-        gap: 16px;
-        padding: 12px;
-        background:
-          linear-gradient(180deg, rgba(255, 255, 255, 0.032), transparent),
-          var(--surface-strong);
-      }
-
-      .queue-thumb {
-        aspect-ratio: 4 / 5;
-        min-height: 182px;
-      }
-
-      .queue-main {
-        min-width: 0;
-        padding: 4px 2px 2px 0;
-      }
-
-      .queue-top {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
+        grid-template-columns: minmax(210px, 1fr) minmax(150px, 0.48fr) auto;
         gap: 12px;
-        margin-bottom: 14px;
-      }
-
-      .queue-title {
-        min-width: 0;
-      }
-
-      .queue-title h3 {
-        max-width: 660px;
-        color: var(--ink);
-        font-size: 15px;
-        line-height: 1.3;
-        overflow-wrap: anywhere;
-      }
-
-      .queue-index,
-      .queue-time {
-        color: var(--quiet);
-        font-size: 12px;
-      }
-
-      .queue-index {
-        margin-bottom: 3px;
-        font-weight: 780;
-      }
-
-      .queue-time {
-        margin-top: 5px;
-      }
-
-      .edit-grid {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 210px 96px;
-        gap: 10px;
         align-items: end;
       }
 
-      .edit-grid textarea {
-        min-height: 78px;
+      .card-actions {
+        padding-top: 2px;
       }
 
-      .save-slot {
-        display: flex;
-        align-items: flex-end;
-        height: 100%;
+      .advanced,
+      .history-section {
+        margin-top: 14px;
       }
 
-      .save-slot .primary {
-        width: 100%;
-      }
-
-      .public-url-field {
-        grid-column: 1 / 4;
-      }
-
-      .post-result {
-        margin-top: 12px;
-        border: 1px solid rgba(221, 207, 255, 0.14);
-        border-radius: 8px;
-        padding: 13px;
-        background:
-          linear-gradient(135deg, rgba(169, 112, 255, 0.12), rgba(255, 255, 255, 0.028)),
-          rgba(8, 8, 13, 0.78);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-      }
-
-      .post-result[data-tone="accepted"] {
-        border-color: rgba(157, 232, 195, 0.24);
-      }
-
-      .post-result[data-tone="failed"] {
-        border-color: rgba(255, 146, 151, 0.3);
-      }
-
-      .post-result[data-tone="publishing"] {
-        border-color: rgba(110, 231, 242, 0.26);
-      }
-
-      .result-head {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 12px;
-      }
-
-      .result-kicker {
-        color: var(--quiet);
-        font-size: 11px;
-        font-weight: 820;
-        text-transform: uppercase;
-      }
-
-      .result-state {
-        display: block;
-        margin-top: 4px;
-        color: var(--ink);
-        font-size: 15px;
-        font-weight: 820;
-      }
-
-      .result-message {
-        margin-top: 9px;
-        color: var(--muted);
-        font-size: 13px;
-        line-height: 1.45;
-      }
-
-      .result-meta {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-        margin-top: 12px;
-      }
-
-      .result-meta-row {
-        min-width: 0;
-        border: 1px solid rgba(255, 255, 255, 0.07);
-        border-radius: 8px;
-        padding: 10px;
-        background: rgba(255, 255, 255, 0.035);
-      }
-
-      .result-meta-row span,
-      .result-meta-row strong {
-        display: block;
-      }
-
-      .result-meta-row span {
-        color: var(--quiet);
-        font-size: 10px;
-        font-weight: 820;
-        text-transform: uppercase;
-      }
-
-      .result-meta-row strong,
-      .result-meta-row a {
-        margin-top: 5px;
-        color: var(--ink);
-        font-size: 13px;
-        font-weight: 760;
-        overflow-wrap: anywhere;
-      }
-
-      .result-tools {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 12px;
-      }
-
-      .result-tools small {
-        color: var(--quiet);
-        font-size: 12px;
-      }
-
-      .response-details {
-        margin-top: 12px;
-      }
-
-      .response-details summary {
+      .advanced summary,
+      .history-section summary {
         cursor: pointer;
-        color: var(--violet-bright);
+        color: var(--muted);
         font-size: 12px;
-        font-weight: 800;
+        font-weight: 820;
+        text-transform: uppercase;
       }
 
-      .response-details pre {
-        max-height: 260px;
+      .advanced-body {
+        display: grid;
+        gap: 12px;
+        margin-top: 12px;
+      }
+
+      .advanced pre {
+        max-height: 220px;
         overflow: auto;
-        margin: 10px 0 0;
+        margin: 0;
         border: 1px solid rgba(255, 255, 255, 0.075);
-        border-radius: 8px;
+        border-radius: 10px;
         padding: 12px;
         background: rgba(0, 0, 0, 0.28);
         color: #dfd7ee;
@@ -941,24 +714,36 @@
         overflow-wrap: anywhere;
       }
 
-      .ready-strip {
-        margin-top: 12px;
-        padding: 12px;
-        border: 1px solid rgba(215, 192, 255, 0.2);
-        border-radius: 8px;
-        background: rgba(169, 112, 255, 0.075);
+      .history-section {
+        padding: 14px;
       }
 
-      .ready-strip strong {
-        display: block;
-        margin-bottom: 8px;
-        color: var(--violet-bright);
-        font-size: 13px;
+      .history-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
       }
 
-      .caption-copy {
-        min-height: 76px;
-        color: var(--muted);
+      .history-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .empty,
+      .history-empty {
+        display: grid;
+        min-height: 150px;
+        place-items: center;
+        border: 1px dashed var(--line-strong);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.025);
+        color: var(--quiet);
+        text-align: center;
+      }
+
+      .history-empty {
+        min-height: 90px;
       }
 
       .copy-cache {
@@ -969,81 +754,29 @@
         pointer-events: none;
       }
 
-      .card-actions {
-        margin-top: 12px;
-        padding-top: 12px;
-        border-top: 1px solid var(--line);
-      }
-
-      .empty {
-        display: grid;
-        min-height: 190px;
-        place-items: center;
-        border: 1px dashed var(--line-strong);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.025);
-        color: var(--quiet);
-      }
-
-      .manual-note {
-        margin: 10px 0 0;
-        color: var(--quiet);
-        font-size: 12px;
-      }
-
-      .manual-action {
-        border-color: rgba(255, 209, 122, 0.22);
-        color: var(--amber);
-      }
-
-      @media (max-width: 980px) {
-        .overview,
-        .control-grid,
-        .today-content,
+      @media (max-width: 860px) {
+        .main-grid,
         .queue-card,
-        .edit-grid {
+        .queue-card.is-history,
+        .schedule-row {
           grid-template-columns: 1fr;
         }
 
-        .metrics {
-          grid-template-columns: repeat(5, minmax(0, 1fr));
-        }
-
-        .metric:first-child {
-          grid-column: auto;
-        }
-
-        .today-art {
-          max-height: 430px;
-        }
-
         .queue-thumb {
-          max-height: 370px;
-        }
-
-        .public-url-field {
-          grid-column: auto;
-        }
-
-        .save-slot .primary {
-          width: auto;
+          min-height: 220px;
+          aspect-ratio: 16 / 10;
         }
       }
 
-      @media (max-width: 700px) {
+      @media (max-width: 640px) {
         .shell {
-          width: min(100% - 22px, 1180px);
+          width: min(100% - 22px, 1040px);
           padding-top: 12px;
         }
 
         .top-status {
-          top: 8px;
           align-items: flex-start;
           flex-direction: column;
-        }
-
-        .connection-pill {
-          white-space: normal;
         }
 
         .status-actions {
@@ -1051,49 +784,80 @@
           width: 100%;
         }
 
+        .connection-pill {
+          white-space: normal;
+        }
+
         .brand-logo {
-          width: 42px;
-          height: 42px;
+          width: 50px;
+          height: 50px;
         }
 
-        .metrics,
-        .form-grid,
-        .media-workflow,
-        .result-meta {
+        .form-grid {
           grid-template-columns: 1fr;
-        }
-
-        .today-info h2 {
-          font-size: 28px;
-        }
-
-        .queue-top {
-          align-items: flex-start;
-          flex-direction: column;
         }
 
         .actions .button,
         .actions button,
         .card-actions .button,
         .card-actions button,
-        .inline-action {
+        .history-actions button,
+        .inline-action,
+        .schedule-row button {
           width: 100%;
+        }
+
+        .queue-top {
+          align-items: flex-start;
+          flex-direction: column;
         }
       }
     </style>
   </head>
   <body>
     <main class="shell">
+      <%
+        const statusOf = (post) => String((post && post.status) || 'pending').toLowerCase();
+        const activePosts = posts.filter((post) => statusOf(post) !== 'posted');
+        const historyPosts = posts.filter((post) => statusOf(post) === 'posted');
+        const privacyOptions = Array.isArray(creatorInfo && creatorInfo.privacy_level_options) && creatorInfo.privacy_level_options.length > 0
+          ? creatorInfo.privacy_level_options
+          : ['SELF_ONLY'];
+        const displayResultLabel = (result) => {
+          const tone = String((result && result.tone) || '').toLowerCase();
+          const label = String((result && result.stateLabel) || '').toLowerCase();
+
+          if (tone === 'failed' || label.includes('failed')) return 'Failed';
+          if (tone === 'verification' || label.includes('verification')) return 'Needs verification';
+          if (tone === 'accepted' || label.includes('posted') || label.includes('accepted')) return 'Posted / API accepted';
+          if (tone === 'publishing' || label.includes('publishing')) return 'Publishing';
+          return 'Scheduled';
+        };
+        const captionPreview = (post) => helpers.fullCaption(post) || 'No caption';
+        const selectedPrivacy = (post) => {
+          const value = String((post && post.privacyLevel) || 'SELF_ONLY').trim() || 'SELF_ONLY';
+          return privacyOptions.includes(value) ? value : privacyOptions[0];
+        };
+      %>
+
       <header class="top-status">
         <div class="brand">
           <img class="brand-logo" src="/assets/chanter-logo.png" alt="CHANTER logo" />
           <span class="brand-text">
-            <span class="brand-title"><%= appName %></span>
-            <span class="brand-kicker">TikTok queue dashboard</span>
+            <span class="brand-title">CHANTER Auto Poster</span>
+            <span class="brand-kicker">TikTok poster</span>
           </span>
         </div>
         <div class="status-actions">
           <div class="connection-pill <%= tiktokConfigured ? 'is-connected' : 'is-offline' %>"><%- tiktokConfigured ? 'TikTok Connected' : 'Manual Mode &middot; TikTok not connected' %></div>
+          <% if (tiktokConfigured && creatorInfo) { %>
+            <div class="creator-pill">
+              <img class="creator-avatar" src="<%= creatorInfo.creator_avatar_url || '/assets/chanter-logo.png' %>" alt="" />
+              <span class="creator-name">
+                <strong><%= creatorInfo.creator_username ? `@${creatorInfo.creator_username}` : (creatorInfo.creator_nickname || 'TikTok creator') %></strong>
+              </span>
+            </div>
+          <% } %>
           <% if (tiktokConfigured) { %>
             <a class="button secondary compact" href="/disconnect/tiktok">Disconnect</a>
           <% } else { %>
@@ -1106,130 +870,17 @@
         <div class="notice"><%= notice %></div>
       <% } %>
 
-      <section class="overview">
-        <article class="today-card">
-          <div class="section-head">
-            <h1>Today's post</h1>
-            <% if (todayPost) { %>
-              <% const todayResult = helpers.postResult(todayPost); %>
-              <span class="badge <%= todayResult.tone %>"><%= todayResult.stateLabel %></span>
-            <% } %>
-          </div>
-
-          <% if (todayPost) { %>
-            <% const todayMediaPath = helpers.mediaPath(todayPost); %>
-            <% const todayMediaType = helpers.mediaType(todayPost); %>
-            <% const todayResult = helpers.postResult(todayPost); %>
-            <div class="today-content" data-post-card>
-              <a class="today-art" href="<%= todayMediaPath %>" target="_blank" rel="noreferrer">
-                <% if (todayMediaType === 'video') { %>
-                  <video src="<%= todayMediaPath %>" muted playsinline preload="metadata"></video>
-                <% } else { %>
-                  <img src="<%= todayMediaPath %>" alt="<%= todayPost.originalName %>" />
-                <% } %>
-                <span class="media-chip"><%= helpers.mediaWorkflowLabel(todayPost) %></span>
-              </a>
-              <div class="today-info">
-                <p class="muted"><%= helpers.formatTime(todayPost.scheduledAt) %></p>
-                <h2><%= todayPost.originalName %></h2>
-                <% if (helpers.fullCaption(todayPost)) { %>
-                  <p class="caption-preview"><%= helpers.fullCaption(todayPost) %></p>
-                <% } %>
-                <textarea class="copy-cache" id="today-caption-<%= todayPost.id %>" readonly><%= helpers.fullCaption(todayPost) %></textarea>
-                <div class="actions">
-                  <a class="button secondary" href="<%= todayMediaPath %>" target="_blank" rel="noreferrer"><%= helpers.mediaOpenLabel(todayPost) %></a>
-                  <button type="button" class="secondary copy-button" data-target="today-caption-<%= todayPost.id %>">Copy caption</button>
-                  <% if (todayPost.status !== 'posted') { %>
-                    <form class="inline-action" action="/posts/<%= todayPost.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post immediately? Scheduled time will be ignored.');">
-                      <input type="hidden" name="force" value="1" />
-                      <button type="submit" class="secondary manual-action">Post now</button>
-                    </form>
-                    <form class="inline-action" action="/posts/<%= todayPost.id %>/posted" method="post">
-                      <button type="submit" class="secondary">Mark posted</button>
-                    </form>
-                  <% } %>
-                </div>
-                <% if (todayResult.hasAttempt) { %>
-                  <section class="post-result" data-tone="<%= todayResult.tone %>">
-                    <div class="result-head">
-                      <div>
-                        <span class="result-kicker">Post Result</span>
-                        <span class="result-state"><%= todayResult.stateLabel %></span>
-                      </div>
-                    </div>
-                    <p class="result-message"><%= todayResult.message %></p>
-                    <% if (todayResult.metadata.length > 0) { %>
-                      <div class="result-meta">
-                        <% todayResult.metadata.forEach(function(item) { %>
-                          <div class="result-meta-row">
-                            <span><%= item.label %></span>
-                            <% if (item.isUrl) { %>
-                              <a href="<%= item.value %>" target="_blank" rel="noreferrer"><%= item.value %></a>
-                            <% } else { %>
-                              <strong><%= item.value %></strong>
-                            <% } %>
-                          </div>
-                        <% }); %>
-                      </div>
-                    <% } %>
-                    <textarea class="copy-cache" id="today-debug-<%= todayPost.id %>" readonly><%= todayResult.debugJson %></textarea>
-                    <div class="result-tools">
-                      <button type="button" class="secondary compact copy-button" data-target="today-debug-<%= todayPost.id %>">Copy Debug Info</button>
-                      <button type="button" class="secondary compact" disabled>Check Status</button>
-                      <small>Status check not available yet.</small>
-                    </div>
-                    <% if (todayResult.hasDebug) { %>
-                      <details class="response-details">
-                        <summary>Advanced / Debug</summary>
-                        <pre><%= todayResult.debugJson %></pre>
-                      </details>
-                    <% } %>
-                  </section>
-                <% } %>
-              </div>
-            </div>
-          <% } else { %>
-            <div class="empty-today">
-              <div class="empty-today-inner">
-                <img class="empty-logo" src="/assets/chanter-logo.png" alt="" />
-                <h2>No post scheduled today</h2>
-                <p>The queue is quiet for the day.</p>
-              </div>
-            </div>
-          <% } %>
-        </article>
-
-        <aside class="metrics" aria-label="Queue counts">
-          <div class="metric" data-tone="total"><strong><%= counts.total %></strong><span>Total</span></div>
-          <div class="metric" data-tone="pending"><strong><%= counts.pending %></strong><span>Pending</span></div>
-          <div class="metric" data-tone="ready"><strong><%= counts.ready %></strong><span>Ready</span></div>
-          <div class="metric" data-tone="posted"><strong><%= counts.posted %></strong><span>Posted</span></div>
-          <div class="metric" data-tone="failed"><strong><%= counts.failed %></strong><span>Failed</span></div>
-        </aside>
-      </section>
-
-      <section class="control-grid">
-        <div class="panel">
+      <section class="main-grid" aria-label="Poster controls">
+        <article class="panel">
           <div class="panel-head">
             <h2>Upload</h2>
-            <span class="muted">Batch</span>
           </div>
           <form action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
             <div class="form-grid">
               <label class="wide">
-                Media files
+                Media
                 <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple required data-media-upload />
               </label>
-              <div class="media-workflow wide">
-                <div class="workflow-tile">
-                  <strong>Photo source</strong>
-                  <span>Image file now, HTTPS image URL before API publishing.</span>
-                </div>
-                <div class="workflow-tile">
-                  <strong>Video + audio</strong>
-                  <span>MP4, MOV, or WebM with the original audio intact.</span>
-                </div>
-              </div>
               <label>
                 Caption
                 <textarea name="caption" placeholder="Caption"></textarea>
@@ -1239,13 +890,13 @@
                 <textarea name="hashtags" placeholder="#chanter"></textarea>
               </label>
             </div>
-            <div class="actions">
+            <div class="actions form-actions">
               <button type="submit" class="primary">Upload</button>
             </div>
           </form>
-        </div>
+        </article>
 
-        <div class="panel">
+        <article class="panel">
           <div class="panel-head">
             <h2>Schedule</h2>
             <span class="muted"><%= settings.dailyPostTime %></span>
@@ -1255,173 +906,181 @@
               Daily time
               <input type="time" name="dailyPostTime" value="<%= settings.dailyPostTime %>" required />
             </label>
-            <div class="actions">
+            <div class="actions form-actions">
               <button type="submit" class="primary">Save schedule</button>
             </div>
           </form>
           <form action="/schedule" method="post">
-            <div class="actions">
+            <div class="actions form-actions tight">
               <button type="submit" class="secondary">Rebuild queue</button>
             </div>
           </form>
-        </div>
+        </article>
       </section>
 
-      <div class="queue-head">
-        <h2>Queue</h2>
-        <span class="muted"><%= counts.pending %> pending</span>
-      </div>
+      <section aria-label="Queue">
+        <div class="queue-head">
+          <h2>Queue</h2>
+          <span class="muted"><%= activePosts.length %> active</span>
+        </div>
 
-      <section class="queue">
-        <% if (posts.length === 0) { %>
-          <div class="empty">Queue empty</div>
-        <% } %>
+        <div class="queue">
+          <% if (activePosts.length === 0) { %>
+            <div class="empty">Queue empty</div>
+          <% } %>
 
-        <% posts.forEach(function(post, index) { %>
-          <% const mediaPath = helpers.mediaPath(post); %>
-          <% const mediaType = helpers.mediaType(post); %>
-          <% const result = helpers.postResult(post); %>
-          <article class="queue-card" data-post-card>
-            <a class="queue-thumb" href="<%= mediaPath %>" target="_blank" rel="noreferrer">
-              <% if (mediaType === 'video') { %>
-                <video src="<%= mediaPath %>" muted playsinline preload="metadata"></video>
-              <% } else { %>
-                <img src="<%= mediaPath %>" alt="<%= post.originalName %>" loading="lazy" />
-              <% } %>
-              <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
-            </a>
-
-            <div class="queue-main">
-              <header class="queue-top">
-                <div class="queue-title">
-                  <p class="queue-index">#<%= index + 1 %></p>
-                  <h3><%= post.originalName %></h3>
-                  <p class="queue-time"><%= helpers.formatDateTime(post.scheduledAt) %></p>
-                </div>
-                <span class="badge <%= result.tone %>" data-result-badge><%= result.stateLabel %></span>
-              </header>
-
-              <form
-                class="edit-grid"
-                action="/posts/<%= post.id %>"
-                method="post"
-                data-edit-form
-                data-media-type="<%= mediaType %>"
-                data-has-local-media="<%= helpers.hasLocalMedia(post) ? 'true' : 'false' %>"
-              >
-                <label>
-                  Caption
-                  <textarea name="caption"><%= post.caption || '' %></textarea>
-                </label>
-                <label>
-                  Hashtags
-                  <textarea name="hashtags"><%= post.hashtags || '' %></textarea>
-                </label>
-                <label>
-                  Date
-                  <span class="field-note">Publishes automatically at this time.</span>
-                  <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
-                </label>
-                <label class="public-url-field">
-                  Public image URL
-                  <span class="field-note"><%= helpers.publicUrlNote(post) %></span>
-                  <input
-                    type="url"
-                    name="publicImageUrl"
-                    value="<%= post.publicImageUrl || '' %>"
-                    placeholder="<%= mediaType === 'video' ? 'Not required for video posts' : 'https://chanterr.com/media/tiktok-posts/test-image.png' %>"
-                    data-public-image-url
-                  />
-                </label>
-                <div class="save-slot">
-                  <button type="submit" class="primary">Save schedule</button>
-                </div>
-              </form>
-
-              <% if (post.status === 'ready') { %>
-                <div class="ready-strip">
-                  <strong>Ready to post</strong>
-                  <textarea class="caption-copy" id="caption-<%= post.id %>" readonly><%= helpers.fullCaption(post) %></textarea>
-                  <div class="actions">
-                    <a class="button secondary" href="<%= mediaPath %>" target="_blank" rel="noreferrer"><%= helpers.mediaOpenLabel(post) %></a>
-                    <button type="button" class="secondary copy-button" data-target="caption-<%= post.id %>">Copy caption</button>
-                  </div>
-                </div>
-              <% } %>
-
-              <section class="post-result" data-tone="<%= result.tone %>" data-result-panel>
-                <div class="result-head">
-                  <div>
-                    <span class="result-kicker">Post Result</span>
-                    <span class="result-state" data-result-state><%= result.stateLabel %></span>
-                  </div>
-                </div>
-                <p class="result-message" data-result-message><%= result.message %></p>
-                <% if (result.metadata.length > 0) { %>
-                  <div class="result-meta">
-                    <% result.metadata.forEach(function(item) { %>
-                      <div class="result-meta-row">
-                        <span><%= item.label %></span>
-                        <% if (item.isUrl) { %>
-                          <a href="<%= item.value %>" target="_blank" rel="noreferrer"><%= item.value %></a>
-                        <% } else { %>
-                          <strong><%= item.value %></strong>
-                        <% } %>
-                      </div>
-                    <% }); %>
-                  </div>
-                <% } %>
-                <% if (result.hasDebug) { %>
-                  <textarea class="copy-cache" id="debug-<%= post.id %>" readonly><%= result.debugJson %></textarea>
-                <% } %>
-                <div class="result-tools">
-                  <% if (result.hasDebug) { %>
-                    <button type="button" class="secondary compact copy-button" data-target="debug-<%= post.id %>">Copy Debug Info</button>
+          <% activePosts.forEach(function(post) { %>
+            <% const mediaPath = helpers.mediaPath(post); %>
+            <% const mediaType = helpers.mediaType(post); %>
+            <% const result = helpers.postResult(post); %>
+            <article class="queue-card" data-post-card>
+              <% if (mediaPath) { %>
+                <a class="queue-thumb" href="<%= mediaPath %>" target="_blank" rel="noreferrer">
+                  <img class="thumb-placeholder" src="/assets/chanter-logo.png" alt="" />
+                  <% if (mediaType === 'video') { %>
+                    <video src="<%= mediaPath %>" muted playsinline preload="metadata" data-preview-media></video>
                   <% } else { %>
-                    <button type="button" class="secondary compact" disabled>Copy Debug Info</button>
+                    <img src="<%= mediaPath %>" alt="<%= post.originalName %>" loading="lazy" data-preview-media />
                   <% } %>
-                  <button type="button" class="secondary compact" disabled>Check Status</button>
-                  <small>Status check not available yet.</small>
+                  <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
+                </a>
+              <% } else { %>
+                <div class="queue-thumb is-missing">
+                  <img class="thumb-placeholder" src="/assets/chanter-logo.png" alt="" />
+                  <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
                 </div>
-                <% if (result.hasDebug) { %>
-                  <details class="response-details">
-                    <summary>Advanced / Debug</summary>
-                    <pre><%= result.debugJson %></pre>
-                  </details>
-                <% } %>
-              </section>
+              <% } %>
 
-              <p class="manual-note">Post now publishes immediately.</p>
-              <div class="card-actions">
-                <form class="inline-action" action="/posts/<%= post.id %>/move" method="post">
-                  <input type="hidden" name="direction" value="up" />
-                  <button type="submit" class="secondary">Move up</button>
+              <div class="queue-main">
+                <header class="queue-top">
+                  <div class="queue-title">
+                    <h3><%= post.originalName %></h3>
+                    <p class="queue-time"><%= helpers.formatDateTime(post.scheduledAt) %></p>
+                  </div>
+                  <span class="badge <%= result.tone %>" data-result-badge><%= displayResultLabel(result) %></span>
+                </header>
+
+                <p class="caption-preview"><%= captionPreview(post) %></p>
+
+                <form
+                  class="schedule-form"
+                  action="/posts/<%= post.id %>"
+                  method="post"
+                  data-edit-form
+                  data-media-type="<%= mediaType %>"
+                  data-has-local-media="<%= helpers.hasLocalMedia(post) ? 'true' : 'false' %>"
+                >
+                  <input type="hidden" name="caption" value="<%= post.caption || '' %>" />
+                  <input type="hidden" name="hashtags" value="<%= post.hashtags || '' %>" />
+                  <div class="schedule-row">
+                    <label>
+                      Date
+                      <span class="field-note">Publishes automatically at this time.</span>
+                      <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
+                    </label>
+                    <label>
+                      Privacy
+                      <select name="privacyLevel">
+                        <% privacyOptions.forEach(function(option) { %>
+                          <option value="<%= option %>" <%= selectedPrivacy(post) === option ? 'selected' : '' %>><%= option %></option>
+                        <% }); %>
+                      </select>
+                    </label>
+                    <button type="submit" class="primary">Save schedule</button>
+                  </div>
+                  <details class="advanced">
+                    <summary>Advanced</summary>
+                    <div class="advanced-body">
+                      <label>
+                        Public image URL
+                        <input
+                          type="url"
+                          name="publicImageUrl"
+                          value="<%= post.publicImageUrl || '' %>"
+                          placeholder="<%= mediaType === 'video' ? 'Not required for video posts' : 'https://chanterr.com/media/tiktok-posts/test-image.png' %>"
+                          data-public-image-url
+                        />
+                      </label>
+                      <% if (result.hasDebug) { %>
+                        <pre><%= result.debugJson %></pre>
+                      <% } %>
+                    </div>
+                  </details>
                 </form>
-                <form class="inline-action" action="/posts/<%= post.id %>/move" method="post">
-                  <input type="hidden" name="direction" value="down" />
-                  <button type="submit" class="secondary">Move down</button>
-                </form>
-                <% if (post.status !== 'posted') { %>
-                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post immediately? Scheduled time will be ignored.');">
+
+                <div class="card-actions">
+                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post now? This ignores the schedule.');">
                     <input type="hidden" name="force" value="1" />
-                      <button type="submit" class="secondary manual-action">Post now</button>
+                    <button type="submit" class="secondary">Post now</button>
                   </form>
-                  <form class="inline-action" action="/posts/<%= post.id %>/posted" method="post">
-                    <button type="submit" class="secondary">Mark posted</button>
+                  <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
+                    <button type="submit" class="danger">Delete</button>
                   </form>
-                <% } %>
-                <% if (post.status !== 'pending') { %>
-                  <form class="inline-action" action="/posts/<%= post.id %>/pending" method="post">
-                    <button type="submit" class="secondary">Back to pending</button>
-                  </form>
-                <% } %>
-                <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
-                  <button type="submit" class="danger">Delete</button>
-                </form>
+                </div>
               </div>
-            </div>
-          </article>
-        <% }); %>
+            </article>
+          <% }); %>
+        </div>
+
+        <details class="history-section">
+          <summary>
+            <span>History</span>
+            <span class="muted"><%= historyPosts.length %> posted</span>
+          </summary>
+          <div class="history-list">
+            <% if (historyPosts.length === 0) { %>
+              <div class="history-empty">No posted history</div>
+            <% } %>
+
+            <% historyPosts.forEach(function(post) { %>
+              <% const mediaPath = helpers.mediaPath(post); %>
+              <% const mediaType = helpers.mediaType(post); %>
+              <% const result = helpers.postResult(post); %>
+              <article class="queue-card is-history">
+                <% if (mediaPath) { %>
+                  <a class="queue-thumb" href="<%= mediaPath %>" target="_blank" rel="noreferrer">
+                    <img class="thumb-placeholder" src="/assets/chanter-logo.png" alt="" />
+                    <% if (mediaType === 'video') { %>
+                      <video src="<%= mediaPath %>" muted playsinline preload="metadata" data-preview-media></video>
+                    <% } else { %>
+                      <img src="<%= mediaPath %>" alt="<%= post.originalName %>" loading="lazy" data-preview-media />
+                    <% } %>
+                    <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
+                  </a>
+                <% } else { %>
+                  <div class="queue-thumb is-missing">
+                    <img class="thumb-placeholder" src="/assets/chanter-logo.png" alt="" />
+                    <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
+                  </div>
+                <% } %>
+
+                <div class="queue-main">
+                  <header class="queue-top">
+                    <div class="queue-title">
+                      <h3><%= post.originalName %></h3>
+                      <p class="queue-time"><%= helpers.formatDateTime(post.postedAt || post.scheduledAt) %></p>
+                    </div>
+                    <span class="badge <%= result.tone %>"><%= displayResultLabel(result) %></span>
+                  </header>
+                  <p class="caption-preview"><%= captionPreview(post) %></p>
+                  <div class="history-actions">
+                    <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
+                      <button type="submit" class="danger">Remove from history</button>
+                    </form>
+                  </div>
+                  <% if (result.hasDebug) { %>
+                    <details class="advanced">
+                      <summary>Advanced</summary>
+                      <div class="advanced-body">
+                        <pre><%= result.debugJson %></pre>
+                      </div>
+                    </details>
+                  <% } %>
+                </div>
+              </article>
+            <% }); %>
+          </div>
+        </details>
       </section>
     </main>
 
@@ -1521,10 +1180,7 @@
       document.querySelectorAll('[data-publish-form]').forEach((form) => {
         form.addEventListener('submit', () => {
           const card = form.closest('[data-post-card]');
-          const panel = card ? card.querySelector('[data-result-panel]') : null;
           const badge = card ? card.querySelector('[data-result-badge]') : null;
-          const state = card ? card.querySelector('[data-result-state]') : null;
-          const message = card ? card.querySelector('[data-result-message]') : null;
           const button = form.querySelector('button');
 
           if (button) {
@@ -1532,14 +1188,24 @@
             button.textContent = 'Publishing';
           }
 
-          if (panel) panel.dataset.tone = 'publishing';
           if (badge) {
             badge.className = 'badge publishing';
             badge.textContent = 'Publishing';
           }
-          if (state) state.textContent = 'Publishing';
-          if (message) message.textContent = 'Publishing to TikTok. Large videos can take a moment.';
         });
+      });
+
+      document.querySelectorAll('[data-preview-media]').forEach((media) => {
+        const markMissing = () => {
+          const thumb = media.closest('.queue-thumb');
+          if (thumb) thumb.classList.add('is-missing');
+        };
+
+        media.addEventListener('error', markMissing);
+
+        if (media.tagName === 'IMG' && media.complete && media.naturalWidth === 0) {
+          markMissing();
+        }
       });
     </script>
   </body>

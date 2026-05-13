@@ -5,6 +5,7 @@ const storage = require('./storage');
 
 const tokenRefreshBufferMs = 5 * 60 * 1000;
 const videoInitUrl = 'https://open.tiktokapis.com/v2/post/publish/video/init/';
+const creatorInfoQueryUrl = 'https://open.tiktokapis.com/v2/post/publish/creator_info/query/';
 
 function isConfigured() {
   return getTikTokAuthStatus().connected;
@@ -83,8 +84,10 @@ async function publishPhotoPost(post) {
     };
   }
 
+  const creatorInfo = await queryCreatorInfoForPublish(auth.access_token);
+
   if (isVideoPost(post)) {
-    return publishVideoPost(post, auth.access_token);
+    return publishVideoPost(post, auth.access_token, creatorInfo);
   }
 
   const imageUrl = getPublicImageUrl(post);
@@ -96,7 +99,7 @@ async function publishPhotoPost(post) {
     };
   }
 
-  const payload = buildPhotoPayload(post, imageUrl);
+  const payload = buildPhotoPayload(post, imageUrl, creatorInfo);
   return postPhotoPayload(payload, auth.access_token);
 }
 
@@ -108,7 +111,7 @@ function isVideoPost(post) {
   return ['.mp4', '.mov', '.webm'].some((extension) => fileName.endsWith(extension));
 }
 
-async function publishVideoPost(post, accessToken) {
+async function publishVideoPost(post, accessToken, creatorInfo = null) {
   const videoPath = getLocalMediaPath(post);
   if (!videoPath) {
     return {
@@ -140,7 +143,7 @@ async function publishVideoPost(post, accessToken) {
   const fileSize = stats.size;
   const mimeType = getVideoMimeType(post);
 
-  const payload = buildVideoPayload(post, fileSize);
+  const payload = buildVideoPayload(post, fileSize, creatorInfo);
   const initResult = await postVideoInitPayload(payload, accessToken);
 
   if (!initResult.ok) return initResult;
@@ -168,11 +171,78 @@ async function publishVideoPost(post, accessToken) {
   };
 }
 
-function buildVideoPayload(post, fileSize) {
+async function queryCreatorInfo() {
+  const auth = await getActiveTikTokAuth();
+  if (!auth || !auth.access_token) {
+    throw new Error('TikTok not connected');
+  }
+
+  return queryCreatorInfoWithToken(auth.access_token);
+}
+
+async function queryCreatorInfoForPublish(accessToken) {
+  try {
+    return await queryCreatorInfoWithToken(accessToken);
+  } catch (error) {
+    console.warn('[tiktok] creator info query failed', error.message);
+    return null;
+  }
+}
+
+async function queryCreatorInfoWithToken(accessToken) {
+  const response = await fetch(creatorInfoQueryUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json; charset=UTF-8'
+    },
+    body: JSON.stringify({})
+  });
+
+  const body = await parseResponseBody(response);
+
+  if (!response.ok) {
+    const error = new Error(`TikTok creator info returned HTTP ${response.status}`);
+    error.response = body;
+    throw error;
+  }
+
+  const apiError = getTikTokApiError(body);
+  if (apiError) {
+    const error = new Error(apiError);
+    error.response = body;
+    throw error;
+  }
+
+  return normalizeCreatorInfo(body);
+}
+
+function normalizeCreatorInfo(body) {
+  const data = body && typeof body === 'object' && body.data && typeof body.data === 'object'
+    ? body.data
+    : body || {};
+
+  const privacyLevelOptions = Array.isArray(data.privacy_level_options)
+    ? data.privacy_level_options.map((option) => String(option || '').trim()).filter(Boolean)
+    : [];
+
+  return {
+    creator_username: String(data.creator_username || '').trim(),
+    creator_nickname: String(data.creator_nickname || '').trim(),
+    creator_avatar_url: String(data.creator_avatar_url || '').trim(),
+    privacy_level_options: privacyLevelOptions,
+    comment_disabled: Boolean(data.comment_disabled),
+    duet_disabled: Boolean(data.duet_disabled),
+    stitch_disabled: Boolean(data.stitch_disabled),
+    max_video_post_duration_sec: Number(data.max_video_post_duration_sec || 0) || 0
+  };
+}
+
+function buildVideoPayload(post, fileSize, creatorInfo = null) {
   return {
     post_info: {
       title: buildCaption(post),
-      privacy_level: config.tiktok.privacyLevel,
+      privacy_level: resolvePrivacyLevel(post, creatorInfo),
       disable_duet: false,
       disable_comment: false,
       disable_stitch: false
@@ -315,11 +385,11 @@ function getVideoMimeType(post) {
   return 'video/mp4';
 }
 
-function buildPhotoPayload(post, imageUrl) {
+function buildPhotoPayload(post, imageUrl, creatorInfo = null) {
   return {
     post_info: {
       title: buildCaption(post),
-      privacy_level: config.tiktok.privacyLevel,
+      privacy_level: resolvePrivacyLevel(post, creatorInfo),
       disable_duet: false,
       disable_comment: false,
       disable_stitch: false
@@ -332,6 +402,20 @@ function buildPhotoPayload(post, imageUrl) {
     post_mode: 'DIRECT_POST',
     media_type: 'PHOTO'
   };
+}
+
+function resolvePrivacyLevel(post, creatorInfo = null) {
+  const requested = String((post && post.privacyLevel) || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY';
+  const configured = String(config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY';
+  const options = creatorInfo && Array.isArray(creatorInfo.privacy_level_options)
+    ? creatorInfo.privacy_level_options.map((option) => String(option || '').trim()).filter(Boolean)
+    : [];
+
+  if (options.length === 0) return requested;
+  if (options.includes(requested)) return requested;
+  if (options.includes(configured)) return configured;
+  if (options.includes('SELF_ONLY')) return 'SELF_ONLY';
+  return options[0];
 }
 
 function getPublicImageUrl(post) {
@@ -513,9 +597,11 @@ module.exports = {
   exchangeCodeForToken,
   getTikTokAuthStatus,
   refreshTikTokToken,
+  queryCreatorInfo,
   publishPhotoPost,
   buildCaption,
   buildPhotoPayload,
   buildVideoPayload,
-  getPublicImageUrl
+  getPublicImageUrl,
+  resolvePrivacyLevel
 };

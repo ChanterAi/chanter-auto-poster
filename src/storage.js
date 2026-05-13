@@ -149,6 +149,7 @@ function addUploadedPosts(files, defaults = {}) {
       caption: String(defaults.caption || '').trim(),
       hashtags: String(defaults.hashtags || '').trim(),
       publicImageUrl: String(defaults.publicImageUrl || '').trim(),
+      privacyLevel: String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
       scheduledAt: null,
       status: 'pending',
       order: order++,

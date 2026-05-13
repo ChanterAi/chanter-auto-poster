@@ -43,9 +43,10 @@ function defaultExtension(file) {
   return '.jpg';
 }
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const posts = storage.getPosts();
   const tiktokAuthStatus = tiktok.getTikTokAuthStatus();
+  const creatorInfo = tiktokAuthStatus.connected ? await getCreatorInfoSafe() : null;
 
   res.render('index', {
     appName: config.appName,
@@ -56,6 +57,7 @@ router.get('/', (req, res) => {
     notice: req.query.notice || '',
     tiktokConfigured: tiktokAuthStatus.connected,
     tiktokAuthStatus,
+    creatorInfo,
     helpers: viewHelpers
   });
 });
@@ -153,6 +155,7 @@ router.post('/posts/:id', (req, res) => {
     caption: String(req.body.caption || '').trim(),
     hashtags: String(req.body.hashtags || '').trim(),
     publicImageUrl: String(req.body.publicImageUrl || '').trim(),
+    privacyLevel: String(req.body.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
     scheduledAt
   });
 
@@ -230,6 +233,15 @@ router.post('/posts/:id/delete', (req, res) => {
 
 function redirectWithNotice(res, notice) {
   res.redirect(`/?notice=${encodeURIComponent(notice)}`);
+}
+
+async function getCreatorInfoSafe() {
+  try {
+    return await tiktok.queryCreatorInfo();
+  } catch (error) {
+    console.warn('[routes] TikTok creator info unavailable', error.message);
+    return null;
+  }
 }
 
 function parseCookies(header) {
