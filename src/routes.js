@@ -13,23 +13,35 @@ const upload = multer({
   storage: multer.diskStorage({
     destination: config.uploadsDir,
     filename: (req, file, callback) => {
-      const extension = path.extname(file.originalname || '').toLowerCase() || '.jpg';
+      const extension = path.extname(file.originalname || '').toLowerCase() || defaultExtension(file);
       callback(null, `${Date.now()}-${randomUUID()}${extension}`);
     }
   }),
   fileFilter: (req, file, callback) => {
-    if (file.mimetype && file.mimetype.startsWith('image/')) {
+    const mime = String(file.mimetype || '').toLowerCase();
+
+    if (mime.startsWith('image/') || mime.startsWith('video/')) {
       callback(null, true);
       return;
     }
 
-    callback(new Error('Only image uploads are supported.'));
+    callback(new Error('Only image and video uploads are supported.'));
   },
   limits: {
     files: 100,
-    fileSize: 25 * 1024 * 1024
+    fileSize: 250 * 1024 * 1024
   }
 });
+
+function defaultExtension(file) {
+  const mime = String(file.mimetype || '').toLowerCase();
+  if (mime === 'video/mp4') return '.mp4';
+  if (mime === 'video/quicktime') return '.mov';
+  if (mime === 'video/webm') return '.webm';
+  if (mime === 'image/png') return '.png';
+  if (mime === 'image/webp') return '.webp';
+  return '.jpg';
+}
 
 router.get('/', (req, res) => {
   const posts = storage.getPosts();
@@ -106,7 +118,7 @@ router.get('/disconnect/tiktok', (req, res) => {
 router.post('/upload', upload.array('images'), (req, res) => {
   const files = req.files || [];
   if (files.length === 0) {
-    redirectWithNotice(res, 'Choose at least one image to upload.');
+    redirectWithNotice(res, 'Choose at least one image or video to upload.');
     return;
   }
 

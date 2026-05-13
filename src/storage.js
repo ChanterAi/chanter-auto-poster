@@ -118,28 +118,47 @@ function nextOrder(posts) {
   return posts.reduce((max, post) => Math.max(max, Number(post.order || 0)), 0) + 1;
 }
 
+function getUploadMediaType(file) {
+  const mime = String(file.mimetype || '').toLowerCase();
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('image/')) return 'photo';
+
+  const extension = path.extname(file.originalname || file.filename || '').toLowerCase();
+  if (['.mp4', '.mov', '.webm'].includes(extension)) return 'video';
+  return 'photo';
+}
+
 function addUploadedPosts(files, defaults = {}) {
   const posts = getPosts();
   const now = new Date().toISOString();
   let order = nextOrder(posts);
 
-  const created = files.map((file) => ({
-    id: randomUUID(),
-    originalName: file.originalname,
-    fileName: file.filename,
-    imagePath: `/uploads/${file.filename}`,
-    caption: String(defaults.caption || '').trim(),
-    hashtags: String(defaults.hashtags || '').trim(),
-    publicImageUrl: String(defaults.publicImageUrl || '').trim(),
-    scheduledAt: null,
-    status: 'pending',
-    order: order++,
-    createdAt: now,
-    updatedAt: now,
-    postedAt: null,
-    readyAt: null,
-    lastResult: null
-  }));
+  const created = files.map((file) => {
+    const mediaType = getUploadMediaType(file);
+    const mediaPath = `/uploads/${file.filename}`;
+
+    return {
+      id: randomUUID(),
+      originalName: file.originalname,
+      fileName: file.filename,
+      mimeType: file.mimetype || '',
+      mediaType,
+      mediaPath,
+      videoPath: mediaType === 'video' ? mediaPath : '',
+      imagePath: mediaType === 'photo' ? mediaPath : '',
+      caption: String(defaults.caption || '').trim(),
+      hashtags: String(defaults.hashtags || '').trim(),
+      publicImageUrl: String(defaults.publicImageUrl || '').trim(),
+      scheduledAt: null,
+      status: 'pending',
+      order: order++,
+      createdAt: now,
+      updatedAt: now,
+      postedAt: null,
+      readyAt: null,
+      lastResult: null
+    };
+  });
 
   savePosts([...posts, ...created]);
   return created;
@@ -174,7 +193,7 @@ function deletePost(id) {
       try {
         fs.unlinkSync(uploadPath);
       } catch (error) {
-        // The queue item can still be removed even if the local image is gone.
+        // The queue item can still be removed even if the local media is gone.
       }
     }
   }

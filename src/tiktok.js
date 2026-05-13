@@ -1,7 +1,10 @@
+const fs = require('fs');
+const path = require('path');
 const config = require('./config');
 const storage = require('./storage');
 
 const tokenRefreshBufferMs = 5 * 60 * 1000;
+const videoInitUrl = 'https://open.tiktokapis.com/v2/post/publish/video/init/';
 
 function isConfigured() {
   return getTikTokAuthStatus().connected;
@@ -80,6 +83,10 @@ async function publishPhotoPost(post) {
     };
   }
 
+  if (isVideoPost(post)) {
+    return publishVideoPost(post, auth.access_token);
+  }
+
   const imageUrl = getPublicImageUrl(post);
   if (!imageUrl) {
     return {
@@ -91,6 +98,211 @@ async function publishPhotoPost(post) {
 
   const payload = buildPhotoPayload(post, imageUrl);
   return postPhotoPayload(payload, auth.access_token);
+}
+
+function isVideoPost(post) {
+  const mediaType = String(post.mediaType || '').toLowerCase();
+  if (mediaType === 'video') return true;
+
+  const fileName = String(post.fileName || post.mediaPath || post.videoPath || '').toLowerCase();
+  return ['.mp4', '.mov', '.webm'].some((extension) => fileName.endsWith(extension));
+}
+
+async function publishVideoPost(post, accessToken) {
+  const videoPath = getLocalMediaPath(post);
+  if (!videoPath) {
+    return {
+      ok: false,
+      mode: 'manual',
+      reason: 'Local video file missing'
+    };
+  }
+
+  let stats;
+  try {
+    stats = fs.statSync(videoPath);
+  } catch (error) {
+    return {
+      ok: false,
+      mode: 'manual',
+      reason: `Video file not found: ${path.basename(videoPath)}`
+    };
+  }
+
+  if (!stats.isFile() || stats.size <= 0) {
+    return {
+      ok: false,
+      mode: 'manual',
+      reason: 'Video file is empty'
+    };
+  }
+
+  const fileSize = stats.size;
+  const mimeType = getVideoMimeType(post);
+
+  const payload = buildVideoPayload(post, fileSize);
+  const initResult = await postVideoInitPayload(payload, accessToken);
+
+  if (!initResult.ok) return initResult;
+
+  const uploadUrl = getUploadUrl(initResult.response);
+  if (!uploadUrl) {
+    return {
+      ok: false,
+      mode: 'api',
+      reason: 'TikTok video init did not return upload_url',
+      response: initResult.response
+    };
+  }
+
+  const uploadResult = await uploadVideoFile(uploadUrl, videoPath, fileSize, mimeType);
+  if (!uploadResult.ok) return uploadResult;
+
+  return {
+    ok: true,
+    mode: 'api',
+    response: {
+      init: initResult.response,
+      upload: uploadResult.response
+    }
+  };
+}
+
+function buildVideoPayload(post, fileSize) {
+  return {
+    post_info: {
+      title: buildCaption(post),
+      privacy_level: config.tiktok.privacyLevel,
+      disable_duet: false,
+      disable_comment: false,
+      disable_stitch: false
+    },
+    source_info: {
+      source: 'FILE_UPLOAD',
+      video_size: fileSize,
+      chunk_size: fileSize,
+      total_chunk_count: 1
+    },
+    post_mode: 'DIRECT_POST'
+  };
+}
+
+async function postVideoInitPayload(payload, accessToken) {
+  try {
+    console.log('[tiktok] video init payload', JSON.stringify(payload, null, 2));
+
+    const response = await fetch(videoInitUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json; charset=UTF-8'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const body = await parseResponseBody(response);
+
+    if (!response.ok) {
+      console.error('[tiktok] video init failed', JSON.stringify({
+        status: response.status,
+        body,
+        payload
+      }, null, 2));
+
+      return {
+        ok: false,
+        mode: 'api',
+        reason: `TikTok video init returned HTTP ${response.status}`,
+        response: body
+      };
+    }
+
+    return {
+      ok: true,
+      mode: 'api',
+      response: body
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      mode: 'api',
+      reason: error.message
+    };
+  }
+}
+
+async function uploadVideoFile(uploadUrl, videoPath, fileSize, mimeType) {
+  try {
+    const firstByte = 0;
+    const lastByte = fileSize - 1;
+    const fileBuffer = fs.readFileSync(videoPath);
+
+    const response = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': mimeType,
+        'Content-Length': String(fileSize),
+        'Content-Range': `bytes ${firstByte}-${lastByte}/${fileSize}`
+      },
+      body: fileBuffer
+    });
+
+    const body = await parseResponseBody(response);
+
+    if (!response.ok) {
+      console.error('[tiktok] video upload failed', JSON.stringify({
+        status: response.status,
+        body
+      }, null, 2));
+
+      return {
+        ok: false,
+        mode: 'api',
+        reason: `TikTok video upload returned HTTP ${response.status}`,
+        response: body
+      };
+    }
+
+    return {
+      ok: true,
+      mode: 'api',
+      response: body || { uploaded: true, size: fileSize }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      mode: 'api',
+      reason: error.message
+    };
+  }
+}
+
+function getUploadUrl(response) {
+  if (!response || typeof response !== 'object') return '';
+  return response.upload_url || (response.data && response.data.upload_url) || '';
+}
+
+function getLocalMediaPath(post) {
+  const fileName = String(post.fileName || '').trim();
+  if (!fileName) return '';
+
+  const uploadPath = path.resolve(config.uploadsDir, fileName);
+  const uploadsRoot = path.resolve(config.uploadsDir);
+
+  if (!uploadPath.startsWith(uploadsRoot)) return '';
+  return uploadPath;
+}
+
+function getVideoMimeType(post) {
+  const mimeType = String(post.mimeType || '').toLowerCase();
+  if (['video/mp4', 'video/quicktime', 'video/webm'].includes(mimeType)) {
+    return mimeType;
+  }
+
+  const fileName = String(post.fileName || '').toLowerCase();
+  if (fileName.endsWith('.mov')) return 'video/quicktime';
+  if (fileName.endsWith('.webm')) return 'video/webm';
+  return 'video/mp4';
 }
 
 function buildPhotoPayload(post, imageUrl) {
@@ -116,7 +328,7 @@ function getPublicImageUrl(post) {
   const publicImageUrl = String(post.publicImageUrl || '').trim();
   if (isUsablePublicUrl(publicImageUrl)) return publicImageUrl;
 
-  const localImagePath = String(post.imageUrl || post.imagePath || '').trim();
+  const localImagePath = String(post.imageUrl || post.mediaPath || '').trim();
   if (!config.publicBaseUrl || !localImagePath) return '';
 
   const fallbackUrl = `${config.publicBaseUrl}${localImagePath.startsWith('/') ? '' : '/'}${localImagePath}`;
@@ -146,7 +358,7 @@ function shouldRefresh(auth) {
 
 async function postPhotoPayload(payload, accessToken) {
   try {
-    console.log('[tiktok] publish payload', JSON.stringify(payload, null, 2));
+    console.log('[tiktok] photo publish payload', JSON.stringify(payload, null, 2));
 
     const response = await fetch(config.tiktok.contentPostInitUrl, {
       method: 'POST',
@@ -160,7 +372,7 @@ async function postPhotoPayload(payload, accessToken) {
     const body = await parseResponseBody(response);
 
     if (!response.ok) {
-      console.error('[tiktok] content init failed', JSON.stringify({
+      console.error('[tiktok] photo content init failed', JSON.stringify({
         status: response.status,
         body,
         payload
@@ -169,7 +381,7 @@ async function postPhotoPayload(payload, accessToken) {
       return {
         ok: false,
         mode: 'api',
-        reason: `TikTok API returned HTTP ${response.status}`,
+        reason: `TikTok photo init returned HTTP ${response.status}`,
         response: body
       };
     }
@@ -266,5 +478,6 @@ module.exports = {
   publishPhotoPost,
   buildCaption,
   buildPhotoPayload,
+  buildVideoPayload,
   getPublicImageUrl
 };
