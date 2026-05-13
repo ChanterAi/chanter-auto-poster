@@ -985,6 +985,17 @@
         color: var(--quiet);
       }
 
+      .manual-note {
+        margin: 10px 0 0;
+        color: var(--quiet);
+        font-size: 12px;
+      }
+
+      .manual-action {
+        border-color: rgba(255, 209, 122, 0.22);
+        color: var(--amber);
+      }
+
       @media (max-width: 980px) {
         .overview,
         .control-grid,
@@ -1131,7 +1142,7 @@
                   <% if (todayPost.status !== 'posted') { %>
                     <form class="inline-action" action="/posts/<%= todayPost.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post immediately? Scheduled time will be ignored.');">
                       <input type="hidden" name="force" value="1" />
-                      <button type="submit" class="primary">Post now</button>
+                      <button type="submit" class="secondary manual-action">Post now</button>
                     </form>
                     <form class="inline-action" action="/posts/<%= todayPost.id %>/posted" method="post">
                       <button type="submit" class="secondary">Mark posted</button>
@@ -1169,7 +1180,7 @@
                     </div>
                     <% if (todayResult.hasDebug) { %>
                       <details class="response-details">
-                        <summary>Response JSON</summary>
+                        <summary>Advanced / Debug</summary>
                         <pre><%= todayResult.debugJson %></pre>
                       </details>
                     <% } %>
@@ -1245,7 +1256,7 @@
               <input type="time" name="dailyPostTime" value="<%= settings.dailyPostTime %>" required />
             </label>
             <div class="actions">
-              <button type="submit" class="primary">Save</button>
+              <button type="submit" class="primary">Save schedule</button>
             </div>
           </form>
           <form action="/schedule" method="post">
@@ -1308,6 +1319,7 @@
                 </label>
                 <label>
                   Date
+                  <span class="field-note">Publishes automatically at this time.</span>
                   <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
                 </label>
                 <label class="public-url-field">
@@ -1322,7 +1334,7 @@
                   />
                 </label>
                 <div class="save-slot">
-                  <button type="submit" class="primary">Save</button>
+                  <button type="submit" class="primary">Save schedule</button>
                 </div>
               </form>
 
@@ -1373,12 +1385,13 @@
                 </div>
                 <% if (result.hasDebug) { %>
                   <details class="response-details">
-                    <summary>Response JSON</summary>
+                    <summary>Advanced / Debug</summary>
                     <pre><%= result.debugJson %></pre>
                   </details>
                 <% } %>
               </section>
 
+              <p class="manual-note">Post now publishes immediately.</p>
               <div class="card-actions">
                 <form class="inline-action" action="/posts/<%= post.id %>/move" method="post">
                   <input type="hidden" name="direction" value="up" />
@@ -1391,7 +1404,7 @@
                 <% if (post.status !== 'posted') { %>
                   <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post immediately? Scheduled time will be ignored.');">
                     <input type="hidden" name="force" value="1" />
-                      <button type="submit" class="primary">Post now</button>
+                      <button type="submit" class="secondary manual-action">Post now</button>
                   </form>
                   <form class="inline-action" action="/posts/<%= post.id %>/posted" method="post">
                     <button type="submit" class="secondary">Mark posted</button>

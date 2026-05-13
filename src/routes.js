@@ -178,13 +178,12 @@ router.post('/posts/:id/prepare', async (req, res) => {
   if (!forcePostNow && scheduledAt && scheduledAt.getTime() > Date.now()) {
     redirectWithNotice(
       res,
-      `Saved. This post is scheduled for later: ${viewHelpers.formatDateTime(post.scheduledAt)}. It will publish automatically at that time.`
+      `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}. It will publish automatically.`
     );
     return;
   }
 
   const result = await scheduler.processPost(req.params.id);
-
   if (result.ok) {
     redirectWithNotice(res, 'TikTok accepted the publish request. Review Post Result for details.');
     return;
