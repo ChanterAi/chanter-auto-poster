@@ -165,7 +165,26 @@ router.post('/posts/:id/move', (req, res) => {
 });
 
 router.post('/posts/:id/prepare', async (req, res) => {
+  const post = storage.getPost(req.params.id);
+
+  if (!post) {
+    redirectWithNotice(res, 'Post not found.');
+    return;
+  }
+
+  const forcePostNow = String(req.body.force || '') === '1';
+  const scheduledAt = post.scheduledAt ? new Date(post.scheduledAt) : null;
+
+  if (!forcePostNow && scheduledAt && scheduledAt.getTime() > Date.now()) {
+    redirectWithNotice(
+      res,
+      `Saved. This post is scheduled for later: ${viewHelpers.formatDateTime(post.scheduledAt)}. It will publish automatically at that time.`
+    );
+    return;
+  }
+
   const result = await scheduler.processPost(req.params.id);
+
   if (result.ok) {
     redirectWithNotice(res, 'TikTok accepted the publish request. Review Post Result for details.');
     return;
