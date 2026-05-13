@@ -146,6 +146,8 @@ function shouldRefresh(auth) {
 
 async function postPhotoPayload(payload, accessToken) {
   try {
+    console.log('[tiktok] publish payload', JSON.stringify(payload, null, 2));
+
     const response = await fetch(config.tiktok.contentPostInitUrl, {
       method: 'POST',
       headers: {
@@ -158,11 +160,11 @@ async function postPhotoPayload(payload, accessToken) {
     const body = await parseResponseBody(response);
 
     if (!response.ok) {
-      console.error('[tiktok] content init failed', {
+      console.error('[tiktok] content init failed', JSON.stringify({
         status: response.status,
         body,
         payload
-      });
+      }, null, 2));
 
       return {
         ok: false,
