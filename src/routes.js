@@ -68,9 +68,28 @@ router.get('/health', (req, res) => {
     app: config.appName,
     uptimeSeconds: Math.round(process.uptime()),
     scheduler: 'running',
+    cronTrigger: true,
     tiktokConfigured: tiktok.isConfigured(),
     tiktokAuth: tiktok.getTikTokAuthStatus(),
     counts: storage.getCounts()
+  });
+});
+
+router.get('/run-scheduler', async (req, res) => {
+  if (config.cronSecret && req.query.secret !== config.cronSecret) {
+    res.status(403).json({
+      ok: false,
+      triggered: false,
+      reason: 'Invalid cron secret'
+    });
+    return;
+  }
+
+  const result = await scheduler.publishNextPost();
+  res.json({
+    ok: true,
+    triggered: true,
+    result
   });
 });
 

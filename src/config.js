@@ -14,6 +14,7 @@ module.exports = {
   settingsFile: path.join(rootDir, 'data', 'settings.json'),
   tiktokAuthFile: path.join(rootDir, 'data', 'tiktok_auth.json'),
   publicBaseUrl: (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, ''),
+  cronSecret: process.env.CRON_SECRET || '',
   tiktok: {
     clientKey: process.env.TIKTOK_CLIENT_KEY || '',
     clientSecret: process.env.TIKTOK_CLIENT_SECRET || '',
