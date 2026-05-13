@@ -271,11 +271,28 @@
       }
 
       .today-art img,
-      .queue-thumb img {
+      .today-art video,
+      .queue-thumb img,
+      .queue-thumb video {
         width: 100%;
         height: 100%;
         display: block;
         object-fit: cover;
+      }
+
+      .media-chip {
+        position: absolute;
+        right: 10px;
+        bottom: 10px;
+        max-width: calc(100% - 20px);
+        border: 1px solid rgba(215, 192, 255, 0.24);
+        border-radius: 999px;
+        padding: 5px 9px;
+        background: rgba(5, 5, 7, 0.72);
+        color: var(--violet-bright);
+        font-size: 11px;
+        font-weight: 800;
+        backdrop-filter: blur(12px);
       }
 
       .today-info {
@@ -503,6 +520,45 @@
         box-shadow: 0 0 0 3px rgba(169, 112, 255, 0.14);
       }
 
+      .field-note {
+        color: var(--quiet);
+        font-size: 12px;
+        font-weight: 650;
+        line-height: 1.35;
+        text-transform: none;
+      }
+
+      .media-workflow {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .workflow-tile {
+        min-height: 74px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .workflow-tile strong,
+      .workflow-tile span {
+        display: block;
+      }
+
+      .workflow-tile strong {
+        color: var(--ink);
+        font-size: 13px;
+      }
+
+      .workflow-tile span {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
       .actions,
       .card-actions {
         display: flex;
@@ -549,6 +605,12 @@
       .button:focus-visible {
         outline: 2px solid rgba(215, 192, 255, 0.8);
         outline-offset: 2px;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.48;
+        transform: none;
       }
 
       .primary {
@@ -609,32 +671,48 @@
         background: var(--quiet);
       }
 
-      .badge.pending {
+      .badge.pending,
+      .badge.scheduled {
         border-color: rgba(255, 209, 122, 0.28);
         color: #ffe2a2;
       }
 
-      .badge.pending::before {
+      .badge.pending::before,
+      .badge.scheduled::before {
         background: var(--amber);
       }
 
-      .badge.ready {
+      .badge.ready,
+      .badge.verification {
         border-color: rgba(215, 192, 255, 0.34);
         color: var(--violet-bright);
       }
 
-      .badge.ready::before {
+      .badge.ready::before,
+      .badge.verification::before {
         background: var(--violet);
         box-shadow: 0 0 14px rgba(169, 112, 255, 0.5);
       }
 
-      .badge.posted {
+      .badge.posted,
+      .badge.accepted {
         border-color: rgba(157, 232, 195, 0.3);
         color: #c5f5dc;
       }
 
-      .badge.posted::before {
+      .badge.posted::before,
+      .badge.accepted::before {
         background: var(--green);
+      }
+
+      .badge.publishing {
+        border-color: rgba(110, 231, 242, 0.3);
+        color: #c8fbff;
+      }
+
+      .badge.publishing::before {
+        background: var(--cyan);
+        box-shadow: 0 0 14px rgba(110, 231, 242, 0.5);
       }
 
       .badge.failed {
@@ -734,6 +812,133 @@
 
       .public-url-field {
         grid-column: 1 / 4;
+      }
+
+      .post-result {
+        margin-top: 12px;
+        border: 1px solid rgba(221, 207, 255, 0.14);
+        border-radius: 8px;
+        padding: 13px;
+        background:
+          linear-gradient(135deg, rgba(169, 112, 255, 0.12), rgba(255, 255, 255, 0.028)),
+          rgba(8, 8, 13, 0.78);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+      }
+
+      .post-result[data-tone="accepted"] {
+        border-color: rgba(157, 232, 195, 0.24);
+      }
+
+      .post-result[data-tone="failed"] {
+        border-color: rgba(255, 146, 151, 0.3);
+      }
+
+      .post-result[data-tone="publishing"] {
+        border-color: rgba(110, 231, 242, 0.26);
+      }
+
+      .result-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .result-kicker {
+        color: var(--quiet);
+        font-size: 11px;
+        font-weight: 820;
+        text-transform: uppercase;
+      }
+
+      .result-state {
+        display: block;
+        margin-top: 4px;
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 820;
+      }
+
+      .result-message {
+        margin-top: 9px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .result-meta {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .result-meta-row {
+        min-width: 0;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 8px;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .result-meta-row span,
+      .result-meta-row strong {
+        display: block;
+      }
+
+      .result-meta-row span {
+        color: var(--quiet);
+        font-size: 10px;
+        font-weight: 820;
+        text-transform: uppercase;
+      }
+
+      .result-meta-row strong,
+      .result-meta-row a {
+        margin-top: 5px;
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 760;
+        overflow-wrap: anywhere;
+      }
+
+      .result-tools {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .result-tools small {
+        color: var(--quiet);
+        font-size: 12px;
+      }
+
+      .response-details {
+        margin-top: 12px;
+      }
+
+      .response-details summary {
+        cursor: pointer;
+        color: var(--violet-bright);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .response-details pre {
+        max-height: 260px;
+        overflow: auto;
+        margin: 10px 0 0;
+        border: 1px solid rgba(255, 255, 255, 0.075);
+        border-radius: 8px;
+        padding: 12px;
+        background: rgba(0, 0, 0, 0.28);
+        color: #dfd7ee;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
 
       .ready-strip {
@@ -841,7 +1046,9 @@
         }
 
         .metrics,
-        .form-grid {
+        .form-grid,
+        .media-workflow,
+        .result-meta {
           grid-template-columns: 1fr;
         }
 
@@ -893,14 +1100,23 @@
           <div class="section-head">
             <h1>Today's post</h1>
             <% if (todayPost) { %>
-              <span class="badge <%= todayPost.status %>"><%= helpers.statusLabel(todayPost.status) %></span>
+              <% const todayResult = helpers.postResult(todayPost); %>
+              <span class="badge <%= todayResult.tone %>"><%= todayResult.stateLabel %></span>
             <% } %>
           </div>
 
           <% if (todayPost) { %>
-            <div class="today-content">
-              <a class="today-art" href="<%= todayPost.imagePath %>" target="_blank" rel="noreferrer">
-                <img src="<%= todayPost.imagePath %>" alt="<%= todayPost.originalName %>" />
+            <% const todayMediaPath = helpers.mediaPath(todayPost); %>
+            <% const todayMediaType = helpers.mediaType(todayPost); %>
+            <% const todayResult = helpers.postResult(todayPost); %>
+            <div class="today-content" data-post-card>
+              <a class="today-art" href="<%= todayMediaPath %>" target="_blank" rel="noreferrer">
+                <% if (todayMediaType === 'video') { %>
+                  <video src="<%= todayMediaPath %>" muted playsinline preload="metadata"></video>
+                <% } else { %>
+                  <img src="<%= todayMediaPath %>" alt="<%= todayPost.originalName %>" />
+                <% } %>
+                <span class="media-chip"><%= helpers.mediaWorkflowLabel(todayPost) %></span>
               </a>
               <div class="today-info">
                 <p class="muted"><%= helpers.formatTime(todayPost.scheduledAt) %></p>
@@ -910,10 +1126,10 @@
                 <% } %>
                 <textarea class="copy-cache" id="today-caption-<%= todayPost.id %>" readonly><%= helpers.fullCaption(todayPost) %></textarea>
                 <div class="actions">
-                  <a class="button secondary" href="<%= todayPost.imagePath %>" target="_blank" rel="noreferrer">Open image</a>
+                  <a class="button secondary" href="<%= todayMediaPath %>" target="_blank" rel="noreferrer"><%= helpers.mediaOpenLabel(todayPost) %></a>
                   <button type="button" class="secondary copy-button" data-target="today-caption-<%= todayPost.id %>">Copy caption</button>
                   <% if (todayPost.status !== 'posted') { %>
-                    <form class="inline-action" action="/posts/<%= todayPost.id %>/prepare" method="post">
+                    <form class="inline-action" action="/posts/<%= todayPost.id %>/prepare" method="post" data-publish-form>
                       <button type="submit" class="primary">Prepare now</button>
                     </form>
                     <form class="inline-action" action="/posts/<%= todayPost.id %>/posted" method="post">
@@ -921,6 +1137,43 @@
                     </form>
                   <% } %>
                 </div>
+                <% if (todayResult.hasAttempt) { %>
+                  <section class="post-result" data-tone="<%= todayResult.tone %>">
+                    <div class="result-head">
+                      <div>
+                        <span class="result-kicker">Post Result</span>
+                        <span class="result-state"><%= todayResult.stateLabel %></span>
+                      </div>
+                    </div>
+                    <p class="result-message"><%= todayResult.message %></p>
+                    <% if (todayResult.metadata.length > 0) { %>
+                      <div class="result-meta">
+                        <% todayResult.metadata.forEach(function(item) { %>
+                          <div class="result-meta-row">
+                            <span><%= item.label %></span>
+                            <% if (item.isUrl) { %>
+                              <a href="<%= item.value %>" target="_blank" rel="noreferrer"><%= item.value %></a>
+                            <% } else { %>
+                              <strong><%= item.value %></strong>
+                            <% } %>
+                          </div>
+                        <% }); %>
+                      </div>
+                    <% } %>
+                    <textarea class="copy-cache" id="today-debug-<%= todayPost.id %>" readonly><%= todayResult.debugJson %></textarea>
+                    <div class="result-tools">
+                      <button type="button" class="secondary compact copy-button" data-target="today-debug-<%= todayPost.id %>">Copy Debug Info</button>
+                      <button type="button" class="secondary compact" disabled>Check Status</button>
+                      <small>Status check not available yet.</small>
+                    </div>
+                    <% if (todayResult.hasDebug) { %>
+                      <details class="response-details">
+                        <summary>Response JSON</summary>
+                        <pre><%= todayResult.debugJson %></pre>
+                      </details>
+                    <% } %>
+                  </section>
+                <% } %>
               </div>
             </div>
           <% } else { %>
@@ -949,12 +1202,22 @@
             <h2>Upload</h2>
             <span class="muted">Batch</span>
           </div>
-          <form action="/upload" method="post" enctype="multipart/form-data">
+          <form action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
             <div class="form-grid">
               <label class="wide">
-                Images
-                <input type="file" name="images" accept="image/*" multiple required />
+                Media files
+                <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple required data-media-upload />
               </label>
+              <div class="media-workflow wide">
+                <div class="workflow-tile">
+                  <strong>Photo source</strong>
+                  <span>Image file now, HTTPS image URL before API publishing.</span>
+                </div>
+                <div class="workflow-tile">
+                  <strong>Video + audio</strong>
+                  <span>MP4, MOV, or WebM with the original audio intact.</span>
+                </div>
+              </div>
               <label>
                 Caption
                 <textarea name="caption" placeholder="Caption"></textarea>
@@ -1003,9 +1266,17 @@
         <% } %>
 
         <% posts.forEach(function(post, index) { %>
-          <article class="queue-card">
-            <a class="queue-thumb" href="<%= post.imagePath %>" target="_blank" rel="noreferrer">
-              <img src="<%= post.imagePath %>" alt="<%= post.originalName %>" loading="lazy" />
+          <% const mediaPath = helpers.mediaPath(post); %>
+          <% const mediaType = helpers.mediaType(post); %>
+          <% const result = helpers.postResult(post); %>
+          <article class="queue-card" data-post-card>
+            <a class="queue-thumb" href="<%= mediaPath %>" target="_blank" rel="noreferrer">
+              <% if (mediaType === 'video') { %>
+                <video src="<%= mediaPath %>" muted playsinline preload="metadata"></video>
+              <% } else { %>
+                <img src="<%= mediaPath %>" alt="<%= post.originalName %>" loading="lazy" />
+              <% } %>
+              <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
             </a>
 
             <div class="queue-main">
@@ -1015,10 +1286,17 @@
                   <h3><%= post.originalName %></h3>
                   <p class="queue-time"><%= helpers.formatDateTime(post.scheduledAt) %></p>
                 </div>
-                <span class="badge <%= post.status %>"><%= helpers.statusLabel(post.status) %></span>
+                <span class="badge <%= result.tone %>" data-result-badge><%= result.stateLabel %></span>
               </header>
 
-              <form class="edit-grid" action="/posts/<%= post.id %>" method="post">
+              <form
+                class="edit-grid"
+                action="/posts/<%= post.id %>"
+                method="post"
+                data-edit-form
+                data-media-type="<%= mediaType %>"
+                data-has-local-media="<%= helpers.hasLocalMedia(post) ? 'true' : 'false' %>"
+              >
                 <label>
                   Caption
                   <textarea name="caption"><%= post.caption || '' %></textarea>
@@ -1033,11 +1311,13 @@
                 </label>
                 <label class="public-url-field">
                   Public image URL
+                  <span class="field-note"><%= helpers.publicUrlNote(post) %></span>
                   <input
                     type="url"
                     name="publicImageUrl"
                     value="<%= post.publicImageUrl || '' %>"
-                    placeholder="https://chanterr.com/media/tiktok-posts/test-image.png"
+                    placeholder="<%= mediaType === 'video' ? 'Not required for video posts' : 'https://chanterr.com/media/tiktok-posts/test-image.png' %>"
+                    data-public-image-url
                   />
                 </label>
                 <div class="save-slot">
@@ -1050,11 +1330,53 @@
                   <strong>Ready to post</strong>
                   <textarea class="caption-copy" id="caption-<%= post.id %>" readonly><%= helpers.fullCaption(post) %></textarea>
                   <div class="actions">
-                    <a class="button secondary" href="<%= post.imagePath %>" target="_blank" rel="noreferrer">Open image</a>
+                    <a class="button secondary" href="<%= mediaPath %>" target="_blank" rel="noreferrer"><%= helpers.mediaOpenLabel(post) %></a>
                     <button type="button" class="secondary copy-button" data-target="caption-<%= post.id %>">Copy caption</button>
                   </div>
                 </div>
               <% } %>
+
+              <section class="post-result" data-tone="<%= result.tone %>" data-result-panel>
+                <div class="result-head">
+                  <div>
+                    <span class="result-kicker">Post Result</span>
+                    <span class="result-state" data-result-state><%= result.stateLabel %></span>
+                  </div>
+                </div>
+                <p class="result-message" data-result-message><%= result.message %></p>
+                <% if (result.metadata.length > 0) { %>
+                  <div class="result-meta">
+                    <% result.metadata.forEach(function(item) { %>
+                      <div class="result-meta-row">
+                        <span><%= item.label %></span>
+                        <% if (item.isUrl) { %>
+                          <a href="<%= item.value %>" target="_blank" rel="noreferrer"><%= item.value %></a>
+                        <% } else { %>
+                          <strong><%= item.value %></strong>
+                        <% } %>
+                      </div>
+                    <% }); %>
+                  </div>
+                <% } %>
+                <% if (result.hasDebug) { %>
+                  <textarea class="copy-cache" id="debug-<%= post.id %>" readonly><%= result.debugJson %></textarea>
+                <% } %>
+                <div class="result-tools">
+                  <% if (result.hasDebug) { %>
+                    <button type="button" class="secondary compact copy-button" data-target="debug-<%= post.id %>">Copy Debug Info</button>
+                  <% } else { %>
+                    <button type="button" class="secondary compact" disabled>Copy Debug Info</button>
+                  <% } %>
+                  <button type="button" class="secondary compact" disabled>Check Status</button>
+                  <small>Status check not available yet.</small>
+                </div>
+                <% if (result.hasDebug) { %>
+                  <details class="response-details">
+                    <summary>Response JSON</summary>
+                    <pre><%= result.debugJson %></pre>
+                  </details>
+                <% } %>
+              </section>
 
               <div class="card-actions">
                 <form class="inline-action" action="/posts/<%= post.id %>/move" method="post">
@@ -1066,7 +1388,7 @@
                   <button type="submit" class="secondary">Move down</button>
                 </form>
                 <% if (post.status !== 'posted') { %>
-                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post">
+                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form>
                     <button type="submit" class="primary">Prepare now</button>
                   </form>
                   <form class="inline-action" action="/posts/<%= post.id %>/posted" method="post">
@@ -1089,17 +1411,119 @@
     </main>
 
     <script>
+      function copyText(value) {
+        if (navigator.clipboard && window.isSecureContext) {
+          return navigator.clipboard.writeText(value);
+        }
+
+        const fallback = document.createElement('textarea');
+        fallback.value = value;
+        fallback.setAttribute('readonly', '');
+        fallback.style.position = 'fixed';
+        fallback.style.opacity = '0';
+        document.body.appendChild(fallback);
+        fallback.select();
+        document.execCommand('copy');
+        fallback.remove();
+        return Promise.resolve();
+      }
+
       document.querySelectorAll('.copy-button').forEach((button) => {
         button.addEventListener('click', async () => {
           const target = document.getElementById(button.dataset.target);
           if (!target) return;
 
-          await navigator.clipboard.writeText(target.value);
+          await copyText(target.value);
           const originalText = button.textContent;
           button.textContent = 'Copied';
           window.setTimeout(() => {
             button.textContent = originalText;
           }, 1200);
+        });
+      });
+
+      function getFileKind(file) {
+        const type = String(file.type || '').toLowerCase();
+        const name = String(file.name || '').toLowerCase();
+
+        if (type.startsWith('image/')) return 'photo';
+        if (type.startsWith('video/')) return 'video';
+        if (/\.(png|jpe?g|webp|gif)$/i.test(name)) return 'photo';
+        if (/\.(mp4|mov|webm)$/i.test(name)) return 'video';
+        return '';
+      }
+
+      document.querySelectorAll('[data-upload-form]').forEach((form) => {
+        const input = form.querySelector('[data-media-upload]');
+        if (!input) return;
+
+        const validateUpload = () => {
+          const files = Array.from(input.files || []);
+          let message = '';
+
+          if (files.length === 0) {
+            message = 'Choose at least one image or video file.';
+          } else if (files.some((file) => !getFileKind(file))) {
+            message = 'Use image files or MP4, MOV, or WebM video files.';
+          }
+
+          input.setCustomValidity(message);
+          return !message;
+        };
+
+        input.addEventListener('change', validateUpload);
+        form.addEventListener('submit', (event) => {
+          if (!validateUpload()) {
+            event.preventDefault();
+            input.reportValidity();
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-edit-form]').forEach((form) => {
+        const input = form.querySelector('[data-public-image-url]');
+        if (!input) return;
+
+        const validatePostMedia = () => {
+          const mediaType = form.dataset.mediaType;
+          const hasLocalMedia = form.dataset.hasLocalMedia === 'true';
+          const hasPublicImageUrl = input.value.trim().length > 0;
+          const missingPhotoSource = mediaType === 'photo' && !hasLocalMedia && !hasPublicImageUrl;
+
+          input.setCustomValidity(missingPhotoSource ? 'Add an image file or public image URL for photo posts.' : '');
+          return !missingPhotoSource;
+        };
+
+        input.addEventListener('input', validatePostMedia);
+        form.addEventListener('submit', (event) => {
+          if (!validatePostMedia()) {
+            event.preventDefault();
+            input.reportValidity();
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-publish-form]').forEach((form) => {
+        form.addEventListener('submit', () => {
+          const card = form.closest('[data-post-card]');
+          const panel = card ? card.querySelector('[data-result-panel]') : null;
+          const badge = card ? card.querySelector('[data-result-badge]') : null;
+          const state = card ? card.querySelector('[data-result-state]') : null;
+          const message = card ? card.querySelector('[data-result-message]') : null;
+          const button = form.querySelector('button');
+
+          if (button) {
+            button.disabled = true;
+            button.textContent = 'Publishing';
+          }
+
+          if (panel) panel.dataset.tone = 'publishing';
+          if (badge) {
+            badge.className = 'badge publishing';
+            badge.textContent = 'Publishing';
+          }
+          if (state) state.textContent = 'Publishing';
+          if (message) message.textContent = 'Publishing to TikTok. Large videos can take a moment.';
         });
       });
     </script>

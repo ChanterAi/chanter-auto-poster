@@ -217,6 +217,16 @@ async function postVideoInitPayload(payload, accessToken) {
       };
     }
 
+    const apiError = getTikTokApiError(body);
+    if (apiError) {
+      return {
+        ok: false,
+        mode: 'api',
+        reason: apiError,
+        response: body
+      };
+    }
+
     return {
       ok: true,
       mode: 'api',
@@ -386,6 +396,16 @@ async function postPhotoPayload(payload, accessToken) {
       };
     }
 
+    const apiError = getTikTokApiError(body);
+    if (apiError) {
+      return {
+        ok: false,
+        mode: 'api',
+        reason: apiError,
+        response: body
+      };
+    }
+
     return {
       ok: true,
       mode: 'api',
@@ -442,6 +462,24 @@ function normalizeTokenResponse(body, previous = {}) {
 function getTikTokErrorMessage(body, fallback) {
   if (!body || typeof body !== 'object') return fallback;
   return body.error_description || body.message || body.error || fallback;
+}
+
+function getTikTokApiError(body) {
+  if (!body || typeof body !== 'object') return '';
+
+  const error = body.error;
+  if (!error) return '';
+
+  if (typeof error === 'string') {
+    return error.toLowerCase() === 'ok' ? '' : error;
+  }
+
+  if (typeof error !== 'object') return '';
+
+  const code = String(error.code || '').toLowerCase();
+  if (!code || code === 'ok' || code === 'success') return '';
+
+  return error.message || error.description || `TikTok API returned ${error.code}`;
 }
 
 function isUsablePublicUrl(value) {

@@ -42,7 +42,29 @@ async function processPost(id) {
     return { ok: false, reason: 'Post not found' };
   }
 
-  const result = await publishPhotoPost(post);
+  const startedAt = new Date().toISOString();
+  storage.updatePost(id, {
+    status: 'publishing',
+    lastResult: {
+      ok: null,
+      mode: 'api',
+      reason: 'Publishing to TikTok',
+      startedAt
+    }
+  });
+
+  let result;
+  try {
+    result = await publishPhotoPost(post);
+  } catch (error) {
+    result = {
+      ok: false,
+      mode: 'api',
+      reason: error.message || 'Unexpected publish error',
+      response: error.response || null
+    };
+  }
+
   const now = new Date().toISOString();
 
   if (result.ok) {
@@ -50,7 +72,10 @@ async function processPost(id) {
       status: 'posted',
       postedAt: now,
       readyAt: null,
-      lastResult: result
+      lastResult: {
+        ...result,
+        completedAt: now
+      }
     });
     return { ok: true, mode: result.mode, postId: id };
   }
@@ -59,14 +84,20 @@ async function processPost(id) {
     storage.updatePost(id, {
       status: 'ready',
       readyAt: now,
-      lastResult: result
+      lastResult: {
+        ...result,
+        completedAt: now
+      }
     });
     return { ok: false, mode: 'manual', postId: id, reason: result.reason };
   }
 
   storage.updatePost(id, {
     status: 'failed',
-    lastResult: result
+    lastResult: {
+      ...result,
+      completedAt: now
+    }
   });
   return { ok: false, mode: result.mode || 'api', postId: id, reason: result.reason };
 }

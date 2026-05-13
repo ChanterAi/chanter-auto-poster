@@ -167,12 +167,12 @@ router.post('/posts/:id/move', (req, res) => {
 router.post('/posts/:id/prepare', async (req, res) => {
   const result = await scheduler.processPost(req.params.id);
   if (result.ok) {
-    redirectWithNotice(res, 'Sent to TikTok.');
+    redirectWithNotice(res, 'TikTok accepted the publish request. Review Post Result for details.');
     return;
   }
 
   if (result.mode === 'manual') {
-    redirectWithNotice(res, 'Ready to post.');
+    redirectWithNotice(res, 'Needs manual verification. Review Post Result for details.');
     return;
   }
 
@@ -180,9 +180,17 @@ router.post('/posts/:id/prepare', async (req, res) => {
 });
 
 router.post('/posts/:id/posted', (req, res) => {
+  const now = new Date().toISOString();
   storage.updatePost(req.params.id, {
     status: 'posted',
-    postedAt: new Date().toISOString()
+    postedAt: now,
+    readyAt: null,
+    lastResult: {
+      ok: true,
+      mode: 'manual',
+      reason: 'Marked posted manually',
+      completedAt: now
+    }
   });
   redirectWithNotice(res, 'Marked posted.');
 });
@@ -191,7 +199,8 @@ router.post('/posts/:id/pending', (req, res) => {
   storage.updatePost(req.params.id, {
     status: 'pending',
     postedAt: null,
-    readyAt: null
+    readyAt: null,
+    lastResult: null
   });
   redirectWithNotice(res, 'Back to pending.');
 });
@@ -251,6 +260,39 @@ function getTodayPost(posts) {
 }
 
 const viewHelpers = {
+  mediaType(post) {
+    return getPostMediaType(post);
+  },
+  mediaPath(post) {
+    return getPostMediaPath(post);
+  },
+  mediaLabel(post) {
+    return getPostMediaType(post) === 'video' ? 'Video' : 'Image';
+  },
+  mediaOpenLabel(post) {
+    return getPostMediaType(post) === 'video' ? 'Open video' : 'Open image';
+  },
+  mediaWorkflowLabel(post) {
+    return getPostMediaType(post) === 'video' ? 'Video + original audio' : 'Photo source';
+  },
+  publicUrlNote(post) {
+    return getPostMediaType(post) === 'video'
+      ? 'Not needed for video uploads.'
+      : 'HTTPS source for photo API publishing.';
+  },
+  hasLocalMedia(post) {
+    return Boolean(getPostMediaPath(post));
+  },
+  hasPublishablePhotoSource(post) {
+    if (getPostMediaType(post) !== 'photo') return true;
+    return Boolean(tiktok.getPublicImageUrl(post));
+  },
+  postResult(post) {
+    return buildPostResultView(post);
+  },
+  resultDebugJson(post) {
+    return getDebugJson(post);
+  },
   formatDateTime(value) {
     if (!value) return 'Not scheduled';
     return new Intl.DateTimeFormat(undefined, {
@@ -275,9 +317,169 @@ const viewHelpers = {
     return tiktok.buildCaption(post);
   },
   statusLabel(status) {
-    const value = String(status || 'pending');
-    return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+    return statusLabel(status);
   }
 };
+
+function getPostMediaType(post) {
+  const mediaType = String((post && post.mediaType) || '').toLowerCase();
+  if (mediaType === 'video') return 'video';
+
+  const fileName = String((post && (post.fileName || post.mediaPath || post.videoPath)) || '').toLowerCase();
+  if (['.mp4', '.mov', '.webm'].some((extension) => fileName.endsWith(extension))) {
+    return 'video';
+  }
+
+  return 'photo';
+}
+
+function getPostMediaPath(post) {
+  if (!post) return '';
+  if (getPostMediaType(post) === 'video') {
+    return post.videoPath || post.mediaPath || post.imagePath || '';
+  }
+
+  return post.imagePath || post.mediaPath || '';
+}
+
+function buildPostResultView(post) {
+  const lastResult = post && post.lastResult ? post.lastResult : null;
+  const responseSource = lastResult ? lastResult.response || lastResult : null;
+  const metadata = getPublishMetadata(responseSource);
+  const shareUrl = getFirstValue(responseSource, [
+    'share_url',
+    'shareUrl',
+    'post_url',
+    'postUrl',
+    'permalink',
+    'public_url',
+    'publicUrl'
+  ]);
+  const publishId = getFirstValue(responseSource, ['publish_id', 'publishId']);
+  const status = String((post && post.status) || 'pending').toLowerCase();
+  const isApiAccepted = Boolean(lastResult && lastResult.ok && lastResult.mode === 'api');
+  const debugJson = getDebugJson(post);
+
+  let stateLabel = 'Scheduled';
+  let tone = 'scheduled';
+  let message = post && post.scheduledAt
+    ? `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}.`
+    : 'Waiting for a schedule time.';
+
+  if (status === 'publishing') {
+    stateLabel = 'Publishing';
+    tone = 'publishing';
+    message = 'Publishing to TikTok. Large videos can take a moment.';
+  } else if (status === 'failed' || (lastResult && lastResult.ok === false && lastResult.mode !== 'manual')) {
+    stateLabel = 'Failed';
+    tone = 'failed';
+    message = (lastResult && lastResult.reason) || 'TikTok rejected the publish request.';
+  } else if (status === 'ready' || (lastResult && lastResult.mode === 'manual' && status !== 'posted')) {
+    stateLabel = 'Needs manual verification';
+    tone = 'verification';
+    message = (lastResult && lastResult.reason) || 'Open the media and verify or post inside TikTok.';
+  } else if (status === 'posted' && isApiAccepted) {
+    stateLabel = 'Posted / API accepted';
+    tone = shareUrl ? 'accepted' : 'verification';
+    message = shareUrl
+      ? 'TikTok returned a public post URL.'
+      : 'TikTok accepted the publish request, but no public post URL was returned. Please verify inside TikTok.';
+  } else if (status === 'posted') {
+    stateLabel = 'Posted manually';
+    tone = 'accepted';
+    message = (lastResult && lastResult.reason) || 'This item was marked posted manually.';
+  }
+
+  return {
+    stateLabel,
+    tone,
+    message,
+    metadata,
+    shareUrl,
+    publishId,
+    debugJson,
+    hasDebug: Boolean(debugJson),
+    hasAttempt: Boolean(lastResult),
+    statusCheckAvailable: false
+  };
+}
+
+function getPublishMetadata(source) {
+  if (!source) return [];
+
+  const rows = [
+    ['Publish ID', getFirstValue(source, ['publish_id', 'publishId'])],
+    ['Post ID', getFirstValue(source, ['post_id', 'postId', 'item_id', 'itemId', 'video_id', 'videoId'])],
+    ['Share URL', getFirstValue(source, ['share_url', 'shareUrl', 'post_url', 'postUrl', 'permalink', 'public_url', 'publicUrl'])],
+    ['Status', getFirstValue(source, ['status', 'publish_status', 'publishStatus'])],
+    ['Log ID', getFirstValue(source, ['log_id', 'logId'])]
+  ];
+
+  return rows
+    .filter((row) => row[1] !== undefined && row[1] !== null && String(row[1]).trim() !== '')
+    .map(([label, value]) => ({
+      label,
+      value: formatMetadataValue(value),
+      isUrl: isHttpUrl(value)
+    }));
+}
+
+function getFirstValue(source, keys) {
+  const found = findValuesByKeys(source, new Set(keys.map((key) => key.toLowerCase())));
+  return found.length > 0 ? found[0] : '';
+}
+
+function findValuesByKeys(value, keySet, found = []) {
+  if (!value || typeof value !== 'object') return found;
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => findValuesByKeys(item, keySet, found));
+    return found;
+  }
+
+  Object.entries(value).forEach(([key, nestedValue]) => {
+    if (keySet.has(key.toLowerCase())) {
+      found.push(nestedValue);
+    }
+
+    if (nestedValue && typeof nestedValue === 'object') {
+      findValuesByKeys(nestedValue, keySet, found);
+    }
+  });
+
+  return found;
+}
+
+function formatMetadataValue(value) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+}
+
+function getDebugJson(post) {
+  if (!post || !post.lastResult) return '';
+  return JSON.stringify(post.lastResult, null, 2);
+}
+
+function statusLabel(status) {
+  const labels = {
+    pending: 'Scheduled',
+    publishing: 'Publishing',
+    ready: 'Needs manual verification',
+    posted: 'Posted',
+    failed: 'Failed'
+  };
+  const value = String(status || 'pending').toLowerCase();
+  return labels[value] || `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+}
 
 module.exports = router;
