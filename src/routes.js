@@ -150,7 +150,7 @@ router.post('/schedule', (req, res) => {
 });
 
 router.post('/posts/:id', (req, res) => {
-  const scheduledAt = parseDateTimeLocal(req.body.scheduledAt);
+  const scheduledAt = parseDateTimeLocal(req.body.scheduledAt, req.body.timezoneOffsetMinutes);
   storage.updatePost(req.params.id, {
     caption: String(req.body.caption || '').trim(),
     hashtags: String(req.body.hashtags || '').trim(),
@@ -260,11 +260,32 @@ function parseCookies(header) {
     }, {});
 }
 
-function parseDateTimeLocal(value) {
+function parseDateTimeLocal(value, timezoneOffsetMinutes) {
   if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toISOString();
+
+  const fallback = () => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString();
+  };
+
+  if (timezoneOffsetMinutes === undefined || timezoneOffsetMinutes === null || timezoneOffsetMinutes === '') {
+    return fallback();
+  }
+
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!match) return fallback();
+
+  const [, year, month, day, hour, minute] = match;
+  const offsetMinutes = Number(timezoneOffsetMinutes);
+  if (!Number.isFinite(offsetMinutes)) return fallback();
+
+  const utcTimestamp =
+    Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute)) +
+    offsetMinutes * 60000;
+
+  if (!Number.isFinite(utcTimestamp)) return null;
+  return new Date(utcTimestamp).toISOString();
 }
 
 function getTodayPost(posts) {

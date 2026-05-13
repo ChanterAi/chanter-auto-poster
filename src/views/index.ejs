@@ -972,10 +972,12 @@
                 >
                   <input type="hidden" name="caption" value="<%= post.caption || '' %>" />
                   <input type="hidden" name="hashtags" value="<%= post.hashtags || '' %>" />
+                  <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
                   <div class="schedule-row">
                     <label>
                       Date
                       <span class="field-note">Publishes automatically at this time.</span>
+                      <span class="field-note">Uses your local time.</span>
                       <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
                     </label>
                     <label>
@@ -1152,6 +1154,10 @@
             input.reportValidity();
           }
         });
+      });
+
+      document.querySelectorAll('[data-timezone-offset]').forEach((input) => {
+        input.value = String(new Date().getTimezoneOffset());
       });
 
       document.querySelectorAll('[data-edit-form]').forEach((form) => {
