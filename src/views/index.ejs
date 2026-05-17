@@ -6,523 +6,458 @@
     <title><%= appName %></title>
     <style>
       :root {
-        color-scheme: dark;
-        --bg: #050506;
-        --surface: rgba(13, 13, 18, 0.86);
-        --surface-strong: rgba(18, 18, 24, 0.94);
-        --field: rgba(255, 255, 255, 0.055);
-        --ink: #fbf7ff;
-        --text: #e9e3f1;
-        --muted: #aca2b8;
-        --quiet: #777080;
-        --line: rgba(226, 211, 255, 0.12);
-        --line-strong: rgba(226, 211, 255, 0.24);
-        --violet: #a970ff;
-        --violet-bright: #d8c2ff;
-        --cyan: #6ee7f2;
-        --green: #9de8c3;
-        --amber: #ffd17a;
-        --red: #ff9297;
-        --shadow: 0 28px 80px rgba(0, 0, 0, 0.58);
-        --shadow-soft: 0 16px 38px rgba(0, 0, 0, 0.36);
+        --bg: #030303;
+        --surface: rgba(255, 255, 255, 0.02);
+        --surface-raised: rgba(255, 255, 255, 0.04);
+        --border: rgba(255, 255, 255, 0.06);
+        --border-hover: rgba(255, 255, 255, 0.1);
+        --violet: #7c3aed;
+        --violet-bright: #8b5cf6;
+        --violet-glow: rgba(124, 58, 237, 0.25);
+        --text: #fafafa;
+        --text-secondary: #a1a1aa;
+        --text-muted: #71717a;
+        --danger: #ef4444;
+        --danger-muted: rgba(239, 68, 68, 0.12);
+        --warning: #eab308;
+        --warning-muted: rgba(234, 179, 8, 0.12);
+        --success: #22c55e;
+        --success-muted: rgba(34, 197, 94, 0.12);
+        --radius: 16px;
+        --radius-sm: 10px;
       }
 
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
 
-      html {
-        background: var(--bg);
-      }
+      html { background: var(--bg); }
 
       body {
-        min-height: 100vh;
-        margin: 0;
-        background:
-          linear-gradient(180deg, rgba(169, 112, 255, 0.12), rgba(5, 5, 6, 0) 260px),
-          linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent 38%, rgba(169, 112, 255, 0.035)),
-          var(--bg);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         color: var(--text);
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
       }
 
       body::before {
+        content: "";
         position: fixed;
         inset: 0;
-        z-index: -1;
-        content: "";
-        background-image:
-          linear-gradient(rgba(255, 255, 255, 0.024) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
-        background-size: 64px 64px;
-        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.52), transparent 72%);
+        z-index: 0;
+        background:
+          radial-gradient(ellipse 80% 50% at 50% -10%, rgba(124, 58, 237, 0.07), transparent),
+          radial-gradient(ellipse 60% 40% at 80% 80%, rgba(124, 58, 237, 0.03), transparent);
         pointer-events: none;
       }
 
-      a {
-        color: inherit;
-      }
-
-      h1,
-      h2,
-      h3,
-      p {
-        margin: 0;
-      }
-
-      .shell {
-        width: min(1040px, calc(100% - 36px));
+      .app {
+        position: relative;
+        z-index: 1;
+        max-width: 1100px;
         margin: 0 auto;
-        padding: 22px 0 64px;
+        padding: 28px 24px 80px;
       }
 
-      .top-status {
+      /* Topbar */
+      .topbar {
+        margin-bottom: 28px;
+      }
+
+      .topbar-inner {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 18px;
-        margin-bottom: 28px;
-        padding: 12px;
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background: rgba(5, 5, 8, 0.82);
-        box-shadow: var(--shadow-soft);
-        backdrop-filter: blur(22px);
+        gap: 16px;
+        padding: 14px 18px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        backdrop-filter: blur(24px);
       }
 
       .brand {
-        display: inline-flex;
+        display: flex;
         align-items: center;
-        gap: 13px;
-        min-width: 0;
+        gap: 14px;
       }
 
-      .brand-logo {
-        width: 58px;
-        height: 58px;
-        flex: 0 0 auto;
-        border: 1px solid rgba(216, 194, 255, 0.34);
-        border-radius: 12px;
-        background: #08070b;
-        box-shadow:
-          inset 0 0 0 1px rgba(255, 255, 255, 0.05),
-          0 0 32px rgba(169, 112, 255, 0.25);
-        object-fit: cover;
-      }
-
-      .brand-text {
+      .brand-mark {
+        width: 38px;
+        height: 38px;
+        border-radius: 10px;
+        background: linear-gradient(135deg, var(--violet), #4c1d95);
+        box-shadow: 0 0 20px var(--violet-glow);
         display: grid;
-        gap: 3px;
-        min-width: 0;
+        place-items: center;
+      }
+
+      .brand-mark::after {
+        content: "C";
+        font-weight: 800;
+        font-size: 17px;
+        color: white;
       }
 
       .brand-title {
-        color: var(--ink);
-        font-size: 15px;
-        font-weight: 820;
-        line-height: 1.15;
-        overflow-wrap: anywhere;
+        font-size: 17px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--text);
+        line-height: 1.2;
       }
 
-      .brand-kicker,
-      .muted {
-        color: var(--quiet);
-        font-size: 12px;
-        font-weight: 680;
+      .brand-sub {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
       }
 
-      .status-actions,
-      .actions,
-      .card-actions {
+      .topbar-actions {
         display: flex;
         align-items: center;
+        gap: 10px;
         flex-wrap: wrap;
-        gap: 9px;
       }
 
-      .status-actions {
-        justify-content: flex-end;
-      }
-
-      .form-actions {
-        margin-top: 14px;
-      }
-
-      .form-actions.tight {
-        margin-top: 10px;
-      }
-
-      .connection-pill {
+      /* Pills */
+      .pill {
         display: inline-flex;
         align-items: center;
         gap: 8px;
-        min-height: 38px;
-        border: 1px solid var(--line);
+        padding: 6px 12px;
         border-radius: 999px;
-        padding: 8px 13px;
-        background: rgba(255, 255, 255, 0.045);
-        color: var(--muted);
-        font-size: 13px;
-        font-weight: 760;
+        font-size: 12px;
+        font-weight: 700;
+        border: 1px solid var(--border);
+        background: var(--surface-raised);
+        color: var(--text-secondary);
         white-space: nowrap;
       }
 
-      .connection-pill::before,
-      .badge::before {
-        width: 7px;
-        height: 7px;
+      .pill-connected {
+        border-color: rgba(34, 197, 94, 0.25);
+        background: var(--success-muted);
+        color: var(--success);
+      }
+
+      .pill-offline {
+        border-color: rgba(234, 179, 8, 0.25);
+        background: var(--warning-muted);
+        color: var(--warning);
+      }
+
+      .pill-creator {
+        padding: 4px 12px 4px 4px;
+        gap: 8px;
+      }
+
+      .pill-creator img {
+        width: 22px;
+        height: 22px;
         border-radius: 50%;
-        content: "";
+        object-fit: cover;
+        background: var(--surface);
       }
 
-      .connection-pill.is-connected {
-        border-color: rgba(110, 231, 242, 0.26);
-        background: rgba(110, 231, 242, 0.08);
-        color: #c8fbff;
+      .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 10px currentColor;
       }
 
-      .connection-pill.is-connected::before {
-        background: var(--cyan);
-        box-shadow: 0 0 16px rgba(110, 231, 242, 0.62);
-      }
-
-      .connection-pill.is-offline::before {
-        background: var(--amber);
-        box-shadow: 0 0 16px rgba(255, 209, 122, 0.38);
-      }
-
-      .creator-pill {
+      /* Buttons */
+      .btn {
         display: inline-flex;
         align-items: center;
-        gap: 9px;
-        min-height: 38px;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        padding: 5px 12px 5px 6px;
-        background: rgba(255, 255, 255, 0.045);
+        justify-content: center;
+        gap: 6px;
+        height: 36px;
+        padding: 0 14px;
+        border-radius: var(--radius-sm);
+        font-size: 13px;
+        font-weight: 700;
+        border: 1px solid transparent;
+        cursor: pointer;
+        text-decoration: none;
+        transition: all 0.2s ease;
+        background: none;
+        color: inherit;
+        font-family: inherit;
       }
 
-      .creator-avatar {
-        width: 28px;
-        height: 28px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.08);
-        object-fit: cover;
+      .btn-primary {
+        background: var(--violet);
+        color: white;
+        box-shadow: 0 4px 16px var(--violet-glow);
       }
 
-      .creator-name {
-        display: grid;
-        gap: 1px;
-        min-width: 0;
+      .btn-primary:hover {
+        background: var(--violet-bright);
+        transform: translateY(-1px);
+        box-shadow: 0 6px 22px var(--violet-glow);
       }
 
-      .creator-name strong,
-      .creator-name span {
-        max-width: 180px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+      .btn-ghost {
+        border-color: var(--border);
+        color: var(--text-secondary);
+        background: transparent;
       }
 
-      .creator-name strong {
-        color: var(--ink);
-        font-size: 12px;
-        line-height: 1.1;
+      .btn-ghost:hover {
+        border-color: var(--border-hover);
+        background: var(--surface-raised);
+        color: var(--text);
       }
 
-      .creator-name span {
-        color: var(--muted);
-        font-size: 11px;
+      .btn-danger {
+        border-color: rgba(239, 68, 68, 0.25);
+        color: #fca5a5;
+        background: transparent;
       }
 
+      .btn-danger:hover {
+        background: var(--danger-muted);
+        border-color: rgba(239, 68, 68, 0.4);
+      }
+
+      .btn-secondary {
+        border-color: var(--border);
+        color: var(--text-secondary);
+        background: transparent;
+      }
+
+      .btn-secondary:hover {
+        border-color: var(--border-hover);
+        background: var(--surface-raised);
+        color: var(--text);
+      }
+
+      /* Notice */
       .notice {
-        margin-bottom: 18px;
-        border: 1px solid rgba(169, 112, 255, 0.28);
-        border-radius: 10px;
-        padding: 12px 14px;
-        background: rgba(169, 112, 255, 0.09);
-        color: var(--ink);
+        margin-bottom: 24px;
+        padding: 14px 18px;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(139, 92, 246, 0.2);
+        background: rgba(124, 58, 237, 0.08);
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 500;
       }
 
-      .main-grid {
+      /* Layout */
+      .dashboard-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
-        gap: 18px;
-        align-items: start;
-        margin-bottom: 28px;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 20px;
+        margin-bottom: 32px;
       }
 
-      .panel,
-      .queue-card,
-      .history-section {
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background:
-          linear-gradient(180deg, rgba(255, 255, 255, 0.036), transparent),
-          var(--surface);
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(18px);
-      }
-
+      /* Panels */
       .panel {
-        padding: 22px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px;
+        backdrop-filter: blur(24px);
       }
 
-      .panel-head,
-      .queue-head,
-      .history-section summary {
+      .panel-head {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 12px;
+        margin-bottom: 20px;
       }
 
-      .panel-head,
-      .queue-head {
-        margin-bottom: 16px;
-      }
-
-      .panel-head h2,
-      .queue-head h2 {
-        color: var(--ink);
+      .panel-head h2 {
         font-size: 16px;
-        line-height: 1.2;
-        letter-spacing: 0;
+        font-weight: 800;
+        letter-spacing: -0.01em;
       }
 
+      .panel-meta {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* Forms */
       .form-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 12px;
+        gap: 16px;
       }
 
-      .form-grid .wide,
-      .advanced {
+      .form-grid .wide {
         grid-column: 1 / -1;
       }
 
       label {
         display: grid;
         gap: 8px;
-        color: var(--quiet);
         font-size: 11px;
-        font-weight: 820;
+        font-weight: 700;
         text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--text-muted);
       }
 
-      input,
-      select,
-      textarea,
-      button,
-      .button {
-        font: inherit;
+      .field-note {
+        display: block;
+        font-size: 12px;
+        font-weight: 500;
+        text-transform: none;
+        color: var(--text-muted);
+        letter-spacing: 0;
+        line-height: 1.4;
       }
 
       input,
       select,
       textarea {
         width: 100%;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        outline: none;
-        background: var(--field);
-        color: var(--ink);
-        transition:
-          border-color 160ms ease,
-          background 160ms ease,
-          box-shadow 160ms ease;
-      }
-
-      input {
-        min-height: 44px;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
         padding: 10px 12px;
-      }
-
-      select {
-        min-height: 44px;
-        padding: 10px 34px 10px 12px;
-      }
-
-      input[type="file"] {
-        min-height: 56px;
-        padding: 13px;
-        color: var(--muted);
-        background: rgba(255, 255, 255, 0.06);
-      }
-
-      input[type="file"]::file-selector-button {
-        margin-right: 12px;
-        border: 1px solid rgba(216, 194, 255, 0.28);
-        border-radius: 9px;
-        padding: 8px 11px;
-        background: rgba(216, 194, 255, 0.11);
-        color: var(--ink);
-        cursor: pointer;
-      }
-
-      textarea {
-        min-height: 88px;
-        padding: 12px;
-        resize: vertical;
-      }
-
-      input::placeholder,
-      textarea::placeholder {
-        color: #6f6878;
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+        outline: none;
+        transition: all 0.2s ease;
       }
 
       input:focus,
       select:focus,
       textarea:focus {
-        border-color: rgba(169, 112, 255, 0.58);
-        background: rgba(255, 255, 255, 0.075);
-        box-shadow: 0 0 0 3px rgba(169, 112, 255, 0.13);
+        border-color: var(--violet);
+        box-shadow: 0 0 0 3px var(--violet-glow);
       }
 
-      .field-note {
-        color: var(--quiet);
-        font-size: 12px;
-        font-weight: 650;
-        line-height: 1.35;
-        text-transform: none;
+      input::placeholder,
+      textarea::placeholder {
+        color: var(--text-muted);
       }
 
-      button,
-      .button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 42px;
-        border: 1px solid transparent;
-        border-radius: 10px;
-        padding: 10px 15px;
+      input[type="file"] {
+        padding: 12px;
         cursor: pointer;
-        font-weight: 820;
-        text-decoration: none;
-        white-space: nowrap;
-        transition:
-          transform 160ms ease,
-          border-color 160ms ease,
-          background 160ms ease,
-          color 160ms ease,
-          box-shadow 160ms ease;
+        min-height: 56px;
       }
 
-      button:hover,
-      .button:hover {
-        transform: translateY(-1px);
+      input[type="file"]::file-selector-button {
+        margin-right: 12px;
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--surface-raised);
+        color: var(--text-secondary);
+        font-weight: 600;
+        cursor: pointer;
       }
 
-      button:focus-visible,
-      .button:focus-visible {
-        outline: 2px solid rgba(216, 194, 255, 0.82);
-        outline-offset: 2px;
+      textarea {
+        min-height: 80px;
+        resize: vertical;
       }
 
-      button:disabled {
-        cursor: not-allowed;
-        opacity: 0.5;
-        transform: none;
+      select {
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2371717a' stroke-width='1.5' fill='none' fill-rule='evenodd'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 12px center;
+        padding-right: 32px;
       }
 
-      .primary {
-        background: linear-gradient(180deg, #e0cbff, var(--violet));
-        color: #0a0712;
-        box-shadow: 0 12px 26px rgba(169, 112, 255, 0.28);
+      .actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 16px;
+        flex-wrap: wrap;
       }
 
-      .primary:hover {
-        background: linear-gradient(180deg, #efe5ff, #b884ff);
-        box-shadow: 0 14px 32px rgba(169, 112, 255, 0.36);
+      .actions .btn {
+        height: 40px;
+        padding: 0 18px;
       }
 
-      .secondary {
-        border-color: var(--line);
-        background: rgba(255, 255, 255, 0.048);
-        color: var(--ink);
+      /* Queue */
+      .queue-section {
+        margin-bottom: 32px;
       }
 
-      .secondary:hover {
-        border-color: var(--line-strong);
-        background: rgba(255, 255, 255, 0.082);
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 20px;
       }
 
-      .danger {
-        border-color: rgba(255, 146, 151, 0.34);
-        background: rgba(255, 146, 151, 0.075);
-        color: #ffc1c4;
+      .section-head h2 {
+        font-size: 18px;
+        font-weight: 800;
       }
 
-      .danger:hover {
-        border-color: rgba(255, 146, 151, 0.58);
-        background: rgba(255, 146, 151, 0.13);
-      }
-
-      .compact {
-        min-height: 36px;
-        padding: 8px 12px;
+      .count {
         font-size: 13px;
+        font-weight: 700;
+        color: var(--text-muted);
       }
 
-      .inline-action {
-        display: inline-flex;
-        margin: 0;
-      }
-
-      .queue {
+      .queue-list {
         display: grid;
-        gap: 14px;
+        gap: 16px;
       }
 
       .queue-card {
         display: grid;
-        grid-template-columns: 128px minmax(0, 1fr);
-        gap: 18px;
-        padding: 16px;
-        background:
-          linear-gradient(180deg, rgba(255, 255, 255, 0.036), transparent),
-          var(--surface-strong);
+        grid-template-columns: 140px 1fr;
+        gap: 20px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 20px;
+        backdrop-filter: blur(24px);
+        transition: border-color 0.2s ease, transform 0.2s ease;
       }
 
-      .queue-card.is-history {
-        grid-template-columns: 88px minmax(0, 1fr);
-        padding: 12px;
-        box-shadow: none;
+      .queue-card:hover {
+        border-color: var(--border-hover);
+        transform: translateY(-1px);
       }
 
       .queue-thumb {
         position: relative;
-        display: block;
-        width: 100%;
-        min-height: 156px;
+        width: 140px;
         aspect-ratio: 4 / 5;
+        border-radius: var(--radius-sm);
         overflow: hidden;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 10px;
-        background: #09090d;
+        background: #0a0a0a;
+        border: 1px solid var(--border);
+        flex-shrink: 0;
       }
 
-      .is-history .queue-thumb {
-        min-height: 108px;
-      }
-
-      .queue-thumb [data-preview-media],
-      .thumb-placeholder {
+      .queue-thumb img,
+      .queue-thumb video {
         position: absolute;
         inset: 0;
         width: 100%;
         height: 100%;
-      }
-
-      .queue-thumb [data-preview-media] {
-        display: block;
         object-fit: cover;
+        display: block;
       }
 
-      .thumb-placeholder {
-        padding: 28px;
+      .queue-thumb .thumb-placeholder {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
         object-fit: contain;
+        padding: 24px;
         opacity: 0;
         filter: saturate(0.8);
       }
@@ -532,28 +467,30 @@
       }
 
       .queue-thumb.is-missing .thumb-placeholder {
-        opacity: 0.56;
+        opacity: 0.4;
       }
 
       .media-chip {
         position: absolute;
-        right: 9px;
-        bottom: 9px;
-        max-width: calc(100% - 18px);
-        border: 1px solid rgba(216, 194, 255, 0.24);
-        border-radius: 999px;
-        padding: 5px 8px;
-        background: rgba(5, 5, 7, 0.74);
+        bottom: 8px;
+        right: 8px;
+        padding: 4px 8px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.65);
+        backdrop-filter: blur(10px);
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
         color: var(--violet-bright);
-        font-size: 11px;
-        font-weight: 820;
-        backdrop-filter: blur(12px);
+        border: 1px solid var(--border);
       }
 
       .queue-main {
-        display: grid;
-        gap: 12px;
         min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
       }
 
       .queue-top {
@@ -563,106 +500,107 @@
         gap: 12px;
       }
 
-      .queue-title {
-        display: grid;
-        gap: 6px;
-        min-width: 0;
-      }
-
       .queue-title h3 {
-        color: var(--ink);
         font-size: 15px;
-        line-height: 1.3;
+        font-weight: 700;
+        color: var(--text);
         overflow-wrap: anywhere;
+        line-height: 1.3;
       }
 
-      .queue-time,
-      .caption-preview {
-        color: var(--muted);
+      .queue-meta {
         font-size: 13px;
-        line-height: 1.45;
+        color: var(--text-muted);
+        font-weight: 500;
+        margin-top: 4px;
       }
 
       .caption-preview {
+        font-size: 14px;
+        color: var(--text-secondary);
+        line-height: 1.5;
         display: -webkit-box;
-        overflow: hidden;
-        -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
       }
 
+      .result-message {
+        font-size: 13px;
+        line-height: 1.5;
+        padding: 10px 14px;
+        border-radius: var(--radius-sm);
+        background: rgba(0, 0, 0, 0.25);
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+      }
+
+      .result-message.is-failed {
+        border-color: rgba(239, 68, 68, 0.18);
+        background: var(--danger-muted);
+        color: #fca5a5;
+      }
+
+      /* Badges */
       .badge {
         display: inline-flex;
         align-items: center;
-        gap: 7px;
-        width: max-content;
-        min-height: 28px;
-        border: 1px solid var(--line);
-        border-radius: 999px;
+        gap: 6px;
         padding: 5px 10px;
-        background: rgba(255, 255, 255, 0.045);
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 820;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        border: 1px solid var(--border);
+        background: var(--surface-raised);
+        color: var(--text-muted);
         white-space: nowrap;
+        flex-shrink: 0;
       }
 
       .badge::before {
-        background: var(--quiet);
+        content: "";
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
       }
 
       .badge.pending,
       .badge.scheduled {
-        border-color: rgba(255, 209, 122, 0.26);
-        color: #ffe2a2;
-      }
-
-      .badge.pending::before,
-      .badge.scheduled::before {
-        background: var(--amber);
+        border-color: rgba(234, 179, 8, 0.25);
+        background: var(--warning-muted);
+        color: var(--warning);
       }
 
       .badge.ready,
       .badge.verification {
-        border-color: rgba(216, 194, 255, 0.34);
-        color: var(--violet-bright);
-      }
-
-      .badge.ready::before,
-      .badge.verification::before {
-        background: var(--violet);
-        box-shadow: 0 0 14px rgba(169, 112, 255, 0.5);
+        border-color: rgba(139, 92, 246, 0.25);
+        background: rgba(139, 92, 246, 0.08);
+        color: #c4b5fd;
       }
 
       .badge.posted,
       .badge.accepted {
-        border-color: rgba(157, 232, 195, 0.28);
-        color: #c5f5dc;
-      }
-
-      .badge.posted::before,
-      .badge.accepted::before {
-        background: var(--green);
+        border-color: rgba(34, 197, 94, 0.25);
+        background: var(--success-muted);
+        color: var(--success);
       }
 
       .badge.publishing {
-        border-color: rgba(110, 231, 242, 0.3);
-        color: #c8fbff;
-      }
-
-      .badge.publishing::before {
-        background: var(--cyan);
-        box-shadow: 0 0 14px rgba(110, 231, 242, 0.5);
+        border-color: rgba(6, 182, 212, 0.25);
+        background: rgba(6, 182, 212, 0.08);
+        color: #67e8f9;
       }
 
       .badge.failed {
-        border-color: rgba(255, 146, 151, 0.42);
-        color: #ffc1c4;
+        border-color: rgba(239, 68, 68, 0.2);
+        background: var(--danger-muted);
+        color: #fca5a5;
       }
 
-      .badge.failed::before {
-        background: var(--red);
-      }
-
+      /* Card forms */
       .schedule-form {
         display: grid;
         gap: 12px;
@@ -670,199 +608,257 @@
 
       .schedule-row {
         display: grid;
-        grid-template-columns: minmax(210px, 1fr) minmax(150px, 0.48fr) auto;
+        grid-template-columns: 1fr 0.5fr auto;
         gap: 12px;
         align-items: end;
       }
 
       .card-actions {
-        padding-top: 2px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
       }
 
-      .advanced,
-      .history-section {
-        margin-top: 14px;
+      .advanced {
+        margin-top: 4px;
       }
 
-      .advanced summary,
-      .history-section summary {
-        cursor: pointer;
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 820;
+      .advanced summary {
+        font-size: 11px;
+        font-weight: 700;
         text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--text-muted);
+        cursor: pointer;
+        user-select: none;
       }
 
       .advanced-body {
+        margin-top: 12px;
         display: grid;
         gap: 12px;
-        margin-top: 12px;
       }
 
       .advanced pre {
-        max-height: 220px;
-        overflow: auto;
-        margin: 0;
-        border: 1px solid rgba(255, 255, 255, 0.075);
-        border-radius: 10px;
-        padding: 12px;
-        background: rgba(0, 0, 0, 0.28);
-        color: #dfd7ee;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 14px;
         font-size: 12px;
-        line-height: 1.5;
+        line-height: 1.6;
+        color: var(--text-secondary);
+        overflow: auto;
+        max-height: 240px;
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
 
-      .history-section {
-        padding: 14px;
-      }
-
-      .history-list {
-        display: grid;
-        gap: 10px;
-        margin-top: 14px;
-      }
-
-      .history-actions {
+      /* Empty states */
+      .empty-state {
         display: flex;
-        flex-wrap: wrap;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
         gap: 8px;
-      }
-
-      .empty,
-      .history-empty {
-        display: grid;
-        min-height: 150px;
-        place-items: center;
-        border: 1px dashed var(--line-strong);
-        border-radius: 12px;
-        background: rgba(255, 255, 255, 0.025);
-        color: var(--quiet);
+        padding: 60px 24px;
+        border: 1px dashed var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text-muted);
         text-align: center;
       }
 
+      .empty-state p {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-secondary);
+      }
+
+      .empty-state span {
+        font-size: 13px;
+      }
+
+      /* History */
+      .history-panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        backdrop-filter: blur(24px);
+      }
+
+      .history-panel > summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 24px;
+        cursor: pointer;
+        font-size: 16px;
+        font-weight: 800;
+        list-style: none;
+      }
+
+      .history-panel > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .history-panel > summary::after {
+        content: "Expand";
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .history-panel[open] > summary::after {
+        content: "Collapse";
+      }
+
+      .history-list {
+        padding: 0 24px 24px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .history-card {
+        display: grid;
+        grid-template-columns: 100px 1fr;
+        gap: 16px;
+        padding: 16px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.2);
+        transition: border-color 0.2s ease;
+      }
+
+      .history-card:hover {
+        border-color: var(--border-hover);
+      }
+
+      .history-card .queue-thumb {
+        width: 100px;
+        aspect-ratio: 1;
+      }
+
       .history-empty {
-        min-height: 90px;
+        padding: 40px;
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 14px;
       }
 
-      .copy-cache {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        opacity: 0;
-        pointer-events: none;
-      }
-
+      /* Responsive */
       @media (max-width: 860px) {
-        .main-grid,
-        .queue-card,
-        .queue-card.is-history,
-        .schedule-row {
+        .dashboard-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .queue-card {
           grid-template-columns: 1fr;
         }
 
         .queue-thumb {
-          min-height: 220px;
+          width: 100%;
+          aspect-ratio: 16 / 10;
+        }
+
+        .schedule-row {
+          grid-template-columns: 1fr;
+        }
+
+        .history-card {
+          grid-template-columns: 1fr;
+        }
+
+        .history-card .queue-thumb {
+          width: 100%;
           aspect-ratio: 16 / 10;
         }
       }
 
       @media (max-width: 640px) {
-        .shell {
-          width: min(100% - 22px, 1040px);
-          padding-top: 12px;
+        .app {
+          padding: 16px 16px 60px;
         }
 
-        .top-status {
-          align-items: flex-start;
+        .topbar-inner {
           flex-direction: column;
+          align-items: flex-start;
         }
 
-        .status-actions {
-          justify-content: flex-start;
-          width: 100%;
-        }
-
-        .connection-pill {
-          white-space: normal;
-        }
-
-        .brand-logo {
-          width: 50px;
-          height: 50px;
-        }
-
-        .form-grid {
-          grid-template-columns: 1fr;
-        }
-
-        .actions .button,
-        .actions button,
-        .card-actions .button,
-        .card-actions button,
-        .history-actions button,
-        .inline-action,
-        .schedule-row button {
+        .topbar-actions {
           width: 100%;
         }
 
         .queue-top {
-          align-items: flex-start;
           flex-direction: column;
+        }
+
+        .actions .btn,
+        .card-actions .btn,
+        .schedule-row .btn {
+          width: 100%;
+          justify-content: center;
         }
       }
     </style>
   </head>
   <body>
-    <main class="shell">
-      <%
-        const statusOf = (post) => String((post && post.status) || 'pending').toLowerCase();
-        const activePosts = posts.filter((post) => statusOf(post) !== 'posted');
-        const historyPosts = posts.filter((post) => statusOf(post) === 'posted');
-        const privacyOptions = Array.isArray(creatorInfo && creatorInfo.privacy_level_options) && creatorInfo.privacy_level_options.length > 0
-          ? creatorInfo.privacy_level_options
-          : ['SELF_ONLY'];
-        const displayResultLabel = (result) => {
-          const tone = String((result && result.tone) || '').toLowerCase();
-          const label = String((result && result.stateLabel) || '').toLowerCase();
+    <%
+      const statusOf = (post) => String((post && post.status) || 'pending').toLowerCase();
+      const activePosts = posts.filter((post) => statusOf(post) !== 'posted');
+      const historyPosts = posts.filter((post) => statusOf(post) === 'posted');
+      const privacyOptions = Array.isArray(creatorInfo && creatorInfo.privacy_level_options) && creatorInfo.privacy_level_options.length > 0
+        ? creatorInfo.privacy_level_options
+        : ['SELF_ONLY'];
+      const displayResultLabel = (result) => {
+        const tone = String((result && result.tone) || '').toLowerCase();
+        const label = String((result && result.stateLabel) || '').toLowerCase();
 
-          if (tone === 'failed' || label.includes('failed')) return 'Failed';
-          if (tone === 'verification' || label.includes('verification')) return 'Needs verification';
-          if (tone === 'accepted' || label.includes('posted') || label.includes('accepted')) return 'Posted / API accepted';
-          if (tone === 'publishing' || label.includes('publishing')) return 'Publishing';
-          return 'Scheduled';
-        };
-        const captionPreview = (post) => helpers.fullCaption(post) || 'No caption';
-        const selectedPrivacy = (post) => {
-          const value = String((post && post.privacyLevel) || 'SELF_ONLY').trim() || 'SELF_ONLY';
-          return privacyOptions.includes(value) ? value : privacyOptions[0];
-        };
-      %>
+        if (tone === 'failed' || label.includes('failed')) return 'Failed';
+        if (tone === 'verification' || label.includes('verification')) return 'Needs verification';
+        if (tone === 'accepted' || label.includes('posted') || label.includes('accepted')) return 'Posted / API accepted';
+        if (tone === 'publishing' || label.includes('publishing')) return 'Publishing';
+        return 'Scheduled';
+      };
+      const captionPreview = (post) => helpers.fullCaption(post) || 'No caption';
+      const selectedPrivacy = (post) => {
+        const value = String((post && post.privacyLevel) || 'SELF_ONLY').trim() || 'SELF_ONLY';
+        return privacyOptions.includes(value) ? value : privacyOptions[0];
+      };
+    %>
 
-      <header class="top-status">
-        <div class="brand">
-          <img class="brand-logo" src="/assets/chanter-logo.png" alt="CHANTER logo" />
-          <span class="brand-text">
-            <span class="brand-title">CHANTER Auto Poster</span>
-            <span class="brand-kicker">TikTok poster</span>
-          </span>
-        </div>
-        <div class="status-actions">
-          <div class="connection-pill <%= tiktokConfigured ? 'is-connected' : 'is-offline' %>"><%- tiktokConfigured ? 'TikTok Connected' : 'Manual Mode &middot; TikTok not connected' %></div>
-          <% if (tiktokConfigured && creatorInfo) { %>
-            <div class="creator-pill">
-              <img class="creator-avatar" src="<%= creatorInfo.creator_avatar_url || '/assets/chanter-logo.png' %>" alt="" />
-              <span class="creator-name">
-                <strong><%= creatorInfo.creator_username ? `@${creatorInfo.creator_username}` : (creatorInfo.creator_nickname || 'TikTok creator') %></strong>
-              </span>
+    <div class="app">
+      <header class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <div class="brand-mark"></div>
+            <div class="brand-text">
+              <div class="brand-title">CHANTER</div>
+              <div class="brand-sub">Auto Poster</div>
             </div>
-          <% } %>
-          <% if (tiktokConfigured) { %>
-            <a class="button secondary compact" href="/disconnect/tiktok">Disconnect</a>
-          <% } else { %>
-            <a class="button primary compact" href="/connect/tiktok">Connect TikTok</a>
-          <% } %>
+          </div>
+          <div class="topbar-actions">
+            <% if (tiktokConfigured) { %>
+              <div class="pill pill-connected">
+                <span class="dot"></span>
+                TikTok Connected
+              </div>
+              <% if (creatorInfo) { %>
+                <div class="pill pill-creator">
+                  <img src="<%= creatorInfo.creator_avatar_url || '/assets/chanter-logo.png' %>" alt="" />
+                  <span><%= creatorInfo.creator_username ? `@${creatorInfo.creator_username}` : (creatorInfo.creator_nickname || 'Creator') %></span>
+                </div>
+              <% } %>
+              <a class="btn btn-ghost" href="/disconnect/tiktok">Disconnect</a>
+            <% } else { %>
+              <div class="pill pill-offline">
+                <span class="dot"></span>
+                Manual Mode
+              </div>
+              <a class="btn btn-primary" href="/connect/tiktok">Connect TikTok</a>
+            <% } %>
+          </div>
         </div>
       </header>
 
@@ -870,8 +866,8 @@
         <div class="notice"><%= notice %></div>
       <% } %>
 
-      <section class="main-grid" aria-label="Poster controls">
-        <article class="panel">
+      <div class="dashboard-grid" aria-label="Poster controls">
+        <section class="panel">
           <div class="panel-head">
             <h2>Upload</h2>
           </div>
@@ -883,52 +879,55 @@
               </label>
               <label>
                 Caption
-                <textarea name="caption" placeholder="Caption"></textarea>
+                <textarea name="caption" placeholder="Write a caption..."></textarea>
               </label>
               <label>
                 Hashtags
-                <textarea name="hashtags" placeholder="#chanter"></textarea>
+                <textarea name="hashtags" placeholder="#chanter #viral"></textarea>
               </label>
             </div>
-            <div class="actions form-actions">
-              <button type="submit" class="primary">Upload</button>
+            <div class="actions">
+              <button type="submit" class="btn btn-primary">Upload</button>
             </div>
           </form>
-        </article>
+        </section>
 
-        <article class="panel">
+        <section class="panel">
           <div class="panel-head">
             <h2>Schedule</h2>
-            <span class="muted"><%= settings.dailyPostTime %></span>
+            <span class="panel-meta"><%= settings.dailyPostTime %></span>
           </div>
           <form action="/settings" method="post">
             <label>
               Daily time
               <input type="time" name="dailyPostTime" value="<%= settings.dailyPostTime %>" required />
             </label>
-            <div class="actions form-actions">
-              <button type="submit" class="primary">Save schedule</button>
+            <div class="actions">
+              <button type="submit" class="btn btn-primary">Save schedule</button>
             </div>
           </form>
           <form action="/schedule" method="post">
-            <div class="actions form-actions tight">
-              <button type="submit" class="secondary">Rebuild queue</button>
+            <div class="actions" style="margin-top: 8px;">
+              <button type="submit" class="btn btn-secondary">Rebuild queue</button>
             </div>
           </form>
-        </article>
-      </section>
+        </section>
+      </div>
 
-      <section aria-label="Queue">
-        <div class="queue-head">
+      <section class="queue-section" aria-label="Queue">
+        <div class="section-head">
           <h2>Queue</h2>
-          <span class="muted"><%= activePosts.length %> active</span>
+          <span class="count"><%= activePosts.length %> active</span>
         </div>
 
-        <div class="queue">
-          <% if (activePosts.length === 0) { %>
-            <div class="empty">Queue empty</div>
-          <% } %>
+        <% if (activePosts.length === 0) { %>
+          <div class="empty-state">
+            <p>Queue empty</p>
+            <span>Upload media to get started</span>
+          </div>
+        <% } %>
 
+        <div class="queue-list">
           <% activePosts.forEach(function(post) { %>
             <% const mediaPath = helpers.mediaPath(post); %>
             <% const mediaType = helpers.mediaType(post); %>
@@ -952,15 +951,21 @@
               <% } %>
 
               <div class="queue-main">
-                <header class="queue-top">
+                <div class="queue-top">
                   <div class="queue-title">
                     <h3><%= post.originalName %></h3>
-                    <p class="queue-time"><%= helpers.formatDateTime(post.scheduledAt) %></p>
+                    <p class="queue-meta"><%= helpers.formatDateTime(post.scheduledAt) %></p>
                   </div>
                   <span class="badge <%= result.tone %>" data-result-badge><%= displayResultLabel(result) %></span>
-                </header>
+                </div>
 
                 <p class="caption-preview"><%= captionPreview(post) %></p>
+
+                <% if (result.message && result.tone === 'failed') { %>
+                  <p class="result-message is-failed"><%= result.message %></p>
+                <% } else if (result.message && result.tone !== 'scheduled' && result.tone !== 'posted' && result.tone !== 'accepted') { %>
+                  <p class="result-message"><%= result.message %></p>
+                <% } %>
 
                 <form
                   class="schedule-form"
@@ -975,9 +980,7 @@
                   <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
                   <div class="schedule-row">
                     <label>
-                      Date
-                      <span class="field-note">Publishes automatically at this time.</span>
-                      <span class="field-note">Uses your local time.</span>
+                      <span class="field-note">Publishes automatically at this time in your local timezone.</span>
                       <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
                     </label>
                     <label>
@@ -988,7 +991,7 @@
                         <% }); %>
                       </select>
                     </label>
-                    <button type="submit" class="primary">Save schedule</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
                   </div>
                   <details class="advanced">
                     <summary>Advanced</summary>
@@ -999,7 +1002,7 @@
                           type="url"
                           name="publicImageUrl"
                           value="<%= post.publicImageUrl || '' %>"
-                          placeholder="<%= mediaType === 'video' ? 'Not required for video posts' : 'https://chanterr.com/media/tiktok-posts/test-image.png' %>"
+                          placeholder="<%= mediaType === 'video' ? 'Not required for video posts' : 'https://example.com/image.png' %>"
                           data-public-image-url
                         />
                       </label>
@@ -1013,78 +1016,78 @@
                 <div class="card-actions">
                   <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post now? This ignores the schedule.');">
                     <input type="hidden" name="force" value="1" />
-                    <button type="submit" class="secondary">Post now</button>
+                    <button type="submit" class="btn btn-secondary">Post now</button>
                   </form>
                   <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
-                    <button type="submit" class="danger">Delete</button>
+                    <button type="submit" class="btn btn-danger">Delete</button>
                   </form>
                 </div>
               </div>
             </article>
           <% }); %>
         </div>
-
-        <details class="history-section">
-          <summary>
-            <span>History</span>
-            <span class="muted"><%= historyPosts.length %> posted</span>
-          </summary>
-          <div class="history-list">
-            <% if (historyPosts.length === 0) { %>
-              <div class="history-empty">No posted history</div>
-            <% } %>
-
-            <% historyPosts.forEach(function(post) { %>
-              <% const mediaPath = helpers.mediaPath(post); %>
-              <% const mediaType = helpers.mediaType(post); %>
-              <% const result = helpers.postResult(post); %>
-              <article class="queue-card is-history">
-                <% if (mediaPath) { %>
-                  <a class="queue-thumb" href="<%= mediaPath %>" target="_blank" rel="noreferrer">
-                    <img class="thumb-placeholder" src="/assets/chanter-logo.png" alt="" />
-                    <% if (mediaType === 'video') { %>
-                      <video src="<%= mediaPath %>" muted playsinline preload="metadata" data-preview-media></video>
-                    <% } else { %>
-                      <img src="<%= mediaPath %>" alt="<%= post.originalName %>" loading="lazy" data-preview-media />
-                    <% } %>
-                    <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
-                  </a>
-                <% } else { %>
-                  <div class="queue-thumb is-missing">
-                    <img class="thumb-placeholder" src="/assets/chanter-logo.png" alt="" />
-                    <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
-                  </div>
-                <% } %>
-
-                <div class="queue-main">
-                  <header class="queue-top">
-                    <div class="queue-title">
-                      <h3><%= post.originalName %></h3>
-                      <p class="queue-time"><%= helpers.formatDateTime(post.postedAt || post.scheduledAt) %></p>
-                    </div>
-                    <span class="badge <%= result.tone %>"><%= displayResultLabel(result) %></span>
-                  </header>
-                  <p class="caption-preview"><%= captionPreview(post) %></p>
-                  <div class="history-actions">
-                    <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
-                      <button type="submit" class="danger">Remove from history</button>
-                    </form>
-                  </div>
-                  <% if (result.hasDebug) { %>
-                    <details class="advanced">
-                      <summary>Advanced</summary>
-                      <div class="advanced-body">
-                        <pre><%= result.debugJson %></pre>
-                      </div>
-                    </details>
-                  <% } %>
-                </div>
-              </article>
-            <% }); %>
-          </div>
-        </details>
       </section>
-    </main>
+
+      <details class="history-panel">
+        <summary>
+          <span>History</span>
+          <span class="count"><%= historyPosts.length %> posted</span>
+        </summary>
+        <div class="history-list">
+          <% if (historyPosts.length === 0) { %>
+            <div class="history-empty">No posted history</div>
+          <% } %>
+
+          <% historyPosts.forEach(function(post) { %>
+            <% const mediaPath = helpers.mediaPath(post); %>
+            <% const mediaType = helpers.mediaType(post); %>
+            <% const result = helpers.postResult(post); %>
+            <article class="history-card">
+              <% if (mediaPath) { %>
+                <a class="queue-thumb" href="<%= mediaPath %>" target="_blank" rel="noreferrer">
+                  <img class="thumb-placeholder" src="/assets/chanter-logo.png" alt="" />
+                  <% if (mediaType === 'video') { %>
+                    <video src="<%= mediaPath %>" muted playsinline preload="metadata" data-preview-media></video>
+                  <% } else { %>
+                    <img src="<%= mediaPath %>" alt="<%= post.originalName %>" loading="lazy" data-preview-media />
+                  <% } %>
+                  <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
+                </a>
+              <% } else { %>
+                <div class="queue-thumb is-missing">
+                  <img class="thumb-placeholder" src="/assets/chanter-logo.png" alt="" />
+                  <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
+                </div>
+              <% } %>
+
+              <div class="queue-main">
+                <div class="queue-top">
+                  <div class="queue-title">
+                    <h3><%= post.originalName %></h3>
+                    <p class="queue-meta"><%= helpers.formatDateTime(post.postedAt || post.scheduledAt) %></p>
+                  </div>
+                  <span class="badge <%= result.tone %>"><%= displayResultLabel(result) %></span>
+                </div>
+                <p class="caption-preview"><%= captionPreview(post) %></p>
+                <div class="card-actions">
+                  <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
+                    <button type="submit" class="btn btn-danger">Remove from history</button>
+                  </form>
+                </div>
+                <% if (result.hasDebug) { %>
+                  <details class="advanced">
+                    <summary>Advanced</summary>
+                    <div class="advanced-body">
+                      <pre><%= result.debugJson %></pre>
+                    </div>
+                  </details>
+                <% } %>
+              </div>
+            </article>
+          <% }); %>
+        </div>
+      </details>
+    </div>
 
     <script>
       function copyText(value) {

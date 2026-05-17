@@ -443,7 +443,18 @@ function buildPostResultView(post) {
   } else if (status === 'failed' || (lastResult && lastResult.ok === false && lastResult.mode !== 'manual')) {
     stateLabel = 'Failed';
     tone = 'failed';
-    message = (lastResult && lastResult.reason) || 'TikTok rejected the publish request.';
+
+    const rawReason = (lastResult && lastResult.reason) || '';
+    const fullJson = lastResult ? JSON.stringify(lastResult) : '';
+    const isUnauditedError = rawReason.includes('unaudited_client_can_only_post_to_private_accounts') ||
+                             rawReason.includes('403') ||
+                             fullJson.includes('unaudited_client_can_only_post_to_private_accounts');
+
+    if (isUnauditedError) {
+      message = 'TikTok blocked this because the app is not reviewed yet. Until approval, test posting may require a private TikTok account.';
+    } else {
+      message = rawReason || 'TikTok rejected the publish request.';
+    }
   } else if (status === 'ready' || (lastResult && lastResult.mode === 'manual' && status !== 'posted')) {
     stateLabel = 'Needs manual verification';
     tone = 'verification';
