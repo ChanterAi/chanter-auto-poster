@@ -24,6 +24,19 @@ app.use((error, req, res, next) => {
   }
 
   const message = error.message || 'Unexpected server error';
+  const wantsJson =
+    String(req.path || '').startsWith('/api/') ||
+    String(req.headers.accept || '').toLowerCase().includes('application/json') ||
+    String(req.headers['content-type'] || '').toLowerCase().includes('application/json');
+
+  if (wantsJson) {
+    res.status(error.status || 500).json({
+      ok: false,
+      reason: message
+    });
+    return;
+  }
+
   res.redirect(`/?notice=${encodeURIComponent(message)}`);
 });
 

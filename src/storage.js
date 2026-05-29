@@ -17,6 +17,27 @@ const defaultTikTokAuth = {
   scope: ''
 };
 
+const defaultInstagramAuth = {
+  connected: false,
+  source: '',
+  user_id: '',
+  access_token: '',
+  token_type: '',
+  expires_at: null,
+  scope: '',
+  facebook_page_id: '',
+  facebook_page_name: '',
+  facebook_page_access_token: '',
+  instagram_business_account_id: '',
+  instagram_username: '',
+  account_type: '',
+  profile_picture_url: '',
+  media_count: null,
+  followers_count: null,
+  connected_at: null,
+  updated_at: null
+};
+
 function ensureStorage() {
   fs.mkdirSync(config.dataDir, { recursive: true });
   fs.mkdirSync(config.uploadsDir, { recursive: true });
@@ -31,6 +52,10 @@ function ensureStorage() {
 
   if (!fs.existsSync(config.tiktokAuthFile)) {
     writeJson(config.tiktokAuthFile, defaultTikTokAuth);
+  }
+
+  if (!fs.existsSync(config.instagramAuthFile)) {
+    writeJson(config.instagramAuthFile, defaultInstagramAuth);
   }
 }
 
@@ -106,6 +131,35 @@ function clearTikTokAuth() {
   return defaultTikTokAuth;
 }
 
+function getInstagramAuth() {
+  ensureStorage();
+  return {
+    ...defaultInstagramAuth,
+    ...readJson(config.instagramAuthFile, defaultInstagramAuth)
+  };
+}
+
+function saveInstagramAuth(auth) {
+  const previous = getInstagramAuth();
+  const now = new Date().toISOString();
+  const nextAuth = {
+    ...defaultInstagramAuth,
+    ...previous,
+    ...auth,
+    connected: Boolean(auth.connected && (auth.access_token || previous.access_token)),
+    connected_at: previous.connected_at || auth.connected_at || now,
+    updated_at: now
+  };
+
+  writeJson(config.instagramAuthFile, nextAuth);
+  return nextAuth;
+}
+
+function clearInstagramAuth() {
+  writeJson(config.instagramAuthFile, defaultInstagramAuth);
+  return defaultInstagramAuth;
+}
+
 function sortPosts(posts) {
   return [...posts].sort((a, b) => {
     const orderDiff = Number(a.order || 0) - Number(b.order || 0);
@@ -149,6 +203,7 @@ function addUploadedPosts(files, defaults = {}) {
       caption: String(defaults.caption || '').trim(),
       hashtags: String(defaults.hashtags || '').trim(),
       publicImageUrl: String(defaults.publicImageUrl || '').trim(),
+      instagramMediaUrl: String(defaults.instagramMediaUrl || '').trim(),
       privacyLevel: String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
       scheduledAt: null,
       status: 'pending',
@@ -157,7 +212,8 @@ function addUploadedPosts(files, defaults = {}) {
       updatedAt: now,
       postedAt: null,
       readyAt: null,
-      lastResult: null
+      lastResult: null,
+      lastInstagramResult: null
     };
   });
 
@@ -325,6 +381,9 @@ module.exports = {
   getTikTokAuth,
   saveTikTokAuth,
   clearTikTokAuth,
+  getInstagramAuth,
+  saveInstagramAuth,
+  clearInstagramAuth,
   addUploadedPosts,
   updatePost,
   deletePost,

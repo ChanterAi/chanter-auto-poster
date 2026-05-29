@@ -4,7 +4,7 @@
   "description": "Local TikTok photo queue and scheduler for the CHANTER content workflow.",
   "main": "src/server.js",
   "scripts": {
-    "build": "node --check src/server.js && node --check src/routes.js && node --check src/scheduler.js && node --check src/storage.js && node --check src/tiktok.js && node -e \"const ejs=require('ejs'),fs=require('fs'); ejs.compile(fs.readFileSync('src/views/index.ejs','utf8'),{filename:'src/views/index.ejs'});\"",
+    "build": "node --check src/server.js && node --check src/routes.js && node --check src/scheduler.js && node --check src/storage.js && node --check src/tiktok.js && node --check src/instagram.js && node -e \"const ejs=require('ejs'),fs=require('fs'); ejs.compile(fs.readFileSync('src/views/index.ejs','utf8'),{filename:'src/views/index.ejs'});\"",
     "start": "node src/server.js",
     "dev": "nodemon --ignore data --ignore uploads src/server.js"
   },
