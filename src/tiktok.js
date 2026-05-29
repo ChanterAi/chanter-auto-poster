@@ -243,9 +243,9 @@ function buildVideoPayload(post, fileSize, creatorInfo = null) {
     post_info: {
       title: buildCaption(post),
       privacy_level: resolvePrivacyLevel(post, creatorInfo),
-      disable_duet: false,
-      disable_comment: false,
-      disable_stitch: false
+      disable_duet:    Boolean(post.disableDuet),
+      disable_comment: Boolean(post.disableComment),
+      disable_stitch:  Boolean(post.disableStitch)
     },
     source_info: {
       source: 'FILE_UPLOAD',
@@ -390,9 +390,9 @@ function buildPhotoPayload(post, imageUrl, creatorInfo = null) {
     post_info: {
       title: buildCaption(post),
       privacy_level: resolvePrivacyLevel(post, creatorInfo),
-      disable_duet: false,
-      disable_comment: false,
-      disable_stitch: false
+      disable_duet:    true, // Duet/Stitch not applicable for photo posts per TikTok guidelines
+      disable_comment: Boolean(post.disableComment),
+      disable_stitch:  true
     },
     source_info: {
       source: 'PULL_FROM_URL',

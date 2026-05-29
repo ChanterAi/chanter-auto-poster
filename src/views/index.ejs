@@ -4,802 +4,358 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title><%= appName %></title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,700;0,9..40,900;1,9..40,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <style>
       :root {
-        --bg: #030303;
-        --surface: rgba(255, 255, 255, 0.02);
-        --surface-raised: rgba(255, 255, 255, 0.04);
-        --border: rgba(255, 255, 255, 0.06);
-        --border-hover: rgba(255, 255, 255, 0.1);
-        --violet: #7c3aed;
-        --violet-bright: #8b5cf6;
-        --violet-glow: rgba(124, 58, 237, 0.25);
-        --text: #fafafa;
-        --text-secondary: #a1a1aa;
-        --text-muted: #71717a;
+        --bg: #0a0a0f;
+        --bg2: #0f0f17;
+        --surface: rgba(255,255,255,0.03);
+        --surface2: rgba(255,255,255,0.055);
+        --border: rgba(255,255,255,0.07);
+        --border2: rgba(255,255,255,0.12);
+        --accent: #fe2c55;
+        --accent2: #25f4ee;
+        --accent-glow: rgba(254, 44, 85, 0.18);
+        --accent2-glow: rgba(37, 244, 238, 0.12);
+        --text: #f5f5f5;
+        --text2: #a0a0b0;
+        --text3: #606070;
         --danger: #ef4444;
-        --danger-muted: rgba(239, 68, 68, 0.12);
-        --warning: #eab308;
-        --warning-muted: rgba(234, 179, 8, 0.12);
-        --success: #22c55e;
-        --success-muted: rgba(34, 197, 94, 0.12);
-        --radius: 16px;
-        --radius-sm: 10px;
+        --danger-bg: rgba(239,68,68,0.10);
+        --warn: #f59e0b;
+        --warn-bg: rgba(245,158,11,0.10);
+        --ok: #22c55e;
+        --ok-bg: rgba(34,197,94,0.10);
+        --purple: #a78bfa;
+        --purple-bg: rgba(167,139,250,0.10);
+        --cyan: #25f4ee;
+        --cyan-bg: rgba(37,244,238,0.08);
+        --r: 14px;
+        --r-sm: 9px;
+        --r-xs: 6px;
       }
-
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       html { background: var(--bg); }
-
       body {
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
         color: var(--text);
         background: var(--bg);
         line-height: 1.5;
         -webkit-font-smoothing: antialiased;
+        min-height: 100vh;
       }
-
       body::before {
         content: "";
-        position: fixed;
-        inset: 0;
-        z-index: 0;
+        position: fixed; inset: 0; z-index: 0; pointer-events: none;
         background:
-          radial-gradient(ellipse 80% 50% at 50% -10%, rgba(124, 58, 237, 0.07), transparent),
-          radial-gradient(ellipse 60% 40% at 80% 80%, rgba(124, 58, 237, 0.03), transparent);
-        pointer-events: none;
+          radial-gradient(ellipse 70% 45% at 20% -10%, rgba(254,44,85,0.06) 0%, transparent 70%),
+          radial-gradient(ellipse 60% 40% at 85% 90%, rgba(37,244,238,0.05) 0%, transparent 70%);
       }
 
-      .app {
-        position: relative;
-        z-index: 1;
-        max-width: 1100px;
-        margin: 0 auto;
-        padding: 28px 24px 80px;
-      }
+      .app { position: relative; z-index: 1; max-width: 1120px; margin: 0 auto; padding: 24px 20px 80px; }
 
-      /* Topbar */
-      .topbar {
-        margin-bottom: 28px;
-      }
-
+      /* ─── Topbar ─── */
+      .topbar { margin-bottom: 28px; }
       .topbar-inner {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 14px 18px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        backdrop-filter: blur(24px);
+        display: flex; align-items: center; justify-content: space-between; gap: 16px;
+        padding: 12px 16px;
+        background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
+        backdrop-filter: blur(20px);
       }
-
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-      }
-
+      .brand { display: flex; align-items: center; gap: 12px; }
       .brand-mark {
-        width: 38px;
-        height: 38px;
-        border-radius: 10px;
-        background: linear-gradient(135deg, var(--violet), #4c1d95);
-        box-shadow: 0 0 20px var(--violet-glow);
-        display: grid;
-        place-items: center;
+        width: 36px; height: 36px; border-radius: 9px;
+        background: linear-gradient(135deg, #fe2c55, #c11b44);
+        box-shadow: 0 0 18px rgba(254,44,85,0.35);
+        display: grid; place-items: center;
+        font-weight: 900; font-size: 16px; color: white; letter-spacing: -0.02em;
       }
+      .brand-title { font-size: 16px; font-weight: 900; letter-spacing: -0.02em; color: var(--text); }
+      .brand-sub { font-size: 10px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.07em; }
+      .topbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-      .brand-mark::after {
-        content: "C";
-        font-weight: 800;
-        font-size: 17px;
-        color: white;
-      }
-
-      .brand-title {
-        font-size: 17px;
-        font-weight: 800;
-        letter-spacing: -0.02em;
-        color: var(--text);
-        line-height: 1.2;
-      }
-
-      .brand-sub {
-        font-size: 11px;
-        font-weight: 700;
-        color: var(--text-muted);
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-      }
-
-      .topbar-actions {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex-wrap: wrap;
-      }
-
-      /* Pills */
+      /* ─── Pills ─── */
       .pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 12px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 700;
-        border: 1px solid var(--border);
-        background: var(--surface-raised);
-        color: var(--text-secondary);
-        white-space: nowrap;
+        display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px;
+        border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--border);
+        background: var(--surface2); color: var(--text2); white-space: nowrap;
       }
+      .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
+      .pill-ok   { border-color: rgba(34,197,94,.25); background: var(--ok-bg); color: var(--ok); }
+      .pill-cyan { border-color: rgba(37,244,238,.25); background: var(--cyan-bg); color: var(--cyan); }
+      .pill-warn { border-color: rgba(245,158,11,.25); background: var(--warn-bg); color: var(--warn); }
+      .pill-err  { border-color: rgba(239,68,68,.25);  background: var(--danger-bg); color: #fca5a5; }
+      .pill-creator { padding: 4px 11px 4px 4px; gap: 7px; }
+      .pill-creator img { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; background: var(--surface2); }
 
-      .pill-connected {
-        border-color: rgba(34, 197, 94, 0.25);
-        background: var(--success-muted);
-        color: var(--success);
-      }
-
-      .pill-offline {
-        border-color: rgba(234, 179, 8, 0.25);
-        background: var(--warning-muted);
-        color: var(--warning);
-      }
-
-      .pill-creator {
-        padding: 4px 12px 4px 4px;
-        gap: 8px;
-      }
-
-      .pill-creator img {
-        width: 22px;
-        height: 22px;
-        border-radius: 50%;
-        object-fit: cover;
-        background: var(--surface);
-      }
-
-      .dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: currentColor;
-        box-shadow: 0 0 10px currentColor;
-      }
-
-      /* Buttons */
+      /* ─── Buttons ─── */
       .btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        height: 36px;
-        padding: 0 14px;
-        border-radius: var(--radius-sm);
-        font-size: 13px;
-        font-weight: 700;
-        border: 1px solid transparent;
-        cursor: pointer;
-        text-decoration: none;
-        transition: all 0.2s ease;
-        background: none;
-        color: inherit;
-        font-family: inherit;
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        height: 36px; padding: 0 14px; border-radius: var(--r-sm);
+        font-size: 13px; font-weight: 700; border: 1px solid transparent;
+        cursor: pointer; text-decoration: none; transition: all 0.18s ease;
+        background: none; color: inherit; font-family: inherit; white-space: nowrap;
       }
+      .btn-primary   { background: var(--accent); color: white; box-shadow: 0 3px 14px var(--accent-glow); }
+      .btn-primary:hover { filter: brightness(1.12); transform: translateY(-1px); box-shadow: 0 5px 20px var(--accent-glow); }
+      .btn-ghost     { border-color: var(--border); color: var(--text2); }
+      .btn-ghost:hover { border-color: var(--border2); background: var(--surface2); color: var(--text); }
+      .btn-secondary { border-color: var(--border); color: var(--text2); background: transparent; }
+      .btn-secondary:hover { border-color: var(--border2); background: var(--surface2); color: var(--text); }
+      .btn-danger    { border-color: rgba(239,68,68,.22); color: #fca5a5; background: transparent; }
+      .btn-danger:hover { background: var(--danger-bg); border-color: rgba(239,68,68,.4); }
+      .btn-cyan      { background: transparent; border-color: rgba(37,244,238,.3); color: var(--cyan); }
+      .btn-cyan:hover{ background: var(--cyan-bg); }
+      .btn[disabled]  { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
 
-      .btn-primary {
-        background: var(--violet);
-        color: white;
-        box-shadow: 0 4px 16px var(--violet-glow);
-      }
-
-      .btn-primary:hover {
-        background: var(--violet-bright);
-        transform: translateY(-1px);
-        box-shadow: 0 6px 22px var(--violet-glow);
-      }
-
-      .btn-ghost {
-        border-color: var(--border);
-        color: var(--text-secondary);
-        background: transparent;
-      }
-
-      .btn-ghost:hover {
-        border-color: var(--border-hover);
-        background: var(--surface-raised);
-        color: var(--text);
-      }
-
-      .btn-danger {
-        border-color: rgba(239, 68, 68, 0.25);
-        color: #fca5a5;
-        background: transparent;
-      }
-
-      .btn-danger:hover {
-        background: var(--danger-muted);
-        border-color: rgba(239, 68, 68, 0.4);
-      }
-
-      .btn-secondary {
-        border-color: var(--border);
-        color: var(--text-secondary);
-        background: transparent;
-      }
-
-      .btn-secondary:hover {
-        border-color: var(--border-hover);
-        background: var(--surface-raised);
-        color: var(--text);
-      }
-
-      /* Notice */
+      /* ─── Notice ─── */
       .notice {
-        margin-bottom: 24px;
-        padding: 14px 18px;
-        border-radius: var(--radius-sm);
-        border: 1px solid rgba(139, 92, 246, 0.2);
-        background: rgba(124, 58, 237, 0.08);
-        color: var(--text);
-        font-size: 14px;
-        font-weight: 500;
+        margin-bottom: 22px; padding: 13px 17px; border-radius: var(--r-sm);
+        border: 1px solid rgba(254,44,85,.2); background: rgba(254,44,85,.07);
+        color: var(--text); font-size: 14px; font-weight: 500;
       }
 
-      /* Layout */
-      .dashboard-grid {
-        display: grid;
-        grid-template-columns: 1.2fr 0.8fr;
-        gap: 20px;
-        margin-bottom: 32px;
+      /* ─── Compliance Warning Banner ─── */
+      .compliance-banner {
+        margin-bottom: 22px; padding: 14px 18px;
+        background: rgba(245,158,11,.07); border: 1px solid rgba(245,158,11,.2); border-radius: var(--r-sm);
+        font-size: 13px; color: var(--warn); line-height: 1.6;
       }
+      .compliance-banner strong { font-weight: 700; }
+      .compliance-banner a { color: inherit; text-decoration: underline; }
 
-      /* Panels */
+      /* ─── Grid ─── */
+      .dashboard-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 18px; margin-bottom: 28px; }
+
+      /* ─── Panel ─── */
       .panel {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 24px;
-        backdrop-filter: blur(24px);
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--r); padding: 22px; backdrop-filter: blur(20px);
       }
+      .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+      .panel-head h2 { font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
+      .panel-meta { font-size: 13px; font-weight: 600; color: var(--text3); font-variant-numeric: tabular-nums; }
 
-      .panel-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 20px;
-      }
-
-      .panel-head h2 {
-        font-size: 16px;
-        font-weight: 800;
-        letter-spacing: -0.01em;
-      }
-
-      .panel-meta {
-        font-size: 13px;
-        font-weight: 700;
-        color: var(--text-muted);
-        font-variant-numeric: tabular-nums;
-      }
-
-      /* Forms */
-      .form-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-      }
-
-      .form-grid .wide {
-        grid-column: 1 / -1;
-      }
-
+      /* ─── Forms ─── */
+      .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      .form-grid .wide { grid-column: 1 / -1; }
       label {
-        display: grid;
-        gap: 8px;
-        font-size: 11px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--text-muted);
+        display: grid; gap: 7px; font-size: 10px; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3);
       }
-
       .field-note {
-        display: block;
-        font-size: 12px;
-        font-weight: 500;
-        text-transform: none;
-        color: var(--text-muted);
-        letter-spacing: 0;
-        line-height: 1.4;
+        display: block; font-size: 11px; font-weight: 400; text-transform: none;
+        color: var(--text3); letter-spacing: 0; line-height: 1.4;
       }
-
-      input,
-      select,
-      textarea {
-        width: 100%;
-        background: rgba(0, 0, 0, 0.35);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        padding: 10px 12px;
-        color: var(--text);
-        font-size: 14px;
-        font-family: inherit;
-        outline: none;
-        transition: all 0.2s ease;
+      input, select, textarea {
+        width: 100%; background: rgba(0,0,0,.3); border: 1px solid var(--border);
+        border-radius: var(--r-sm); padding: 9px 11px; color: var(--text);
+        font-size: 13px; font-family: inherit; outline: none; transition: all 0.18s;
       }
-
-      input:focus,
-      select:focus,
-      textarea:focus {
-        border-color: var(--violet);
-        box-shadow: 0 0 0 3px var(--violet-glow);
-      }
-
-      input::placeholder,
-      textarea::placeholder {
-        color: var(--text-muted);
-      }
-
-      input[type="file"] {
-        padding: 12px;
-        cursor: pointer;
-        min-height: 56px;
-      }
-
+      input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+      input::placeholder, textarea::placeholder { color: var(--text3); }
+      input[type="file"] { padding: 10px; cursor: pointer; min-height: 52px; }
       input[type="file"]::file-selector-button {
-        margin-right: 12px;
-        padding: 6px 12px;
-        border-radius: 6px;
-        border: 1px solid var(--border);
-        background: var(--surface-raised);
-        color: var(--text-secondary);
-        font-weight: 600;
-        cursor: pointer;
+        margin-right: 10px; padding: 5px 11px; border-radius: 5px; border: 1px solid var(--border);
+        background: var(--surface2); color: var(--text2); font-weight: 600; cursor: pointer;
       }
-
-      textarea {
-        min-height: 80px;
-        resize: vertical;
+      input[type="checkbox"] {
+        width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent);
+        flex-shrink: 0; border-radius: 4px;
       }
-
+      textarea { min-height: 76px; resize: vertical; }
       select {
         appearance: none;
-        background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2371717a' stroke-width='1.5' fill='none' fill-rule='evenodd'/%3E%3C/svg%3E");
-        background-repeat: no-repeat;
-        background-position: right 12px center;
-        padding-right: 32px;
+        background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23606070' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: right 11px center; padding-right: 30px;
       }
+      .actions { display: flex; gap: 9px; margin-top: 14px; flex-wrap: wrap; }
+      .actions .btn { height: 38px; padding: 0 16px; }
 
-      .actions {
-        display: flex;
-        gap: 10px;
-        margin-top: 16px;
-        flex-wrap: wrap;
+      /* ─── Interaction Controls (TikTok Required UX) ─── */
+      .interaction-controls { display: grid; gap: 8px; }
+      .check-row {
+        display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+        background: rgba(0,0,0,.2); border: 1px solid var(--border); border-radius: var(--r-sm);
+        cursor: pointer; transition: border-color 0.15s;
       }
+      .check-row:hover { border-color: var(--border2); }
+      .check-row.disabled-row { opacity: 0.45; cursor: not-allowed; }
+      .check-row label { font-size: 13px; font-weight: 500; color: var(--text2); text-transform: none; letter-spacing: 0; cursor: pointer; margin: 0; }
+      .check-row.disabled-row label { cursor: not-allowed; }
+      .check-hint { font-size: 11px; color: var(--text3); margin-left: auto; font-style: italic; }
 
-      .actions .btn {
-        height: 40px;
-        padding: 0 18px;
+      /* ─── Content Disclosure ─── */
+      .disclosure-section {
+        border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; margin-top: 12px;
       }
-
-      /* Queue */
-      .queue-section {
-        margin-bottom: 32px;
+      .disclosure-header {
+        display: flex; align-items: center; justify-content: space-between; padding: 11px 14px;
+        background: var(--surface2); cursor: pointer;
       }
+      .disclosure-header span { font-size: 12px; font-weight: 700; color: var(--text2); }
+      .disclosure-body { padding: 12px 14px; display: grid; gap: 8px; }
+      .disclosure-note { font-size: 11px; color: var(--text3); line-height: 1.5; }
 
-      .section-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 20px;
+      /* Toggle switch */
+      .toggle-wrap { display: flex; align-items: center; gap: 10px; }
+      .toggle { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+      .toggle input { opacity: 0; width: 0; height: 0; }
+      .toggle-slider {
+        position: absolute; inset: 0; border-radius: 20px; background: var(--border2);
+        cursor: pointer; transition: background 0.2s;
       }
-
-      .section-head h2 {
-        font-size: 18px;
-        font-weight: 800;
+      .toggle-slider::before {
+        content: ""; position: absolute; width: 14px; height: 14px; border-radius: 50%;
+        background: white; left: 3px; top: 3px; transition: transform 0.2s; box-shadow: 0 1px 4px rgba(0,0,0,.3);
       }
+      .toggle input:checked + .toggle-slider { background: var(--accent); }
+      .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
 
-      .count {
-        font-size: 13px;
-        font-weight: 700;
-        color: var(--text-muted);
+      /* ─── Music Disclosure (Required) ─── */
+      .music-declaration {
+        padding: 11px 14px; border-radius: var(--r-sm);
+        border: 1px solid rgba(37,244,238,.2); background: rgba(37,244,238,.05);
+        font-size: 12px; color: #a0d8d6; line-height: 1.6;
       }
+      .music-declaration a { color: var(--cyan); text-decoration: underline; }
+      .music-declaration strong { color: var(--text2); font-weight: 600; }
 
-      .queue-list {
-        display: grid;
-        gap: 16px;
-      }
+      /* ─── Queue ─── */
+      .queue-section { margin-bottom: 28px; }
+      .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+      .section-head h2 { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; }
+      .count { font-size: 12px; font-weight: 700; color: var(--text3); }
+      .queue-list { display: grid; gap: 14px; }
 
+      /* ─── Queue Card ─── */
       .queue-card {
-        display: grid;
-        grid-template-columns: 140px 1fr;
-        gap: 20px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 20px;
-        backdrop-filter: blur(24px);
-        transition: border-color 0.2s ease, transform 0.2s ease;
+        display: grid; grid-template-columns: 130px 1fr; gap: 18px;
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--r); padding: 18px; backdrop-filter: blur(20px);
+        transition: border-color 0.18s, box-shadow 0.18s;
       }
-
-      .queue-card:hover {
-        border-color: var(--border-hover);
-        transform: translateY(-1px);
-      }
-
+      .queue-card:hover { border-color: var(--border2); box-shadow: 0 4px 24px rgba(0,0,0,.25); }
       .queue-thumb {
-        position: relative;
-        width: 140px;
-        aspect-ratio: 4 / 5;
-        border-radius: var(--radius-sm);
-        overflow: hidden;
-        background: #0a0a0a;
-        border: 1px solid var(--border);
-        flex-shrink: 0;
+        position: relative; width: 130px; aspect-ratio: 4/5;
+        border-radius: var(--r-sm); overflow: hidden; background: #090912;
+        border: 1px solid var(--border); flex-shrink: 0;
       }
-
-      .queue-thumb img,
-      .queue-thumb video {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-      }
-
-      .queue-thumb .thumb-placeholder {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-        padding: 24px;
-        opacity: 0;
-        filter: saturate(0.8);
-      }
-
-      .queue-thumb.is-missing [data-preview-media] {
-        display: none;
-      }
-
-      .queue-thumb.is-missing .thumb-placeholder {
-        opacity: 0.4;
-      }
-
+      .queue-thumb img, .queue-thumb video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+      .queue-thumb .thumb-placeholder { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 22px; opacity: 0; filter: saturate(0.5); }
+      .queue-thumb.is-missing [data-preview-media] { display: none; }
+      .queue-thumb.is-missing .thumb-placeholder { opacity: 0.3; }
       .media-chip {
-        position: absolute;
-        bottom: 8px;
-        right: 8px;
-        padding: 4px 8px;
-        border-radius: 6px;
-        background: rgba(0, 0, 0, 0.65);
-        backdrop-filter: blur(10px);
-        font-size: 10px;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--violet-bright);
-        border: 1px solid var(--border);
+        position: absolute; bottom: 7px; right: 7px; padding: 3px 8px; border-radius: 5px;
+        background: rgba(0,0,0,.65); backdrop-filter: blur(8px); font-size: 9px; font-weight: 800;
+        text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent2); border: 1px solid var(--border);
       }
-
-      .queue-main {
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-      }
-
-      .queue-top {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 12px;
-      }
-
-      .queue-title h3 {
-        font-size: 15px;
-        font-weight: 700;
-        color: var(--text);
-        overflow-wrap: anywhere;
-        line-height: 1.3;
-      }
-
-      .queue-meta {
-        font-size: 13px;
-        color: var(--text-muted);
-        font-weight: 500;
-        margin-top: 4px;
-      }
-
-      .caption-preview {
-        font-size: 14px;
-        color: var(--text-secondary);
-        line-height: 1.5;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
+      .queue-main { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+      .queue-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+      .queue-title h3 { font-size: 14px; font-weight: 700; color: var(--text); overflow-wrap: anywhere; line-height: 1.3; }
+      .queue-meta { font-size: 12px; color: var(--text3); font-weight: 500; margin-top: 3px; }
+      .caption-preview { font-size: 13px; color: var(--text2); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
       .result-message {
-        font-size: 13px;
-        line-height: 1.5;
-        padding: 10px 14px;
-        border-radius: var(--radius-sm);
-        background: rgba(0, 0, 0, 0.25);
-        border: 1px solid var(--border);
-        color: var(--text-secondary);
+        font-size: 12px; line-height: 1.5; padding: 9px 12px; border-radius: var(--r-sm);
+        background: rgba(0,0,0,.2); border: 1px solid var(--border); color: var(--text2);
       }
+      .result-message.is-failed { border-color: rgba(239,68,68,.18); background: var(--danger-bg); color: #fca5a5; }
 
-      .result-message.is-failed {
-        border-color: rgba(239, 68, 68, 0.18);
-        background: var(--danger-muted);
-        color: #fca5a5;
-      }
-
-      /* Badges */
+      /* ─── Badges ─── */
       .badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 5px 10px;
-        border-radius: 999px;
-        font-size: 11px;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        border: 1px solid var(--border);
-        background: var(--surface-raised);
-        color: var(--text-muted);
-        white-space: nowrap;
-        flex-shrink: 0;
+        display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 999px;
+        font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;
+        border: 1px solid var(--border); background: var(--surface2); color: var(--text3);
+        white-space: nowrap; flex-shrink: 0;
       }
+      .badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+      .badge.pending, .badge.scheduled { border-color: rgba(245,158,11,.25); background: var(--warn-bg); color: var(--warn); }
+      .badge.ready, .badge.verification { border-color: rgba(167,139,250,.25); background: var(--purple-bg); color: var(--purple); }
+      .badge.posted, .badge.accepted { border-color: rgba(34,197,94,.25); background: var(--ok-bg); color: var(--ok); }
+      .badge.publishing { border-color: rgba(37,244,238,.25); background: var(--cyan-bg); color: var(--cyan); }
+      .badge.failed { border-color: rgba(239,68,68,.2); background: var(--danger-bg); color: #fca5a5; }
 
-      .badge::before {
-        content: "";
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        background: currentColor;
-      }
+      /* ─── Schedule Form ─── */
+      .schedule-form { display: grid; gap: 11px; }
+      .schedule-row { display: grid; grid-template-columns: 1fr 0.5fr auto; gap: 11px; align-items: end; }
+      .card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
-      .badge.pending,
-      .badge.scheduled {
-        border-color: rgba(234, 179, 8, 0.25);
-        background: var(--warning-muted);
-        color: var(--warning);
-      }
-
-      .badge.ready,
-      .badge.verification {
-        border-color: rgba(139, 92, 246, 0.25);
-        background: rgba(139, 92, 246, 0.08);
-        color: #c4b5fd;
-      }
-
-      .badge.posted,
-      .badge.accepted {
-        border-color: rgba(34, 197, 94, 0.25);
-        background: var(--success-muted);
-        color: var(--success);
-      }
-
-      .badge.publishing {
-        border-color: rgba(6, 182, 212, 0.25);
-        background: rgba(6, 182, 212, 0.08);
-        color: #67e8f9;
-      }
-
-      .badge.failed {
-        border-color: rgba(239, 68, 68, 0.2);
-        background: var(--danger-muted);
-        color: #fca5a5;
-      }
-
-      /* Card forms */
-      .schedule-form {
-        display: grid;
-        gap: 12px;
-      }
-
-      .schedule-row {
-        display: grid;
-        grid-template-columns: 1fr 0.5fr auto;
-        gap: 12px;
-        align-items: end;
-      }
-
-      .card-actions {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-      }
-
-      .advanced {
-        margin-top: 4px;
-      }
-
-      .advanced summary {
-        font-size: 11px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--text-muted);
-        cursor: pointer;
-        user-select: none;
-      }
-
-      .advanced-body {
-        margin-top: 12px;
-        display: grid;
-        gap: 12px;
-      }
-
+      /* ─── Advanced Details ─── */
+      .advanced { margin-top: 4px; }
+      .advanced summary { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3); cursor: pointer; user-select: none; }
+      .advanced-body { margin-top: 11px; display: grid; gap: 11px; }
       .advanced pre {
-        background: rgba(0, 0, 0, 0.35);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        padding: 14px;
-        font-size: 12px;
-        line-height: 1.6;
-        color: var(--text-secondary);
-        overflow: auto;
-        max-height: 240px;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
+        background: rgba(0,0,0,.3); border: 1px solid var(--border); border-radius: var(--r-sm);
+        padding: 12px; font-size: 11px; line-height: 1.6; color: var(--text2);
+        font-family: 'DM Mono', monospace; overflow: auto; max-height: 220px;
+        white-space: pre-wrap; overflow-wrap: anywhere;
       }
 
-      /* Empty states */
+      /* ─── Unaudited Notice ─── */
+      .unaudited-note {
+        padding: 11px 14px; border-radius: var(--r-sm);
+        border: 1px solid rgba(245,158,11,.22); background: var(--warn-bg);
+        font-size: 12px; color: var(--warn); line-height: 1.5;
+      }
+      .unaudited-note strong { font-weight: 700; }
+
+      /* ─── Empty State ─── */
       .empty-state {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        padding: 60px 24px;
-        border: 1px dashed var(--border);
-        border-radius: var(--radius);
-        background: var(--surface);
-        color: var(--text-muted);
-        text-align: center;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
+        padding: 56px 24px; border: 1px dashed var(--border); border-radius: var(--r);
+        background: var(--surface); color: var(--text3); text-align: center;
       }
+      .empty-state p { font-size: 14px; font-weight: 700; color: var(--text2); }
+      .empty-state span { font-size: 12px; }
 
-      .empty-state p {
-        font-size: 15px;
-        font-weight: 700;
-        color: var(--text-secondary);
-      }
-
-      .empty-state span {
-        font-size: 13px;
-      }
-
-      /* History */
+      /* ─── History ─── */
       .history-panel {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        backdrop-filter: blur(24px);
+        background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); backdrop-filter: blur(20px);
       }
-
       .history-panel > summary {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 20px 24px;
-        cursor: pointer;
-        font-size: 16px;
-        font-weight: 800;
-        list-style: none;
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 18px 22px; cursor: pointer; font-size: 15px; font-weight: 800; list-style: none;
       }
-
-      .history-panel > summary::-webkit-details-marker {
-        display: none;
-      }
-
-      .history-panel > summary::after {
-        content: "Expand";
-        font-size: 12px;
-        font-weight: 700;
-        color: var(--text-muted);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-      }
-
-      .history-panel[open] > summary::after {
-        content: "Collapse";
-      }
-
-      .history-list {
-        padding: 0 24px 24px;
-        display: grid;
-        gap: 12px;
-      }
-
+      .history-panel > summary::-webkit-details-marker { display: none; }
+      .history-panel > summary::after { content: "Expand"; font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; }
+      .history-panel[open] > summary::after { content: "Collapse"; }
+      .history-list { padding: 0 22px 22px; display: grid; gap: 11px; }
       .history-card {
-        display: grid;
-        grid-template-columns: 100px 1fr;
-        gap: 16px;
-        padding: 16px;
-        border-radius: var(--radius-sm);
-        border: 1px solid var(--border);
-        background: rgba(0, 0, 0, 0.2);
-        transition: border-color 0.2s ease;
+        display: grid; grid-template-columns: 90px 1fr; gap: 14px; padding: 14px;
+        border-radius: var(--r-sm); border: 1px solid var(--border); background: rgba(0,0,0,.18);
+        transition: border-color 0.18s;
+      }
+      .history-card:hover { border-color: var(--border2); }
+      .history-card .queue-thumb { width: 90px; aspect-ratio: 1; }
+      .history-empty { padding: 36px; text-align: center; color: var(--text3); font-size: 13px; }
+
+      /* ─── Divider ─── */
+      .divider { height: 1px; background: var(--border); margin: 12px 0; }
+
+      /* ─── Section label ─── */
+      .section-label {
+        font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+        color: var(--text3); margin-bottom: 8px; display: block;
       }
 
-      .history-card:hover {
-        border-color: var(--border-hover);
-      }
-
-      .history-card .queue-thumb {
-        width: 100px;
-        aspect-ratio: 1;
-      }
-
-      .history-empty {
-        padding: 40px;
-        text-align: center;
-        color: var(--text-muted);
-        font-size: 14px;
-      }
-
-      /* Responsive */
+      /* ─── Responsive ─── */
       @media (max-width: 860px) {
-        .dashboard-grid {
-          grid-template-columns: 1fr;
-        }
-
-        .queue-card {
-          grid-template-columns: 1fr;
-        }
-
-        .queue-thumb {
-          width: 100%;
-          aspect-ratio: 16 / 10;
-        }
-
-        .schedule-row {
-          grid-template-columns: 1fr;
-        }
-
-        .history-card {
-          grid-template-columns: 1fr;
-        }
-
-        .history-card .queue-thumb {
-          width: 100%;
-          aspect-ratio: 16 / 10;
-        }
+        .dashboard-grid { grid-template-columns: 1fr; }
+        .queue-card { grid-template-columns: 1fr; }
+        .queue-thumb { width: 100%; aspect-ratio: 16/9; }
+        .schedule-row { grid-template-columns: 1fr; }
+        .history-card { grid-template-columns: 1fr; }
+        .history-card .queue-thumb { width: 100%; aspect-ratio: 16/9; }
       }
-
       @media (max-width: 640px) {
-        .app {
-          padding: 16px 16px 60px;
-        }
-
-        .topbar-inner {
-          flex-direction: column;
-          align-items: flex-start;
-        }
-
-        .topbar-actions {
-          width: 100%;
-        }
-
-        .queue-top {
-          flex-direction: column;
-        }
-
-        .actions .btn,
-        .card-actions .btn,
-        .schedule-row .btn {
-          width: 100%;
-          justify-content: center;
-        }
+        .app { padding: 14px 14px 56px; }
+        .topbar-inner { flex-direction: column; align-items: flex-start; }
+        .topbar-actions { width: 100%; }
+        .queue-top { flex-direction: column; }
+        .actions .btn, .card-actions .btn, .schedule-row .btn { width: 100%; justify-content: center; }
       }
     </style>
   </head>
@@ -814,7 +370,6 @@
       const displayResultLabel = (result) => {
         const tone = String((result && result.tone) || '').toLowerCase();
         const label = String((result && result.stateLabel) || '').toLowerCase();
-
         if (tone === 'failed' || label.includes('failed')) return 'Failed';
         if (tone === 'verification' || label.includes('verification')) return 'Needs verification';
         if (tone === 'accepted' || label.includes('posted') || label.includes('accepted')) return 'Posted / API accepted';
@@ -826,13 +381,15 @@
         const value = String((post && post.privacyLevel) || 'SELF_ONLY').trim() || 'SELF_ONLY';
         return privacyOptions.includes(value) ? value : privacyOptions[0];
       };
+      const isPhotoPost = (post) => helpers.mediaType(post) === 'photo';
     %>
 
     <div class="app">
+      <!-- ─── Topbar ─── -->
       <header class="topbar">
         <div class="topbar-inner">
           <div class="brand">
-            <div class="brand-mark"></div>
+            <div class="brand-mark">C</div>
             <div class="brand-text">
               <div class="brand-title">CHANTER</div>
               <div class="brand-sub">Auto Poster</div>
@@ -840,10 +397,7 @@
           </div>
           <div class="topbar-actions">
             <% if (tiktokConfigured) { %>
-              <div class="pill pill-connected">
-                <span class="dot"></span>
-                TikTok Connected
-              </div>
+              <div class="pill pill-ok"><span class="dot"></span>TikTok Connected</div>
               <% if (creatorInfo) { %>
                 <div class="pill pill-creator">
                   <img src="<%= creatorInfo.creator_avatar_url || '/assets/chanter-logo.png' %>" alt="" />
@@ -852,25 +406,41 @@
               <% } %>
               <a class="btn btn-ghost" href="/disconnect/tiktok">Disconnect</a>
             <% } else { %>
-              <div class="pill pill-offline">
-                <span class="dot"></span>
-                Manual Mode
-              </div>
+              <div class="pill pill-warn"><span class="dot"></span>Manual Mode</div>
               <a class="btn btn-primary" href="/connect/tiktok">Connect TikTok</a>
+            <% } %>
+
+            <%
+              const igPillClass = instagramStatus.state === 'ready' ? 'pill-cyan'
+                : instagramStatus.state === 'token_expired' ? 'pill-err'
+                : instagramStatus.connected ? 'pill-ok' : 'pill-warn';
+            %>
+            <div class="pill <%= igPillClass %>"><span class="dot"></span>Instagram <%= instagramStatus.label %></div>
+            <% if (instagramStatus.connected) { %>
+              <a class="btn btn-ghost" href="/disconnect/instagram">Disconnect IG</a>
+            <% } else { %>
+              <a class="btn btn-secondary" href="/auth/instagram/start">Connect Instagram</a>
             <% } %>
           </div>
         </div>
       </header>
 
-      <% if (notice) { %>
-        <div class="notice"><%= notice %></div>
+      <% if (notice) { %><div class="notice"><%= notice %></div><% } %>
+
+      <%
+        const isUnauditedApp = !tiktokConfigured;
+        const showUnauditedWarning = tiktokConfigured && creatorInfo && privacyOptions.length > 0 && !privacyOptions.includes('PUBLIC_TO_EVERYONE');
+      %>
+      <% if (showUnauditedWarning) { %>
+        <div class="unaudited-note">
+          <strong>App not yet reviewed by TikTok:</strong> Until your TikTok Developer app passes the audit, all posts are restricted to <code>SELF_ONLY</code> privacy and up to 5 users per 24 h window. To lift this, <a href="https://developers.tiktok.com/doc/content-sharing-guidelines/" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;">complete the TikTok audit</a>.
+        </div>
       <% } %>
 
+      <!-- ─── Dashboard Grid ─── -->
       <div class="dashboard-grid" aria-label="Poster controls">
         <section class="panel">
-          <div class="panel-head">
-            <h2>Upload</h2>
-          </div>
+          <div class="panel-head"><h2>Upload Media</h2></div>
           <form action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
             <div class="form-grid">
               <label class="wide">
@@ -879,22 +449,20 @@
               </label>
               <label>
                 Caption
-                <textarea name="caption" placeholder="Write a caption..."></textarea>
+                <textarea name="caption" placeholder="Write a caption…"></textarea>
               </label>
               <label>
                 Hashtags
                 <textarea name="hashtags" placeholder="#chanter #viral"></textarea>
               </label>
             </div>
-            <div class="actions">
-              <button type="submit" class="btn btn-primary">Upload</button>
-            </div>
+            <div class="actions"><button type="submit" class="btn btn-primary">Upload &amp; Schedule</button></div>
           </form>
         </section>
 
         <section class="panel">
           <div class="panel-head">
-            <h2>Schedule</h2>
+            <h2>Post Schedule</h2>
             <span class="panel-meta"><%= settings.dailyPostTime %></span>
           </div>
           <form action="/settings" method="post">
@@ -902,18 +470,17 @@
               Daily time
               <input type="time" name="dailyPostTime" value="<%= settings.dailyPostTime %>" required />
             </label>
-            <div class="actions">
-              <button type="submit" class="btn btn-primary">Save schedule</button>
-            </div>
+            <div class="actions"><button type="submit" class="btn btn-primary">Save</button></div>
           </form>
           <form action="/schedule" method="post">
-            <div class="actions" style="margin-top: 8px;">
+            <div class="actions" style="margin-top:6px;">
               <button type="submit" class="btn btn-secondary">Rebuild queue</button>
             </div>
           </form>
         </section>
       </div>
 
+      <!-- ─── Active Queue ─── -->
       <section class="queue-section" aria-label="Queue">
         <div class="section-head">
           <h2>Queue</h2>
@@ -921,18 +488,24 @@
         </div>
 
         <% if (activePosts.length === 0) { %>
-          <div class="empty-state">
-            <p>Queue empty</p>
-            <span>Upload media to get started</span>
-          </div>
+          <div class="empty-state"><p>Queue empty</p><span>Upload media to get started</span></div>
         <% } %>
 
         <div class="queue-list">
           <% activePosts.forEach(function(post) { %>
             <% const mediaPath = helpers.mediaPath(post); %>
             <% const mediaType = helpers.mediaType(post); %>
+            <% const isPhoto = mediaType === 'photo'; %>
             <% const result = helpers.postResult(post); %>
+            <% const igResult = helpers.instagramPostResult(post); %>
+            <%
+              // Resolve interaction ability from creatorInfo
+              const commentDisabled = creatorInfo && creatorInfo.comment_disabled;
+              const duetDisabled = isPhoto || (creatorInfo && creatorInfo.duet_disabled);
+              const stitchDisabled = isPhoto || (creatorInfo && creatorInfo.stitch_disabled);
+            %>
             <article class="queue-card" data-post-card>
+              <!-- Thumbnail -->
               <% if (mediaPath) { %>
                 <a class="queue-thumb" href="<%= mediaPath %>" target="_blank" rel="noreferrer">
                   <img class="thumb-placeholder" src="/assets/chanter-logo.png" alt="" />
@@ -951,6 +524,7 @@
               <% } %>
 
               <div class="queue-main">
+                <!-- Header row -->
                 <div class="queue-top">
                   <div class="queue-title">
                     <h3><%= post.originalName %></h3>
@@ -963,10 +537,14 @@
 
                 <% if (result.message && result.tone === 'failed') { %>
                   <p class="result-message is-failed"><%= result.message %></p>
-                <% } else if (result.message && result.tone !== 'scheduled' && result.tone !== 'posted' && result.tone !== 'accepted') { %>
+                <% } else if (result.message && result.tone !== 'scheduled' && result.tone !== 'accepted') { %>
                   <p class="result-message"><%= result.message %></p>
                 <% } %>
+                <% if (igResult.hasAttempt) { %>
+                  <p class="result-message <%= igResult.tone === 'failed' ? 'is-failed' : '' %>">Instagram: <%= igResult.message %></p>
+                <% } %>
 
+                <!-- Edit form -->
                 <form
                   class="schedule-form"
                   action="/posts/<%= post.id %>"
@@ -975,49 +553,154 @@
                   data-media-type="<%= mediaType %>"
                   data-has-local-media="<%= helpers.hasLocalMedia(post) ? 'true' : 'false' %>"
                 >
-                  <input type="hidden" name="caption" value="<%= post.caption || '' %>" />
-                  <input type="hidden" name="hashtags" value="<%= post.hashtags || '' %>" />
                   <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
+
+                  <!-- ① Title (required by TikTok) -->
+                  <label>
+                    Title
+                    <span class="field-note">Required — visible on TikTok post page. Shown to your audience.</span>
+                    <input type="text" name="caption" value="<%= post.caption || '' %>" placeholder="Add a title…" maxlength="150" required />
+                  </label>
+
+                  <!-- ② Caption / Hashtags -->
+                  <label>
+                    Hashtags
+                    <input type="text" name="hashtags" value="<%= post.hashtags || '' %>" placeholder="#chanter #viral" />
+                  </label>
+
+                  <!-- ③ Schedule + Privacy row -->
                   <div class="schedule-row">
                     <label>
-                      <span class="field-note">Publishes automatically at this time in your local timezone.</span>
+                      <span class="field-note">Scheduled time (your local timezone).</span>
                       <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
                     </label>
                     <label>
                       Privacy
-                      <select name="privacyLevel">
+                      <%# TikTok requires options from privacy_level_options; no default pre-selected behaviour; user must choose %>
+                      <select name="privacyLevel" required>
                         <% privacyOptions.forEach(function(option) { %>
-                          <option value="<%= option %>" <%= selectedPrivacy(post) === option ? 'selected' : '' %>><%= option %></option>
+                          <option value="<%= option %>" <%= selectedPrivacy(post) === option ? 'selected' : '' %>>
+                            <%= option.replace(/_/g,' ') %>
+                          </option>
                         <% }); %>
                       </select>
                     </label>
                     <button type="submit" class="btn btn-primary">Save</button>
                   </div>
+
+                  <!-- ④ Interaction Ability (TikTok Required UX #2c) -->
+                  <% if (tiktokConfigured) { %>
+                    <span class="section-label">Interaction ability</span>
+                    <div class="interaction-controls">
+                      <%# Allow Comment — always shown %>
+                      <div class="check-row <%= commentDisabled ? 'disabled-row' : '' %>">
+                        <input
+                          type="checkbox" id="allow_comment_<%= post.id %>" name="allowComment" value="1"
+                          <%= !commentDisabled ? 'checked' : '' %>
+                          <%= commentDisabled ? 'disabled' : '' %>
+                        />
+                        <label for="allow_comment_<%= post.id %>">Allow Comment</label>
+                        <% if (commentDisabled) { %><span class="check-hint">Disabled by your account settings</span><% } %>
+                      </div>
+
+                      <%# Duet — not shown for photo posts per TikTok guidelines %>
+                      <div class="check-row <%= duetDisabled ? 'disabled-row' : '' %>">
+                        <input
+                          type="checkbox" id="allow_duet_<%= post.id %>" name="allowDuet" value="1"
+                          <%= (!duetDisabled) ? 'checked' : '' %>
+                          <%= duetDisabled ? 'disabled' : '' %>
+                        />
+                        <label for="allow_duet_<%= post.id %>">Allow Duet</label>
+                        <% if (isPhoto) { %><span class="check-hint">Not available for photos</span><% } else if (duetDisabled) { %><span class="check-hint">Disabled by account settings</span><% } %>
+                      </div>
+
+                      <%# Stitch — not shown for photo posts %>
+                      <div class="check-row <%= stitchDisabled ? 'disabled-row' : '' %>">
+                        <input
+                          type="checkbox" id="allow_stitch_<%= post.id %>" name="allowStitch" value="1"
+                          <%= (!stitchDisabled) ? 'checked' : '' %>
+                          <%= stitchDisabled ? 'disabled' : '' %>
+                        />
+                        <label for="allow_stitch_<%= post.id %>">Allow Stitch</label>
+                        <% if (isPhoto) { %><span class="check-hint">Not available for photos</span><% } else if (stitchDisabled) { %><span class="check-hint">Disabled by account settings</span><% } %>
+                      </div>
+                    </div>
+                  <% } %>
+
+                  <!-- ⑤ Content Disclosure Setting (TikTok Required UX #3a) -->
+                  <% if (tiktokConfigured) { %>
+                    <div class="disclosure-section" data-disclosure-section>
+                      <div class="disclosure-header">
+                        <span>Content Disclosure Setting</span>
+                        <div class="toggle-wrap">
+                          <label class="toggle">
+                            <input type="checkbox" name="contentDisclosure" id="cd_<%= post.id %>" value="1" data-disclosure-toggle />
+                            <span class="toggle-slider"></span>
+                          </label>
+                          <span style="font-size:11px;color:var(--text3);">Off by default</span>
+                        </div>
+                      </div>
+                      <div class="disclosure-body" data-disclosure-body style="display:none;">
+                        <p class="disclosure-note">
+                          Indicate if your content promotes yourself, a brand, product, or service.
+                          If enabled, TikTok will label this post as "Promotional content".
+                        </p>
+                        <div class="check-row">
+                          <input type="checkbox" id="yourBrand_<%= post.id %>" name="yourBrand" value="1" />
+                          <label for="yourBrand_<%= post.id %>">Your Brand — promoting your own business</label>
+                        </div>
+                        <div class="check-row">
+                          <input type="checkbox" id="brandedContent_<%= post.id %>" name="brandedContent" value="1" />
+                          <label for="brandedContent_<%= post.id %>">Branded Content — promoting a third-party brand</label>
+                        </div>
+                      </div>
+                    </div>
+                  <% } %>
+
+                  <!-- Advanced -->
                   <details class="advanced">
-                    <summary>Advanced</summary>
+                    <summary>Advanced / URLs</summary>
                     <div class="advanced-body">
                       <label>
                         Public image URL
                         <input
-                          type="url"
-                          name="publicImageUrl"
-                          value="<%= post.publicImageUrl || '' %>"
+                          type="url" name="publicImageUrl" value="<%= post.publicImageUrl || '' %>"
                           placeholder="<%= mediaType === 'video' ? 'Not required for video posts' : 'https://example.com/image.png' %>"
                           data-public-image-url
                         />
                       </label>
-                      <% if (result.hasDebug) { %>
-                        <pre><%= result.debugJson %></pre>
-                      <% } %>
+                      <label>
+                        Instagram media URL
+                        <input
+                          type="url" name="instagramMediaUrl" value="<%= post.instagramMediaUrl || '' %>"
+                          placeholder="<%= mediaType === 'video' ? 'https://example.com/reel.mp4' : 'https://example.com/image.jpg' %>"
+                        />
+                      </label>
+                      <% if (result.hasDebug) { %><pre><%= result.debugJson %></pre><% } %>
+                      <% if (igResult.hasDebug) { %><pre><%= igResult.debugJson %></pre><% } %>
                     </div>
                   </details>
                 </form>
+
+                <!-- ⑥ Music Usage Confirmation + Post Actions -->
+                <% if (tiktokConfigured) { %>
+                  <div class="music-declaration">
+                    By posting, you agree to TikTok's <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" rel="noreferrer">Music Usage Confirmation</a>.
+                  </div>
+                <% } %>
 
                 <div class="card-actions">
                   <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post now? This ignores the schedule.');">
                     <input type="hidden" name="force" value="1" />
                     <button type="submit" class="btn btn-secondary">Post now</button>
                   </form>
+                  <% if (instagramStatus.readyToPublish) { %>
+                    <form class="inline-action" action="/api/instagram/publish" method="post" data-instagram-publish-form>
+                      <input type="hidden" name="postId" value="<%= post.id %>" />
+                      <input type="hidden" name="dryRun" value="1" />
+                      <button type="submit" class="btn btn-cyan">Test Instagram</button>
+                    </form>
+                  <% } %>
                   <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
                     <button type="submit" class="btn btn-danger">Delete</button>
                   </form>
@@ -1028,6 +711,7 @@
         </div>
       </section>
 
+      <!-- ─── History ─── -->
       <details class="history-panel">
         <summary>
           <span>History</span>
@@ -1037,7 +721,6 @@
           <% if (historyPosts.length === 0) { %>
             <div class="history-empty">No posted history</div>
           <% } %>
-
           <% historyPosts.forEach(function(post) { %>
             <% const mediaPath = helpers.mediaPath(post); %>
             <% const mediaType = helpers.mediaType(post); %>
@@ -1059,7 +742,6 @@
                   <span class="media-chip"><%= helpers.mediaLabel(post) %></span>
                 </div>
               <% } %>
-
               <div class="queue-main">
                 <div class="queue-top">
                   <div class="queue-title">
@@ -1071,16 +753,11 @@
                 <p class="caption-preview"><%= captionPreview(post) %></p>
                 <div class="card-actions">
                   <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
-                    <button type="submit" class="btn btn-danger">Remove from history</button>
+                    <button type="submit" class="btn btn-danger">Remove</button>
                   </form>
                 </div>
                 <% if (result.hasDebug) { %>
-                  <details class="advanced">
-                    <summary>Advanced</summary>
-                    <div class="advanced-body">
-                      <pre><%= result.debugJson %></pre>
-                    </div>
-                  </details>
+                  <details class="advanced"><summary>Debug</summary><div class="advanced-body"><pre><%= result.debugJson %></pre></div></details>
                 <% } %>
               </div>
             </article>
@@ -1090,131 +767,89 @@
     </div>
 
     <script>
-      function copyText(value) {
-        if (navigator.clipboard && window.isSecureContext) {
-          return navigator.clipboard.writeText(value);
-        }
-
-        const fallback = document.createElement('textarea');
-        fallback.value = value;
-        fallback.setAttribute('readonly', '');
-        fallback.style.position = 'fixed';
-        fallback.style.opacity = '0';
-        document.body.appendChild(fallback);
-        fallback.select();
-        document.execCommand('copy');
-        fallback.remove();
-        return Promise.resolve();
-      }
-
-      document.querySelectorAll('.copy-button').forEach((button) => {
-        button.addEventListener('click', async () => {
-          const target = document.getElementById(button.dataset.target);
-          if (!target) return;
-
-          await copyText(target.value);
-          const originalText = button.textContent;
-          button.textContent = 'Copied';
-          window.setTimeout(() => {
-            button.textContent = originalText;
-          }, 1200);
-        });
+      // Timezone offset
+      document.querySelectorAll('[data-timezone-offset]').forEach(el => {
+        el.value = String(new Date().getTimezoneOffset());
       });
 
+      // File kind helper
       function getFileKind(file) {
-        const type = String(file.type || '').toLowerCase();
-        const name = String(file.name || '').toLowerCase();
-
-        if (type.startsWith('image/')) return 'photo';
-        if (type.startsWith('video/')) return 'video';
-        if (/\.(png|jpe?g|webp|gif)$/i.test(name)) return 'photo';
-        if (/\.(mp4|mov|webm)$/i.test(name)) return 'video';
+        const t = String(file.type || '').toLowerCase();
+        const n = String(file.name || '').toLowerCase();
+        if (t.startsWith('image/')) return 'photo';
+        if (t.startsWith('video/')) return 'video';
+        if (/\.(png|jpe?g|webp|gif)$/i.test(n)) return 'photo';
+        if (/\.(mp4|mov|webm)$/i.test(n)) return 'video';
         return '';
       }
 
-      document.querySelectorAll('[data-upload-form]').forEach((form) => {
+      // Upload form validation
+      document.querySelectorAll('[data-upload-form]').forEach(form => {
         const input = form.querySelector('[data-media-upload]');
         if (!input) return;
-
-        const validateUpload = () => {
+        const validate = () => {
           const files = Array.from(input.files || []);
-          let message = '';
-
-          if (files.length === 0) {
-            message = 'Choose at least one image or video file.';
-          } else if (files.some((file) => !getFileKind(file))) {
-            message = 'Use image files or MP4, MOV, or WebM video files.';
-          }
-
-          input.setCustomValidity(message);
-          return !message;
+          let msg = '';
+          if (files.length === 0) msg = 'Choose at least one image or video file.';
+          else if (files.some(f => !getFileKind(f))) msg = 'Use image files or MP4, MOV, or WebM video files.';
+          input.setCustomValidity(msg);
+          return !msg;
         };
-
-        input.addEventListener('change', validateUpload);
-        form.addEventListener('submit', (event) => {
-          if (!validateUpload()) {
-            event.preventDefault();
-            input.reportValidity();
-          }
-        });
+        input.addEventListener('change', validate);
+        form.addEventListener('submit', e => { if (!validate()) { e.preventDefault(); input.reportValidity(); } });
       });
 
-      document.querySelectorAll('[data-timezone-offset]').forEach((input) => {
-        input.value = String(new Date().getTimezoneOffset());
-      });
-
-      document.querySelectorAll('[data-edit-form]').forEach((form) => {
+      // Edit form: public image URL validation
+      document.querySelectorAll('[data-edit-form]').forEach(form => {
         const input = form.querySelector('[data-public-image-url]');
         if (!input) return;
-
-        const validatePostMedia = () => {
+        const validate = () => {
           const mediaType = form.dataset.mediaType;
-          const hasLocalMedia = form.dataset.hasLocalMedia === 'true';
-          const hasPublicImageUrl = input.value.trim().length > 0;
-          const missingPhotoSource = mediaType === 'photo' && !hasLocalMedia && !hasPublicImageUrl;
-
-          input.setCustomValidity(missingPhotoSource ? 'Add an image file or public image URL for photo posts.' : '');
-          return !missingPhotoSource;
+          const hasLocal = form.dataset.hasLocalMedia === 'true';
+          const hasUrl = input.value.trim().length > 0;
+          const missing = mediaType === 'photo' && !hasLocal && !hasUrl;
+          input.setCustomValidity(missing ? 'Add an image file or public image URL for photo posts.' : '');
+          return !missing;
         };
-
-        input.addEventListener('input', validatePostMedia);
-        form.addEventListener('submit', (event) => {
-          if (!validatePostMedia()) {
-            event.preventDefault();
-            input.reportValidity();
-          }
-        });
+        input.addEventListener('input', validate);
+        form.addEventListener('submit', e => { if (!validate()) { e.preventDefault(); input.reportValidity(); } });
       });
 
-      document.querySelectorAll('[data-publish-form]').forEach((form) => {
+      // Publish form: optimistic badge
+      document.querySelectorAll('[data-publish-form]').forEach(form => {
         form.addEventListener('submit', () => {
           const card = form.closest('[data-post-card]');
           const badge = card ? card.querySelector('[data-result-badge]') : null;
-          const button = form.querySelector('button');
-
-          if (button) {
-            button.disabled = true;
-            button.textContent = 'Publishing';
-          }
-
-          if (badge) {
-            badge.className = 'badge publishing';
-            badge.textContent = 'Publishing';
-          }
+          const btn = form.querySelector('button');
+          if (btn) { btn.disabled = true; btn.textContent = 'Publishing…'; }
+          if (badge) { badge.className = 'badge publishing'; badge.textContent = 'Publishing'; }
         });
       });
 
-      document.querySelectorAll('[data-preview-media]').forEach((media) => {
-        const markMissing = () => {
-          const thumb = media.closest('.queue-thumb');
-          if (thumb) thumb.classList.add('is-missing');
-        };
+      // Instagram test form
+      document.querySelectorAll('[data-instagram-publish-form]').forEach(form => {
+        form.addEventListener('submit', () => {
+          const btn = form.querySelector('button');
+          if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
+        });
+      });
 
-        media.addEventListener('error', markMissing);
+      // Missing media thumbnails
+      document.querySelectorAll('[data-preview-media]').forEach(media => {
+        const mark = () => { const t = media.closest('.queue-thumb'); if (t) t.classList.add('is-missing'); };
+        media.addEventListener('error', mark);
+        if (media.tagName === 'IMG' && media.complete && media.naturalWidth === 0) mark();
+      });
 
-        if (media.tagName === 'IMG' && media.complete && media.naturalWidth === 0) {
-          markMissing();
-        }
+      // Content Disclosure toggle shows/hides body
+      document.querySelectorAll('[data-disclosure-toggle]').forEach(toggle => {
+        const section = toggle.closest('[data-disclosure-section]');
+        if (!section) return;
+        const body = section.querySelector('[data-disclosure-body]');
+        if (!body) return;
+        toggle.addEventListener('change', () => {
+          body.style.display = toggle.checked ? '' : 'none';
+        });
       });
     </script>
   </body>
