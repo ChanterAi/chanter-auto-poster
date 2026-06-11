@@ -12,11 +12,18 @@ function isConfigured() {
 }
 
 function buildTikTokAuthUrl(state) {
+  // Always ensure video.publish is included
+  const scopeSet = new Set([
+    'user.info.basic',
+    'video.publish',
+    ...String(config.tiktok.scopes || '').split(',').map(s => s.trim()).filter(Boolean)
+  ]);
+
   const url = new URL(config.tiktok.authUrl);
   url.search = new URLSearchParams({
     client_key: config.tiktok.clientKey,
     response_type: 'code',
-    scope: config.tiktok.scopes,
+    scope: [...scopeSet].join(','),
     redirect_uri: config.tiktok.redirectUri,
     state
   }).toString();
@@ -279,10 +286,16 @@ async function postVideoInitPayload(payload, accessToken) {
         payload
       }, null, 2));
 
+      // HTTP 403 after approval = stale pre-approval token
+      // User must Disconnect and reconnect TikTok to get fresh production token
+      const reason = response.status === 403
+        ? 'Token was issued before app approval. Please click Disconnect then reconnect TikTok to get a fresh production token.'
+        : `TikTok video init returned HTTP ${response.status}`;
+
       return {
         ok: false,
         mode: 'api',
-        reason: `TikTok video init returned HTTP ${response.status}`,
+        reason,
         response: body
       };
     }
@@ -390,9 +403,9 @@ function buildPhotoPayload(post, imageUrl, creatorInfo = null) {
     post_info: {
       title: buildCaption(post),
       privacy_level: resolvePrivacyLevel(post, creatorInfo),
-      disable_duet:    true, // Duet/Stitch not applicable for photo posts per TikTok guidelines
+      disable_duet:    true,  // Not applicable for photo posts per TikTok guidelines
       disable_comment: Boolean(post.disableComment),
-      disable_stitch:  true
+      disable_stitch:  true   // Not applicable for photo posts per TikTok guidelines
     },
     source_info: {
       source: 'PULL_FROM_URL',
@@ -472,10 +485,14 @@ async function postPhotoPayload(payload, accessToken) {
         payload
       }, null, 2));
 
+      const reason = response.status === 403
+        ? 'Token was issued before app approval. Please click Disconnect then reconnect TikTok to get a fresh production token.'
+        : `TikTok photo init returned HTTP ${response.status}`;
+
       return {
         ok: false,
         mode: 'api',
-        reason: `TikTok photo init returned HTTP ${response.status}`,
+        reason,
         response: body
       };
     }
