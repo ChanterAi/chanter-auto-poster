@@ -7,8 +7,8 @@ const tokenRefreshBufferMs = 5 * 60 * 1000;
 const videoInitUrl = 'https://open.tiktokapis.com/v2/post/publish/video/init/';
 const creatorInfoQueryUrl = 'https://open.tiktokapis.com/v2/post/publish/creator_info/query/';
 
-function isConfigured() {
-  return getTikTokAuthStatus().connected;
+async function isConfigured() {
+  return (await getTikTokAuthStatus()).connected;
 }
 
 function buildTikTokAuthUrl(state) {
@@ -43,8 +43,8 @@ async function exchangeCodeForToken(code) {
   return normalizeTokenResponse(body);
 }
 
-function getTikTokAuthStatus() {
-  const auth = storage.getTikTokAuth();
+async function getTikTokAuthStatus() {
+  const auth = await storage.getTikTokAuth();
   return {
     connected: Boolean(auth.connected && auth.access_token),
     open_id: auth.open_id || '',
@@ -54,7 +54,7 @@ function getTikTokAuthStatus() {
 }
 
 async function refreshTikTokToken() {
-  const auth = storage.getTikTokAuth();
+  const auth = await storage.getTikTokAuth();
   if (!auth.connected || !auth.refresh_token) {
     return null;
   }
@@ -450,7 +450,7 @@ function buildCaption(post) {
 }
 
 async function getActiveTikTokAuth() {
-  const auth = storage.getTikTokAuth();
+  const auth = await storage.getTikTokAuth();
   if (!auth.connected || !auth.access_token) return null;
   if (!shouldRefresh(auth)) return auth;
   return refreshTikTokToken();

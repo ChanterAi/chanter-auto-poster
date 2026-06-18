@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const config = require('./config');
+const { postsCollection, configDoc, getFirestore, Timestamp, FieldValue } = require('./firestore');
+const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore } = require('./postsMapper');
 
 const defaultSettings = {
   dailyPostTime: '09:00',
@@ -38,138 +40,63 @@ const defaultInstagramAuth = {
   updated_at: null
 };
 
-function ensureStorage() {
-  fs.mkdirSync(config.dataDir, { recursive: true });
-  fs.mkdirSync(config.uploadsDir, { recursive: true });
+// ── Bootstrap ────────────────────────────────────────────────────────────
 
-  if (!fs.existsSync(config.postsFile)) {
-    writeJson(config.postsFile, []);
-  }
+async function ensureStorage() {
+  // Firestore needs no directories on disk. This now (a) fails fast and
+  // loud at boot if the Admin SDK credentials are missing/bad, instead of
+  // booting a server that 500s on the first request, and (b) seeds the
+  // singleton config docs the app expects to always exist, mirroring the
+  // old "create default JSON files on first run" behaviour.
+  const db = getFirestore();
+  await db.collection('config').limit(1).get();
 
-  if (!fs.existsSync(config.settingsFile)) {
-    writeJson(config.settingsFile, defaultSettings);
-  }
-
-  if (!fs.existsSync(config.tiktokAuthFile)) {
-    writeJson(config.tiktokAuthFile, defaultTikTokAuth);
-  }
-
-  if (!fs.existsSync(config.instagramAuthFile)) {
-    writeJson(config.instagramAuthFile, defaultInstagramAuth);
-  }
+  await Promise.all([
+    ensureConfigDoc('settings', defaultSettings),
+    ensureConfigDoc('tiktokAuth', defaultTikTokAuth),
+    ensureConfigDoc('instagramAuth', defaultInstagramAuth)
+  ]);
 }
 
-function readJson(filePath, fallback) {
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    return raw.trim() ? JSON.parse(raw) : fallback;
-  } catch (error) {
-    return fallback;
+async function ensureConfigDoc(name, defaults) {
+  const ref = configDoc(name);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    await ref.set(defaults);
   }
 }
 
-function writeJson(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-  fs.renameSync(tempPath, filePath);
+// ── Posts ────────────────────────────────────────────────────────────────
+
+function comparePosts(a, b) {
+  const orderDiff = Number(a.order || 0) - Number(b.order || 0);
+  if (orderDiff !== 0) return orderDiff;
+  return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
 }
 
-function getPosts() {
-  ensureStorage();
-  const posts = readJson(config.postsFile, []);
-  return sortPosts(Array.isArray(posts) ? posts : []);
+async function getPosts(userId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const snapshot = await postsCollection().where('userId', '==', ownerId).get();
+  return snapshot.docs.map(postFromDoc).sort(comparePosts);
 }
 
-function savePosts(posts) {
-  writeJson(config.postsFile, sortPosts(posts));
+async function getPost(userId, id) {
+  if (!id) return null;
+  const ownerId = userId || DEFAULT_USER_ID;
+  const snap = await postsCollection().doc(id).get();
+  if (!snap.exists) return null;
+  if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  return postFromDoc(snap);
 }
 
-function getPost(id) {
-  return getPosts().find((post) => post.id === id) || null;
-}
-
-function getSettings() {
-  ensureStorage();
-  return {
-    ...defaultSettings,
-    ...readJson(config.settingsFile, defaultSettings)
-  };
-}
-
-function saveSettings(settings) {
-  const nextSettings = {
-    ...getSettings(),
-    ...settings,
-    updatedAt: new Date().toISOString()
-  };
-  writeJson(config.settingsFile, nextSettings);
-  return nextSettings;
-}
-
-function getTikTokAuth() {
-  ensureStorage();
-  return {
-    ...defaultTikTokAuth,
-    ...readJson(config.tiktokAuthFile, defaultTikTokAuth)
-  };
-}
-
-function saveTikTokAuth(auth) {
-  const nextAuth = {
-    ...defaultTikTokAuth,
-    ...auth,
-    connected: Boolean(auth.connected && auth.access_token)
-  };
-
-  writeJson(config.tiktokAuthFile, nextAuth);
-  return nextAuth;
-}
-
-function clearTikTokAuth() {
-  writeJson(config.tiktokAuthFile, defaultTikTokAuth);
-  return defaultTikTokAuth;
-}
-
-function getInstagramAuth() {
-  ensureStorage();
-  return {
-    ...defaultInstagramAuth,
-    ...readJson(config.instagramAuthFile, defaultInstagramAuth)
-  };
-}
-
-function saveInstagramAuth(auth) {
-  const previous = getInstagramAuth();
-  const now = new Date().toISOString();
-  const nextAuth = {
-    ...defaultInstagramAuth,
-    ...previous,
-    ...auth,
-    connected: Boolean(auth.connected && (auth.access_token || previous.access_token)),
-    connected_at: previous.connected_at || auth.connected_at || now,
-    updated_at: now
-  };
-
-  writeJson(config.instagramAuthFile, nextAuth);
-  return nextAuth;
-}
-
-function clearInstagramAuth() {
-  writeJson(config.instagramAuthFile, defaultInstagramAuth);
-  return defaultInstagramAuth;
-}
-
-function sortPosts(posts) {
-  return [...posts].sort((a, b) => {
-    const orderDiff = Number(a.order || 0) - Number(b.order || 0);
-    if (orderDiff !== 0) return orderDiff;
-    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
-  });
-}
-
-function nextOrder(posts) {
-  return posts.reduce((max, post) => Math.max(max, Number(post.order || 0)), 0) + 1;
+async function getMaxOrder(userId) {
+  const snapshot = await postsCollection()
+    .where('userId', '==', userId)
+    .orderBy('order', 'desc')
+    .limit(1)
+    .get();
+  if (snapshot.empty) return 0;
+  return Number(snapshot.docs[0].data().order || 0);
 }
 
 function getUploadMediaType(file) {
@@ -182,17 +109,22 @@ function getUploadMediaType(file) {
   return 'photo';
 }
 
-function addUploadedPosts(files, defaults = {}) {
-  const posts = getPosts();
-  const now = new Date().toISOString();
-  let order = nextOrder(posts);
+async function addUploadedPosts(userId, files, defaults = {}) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  let order = (await getMaxOrder(ownerId)) + 1;
+  const now = Timestamp.now();
+  const db = getFirestore();
+  const batch = db.batch();
+  const created = [];
 
-  const created = files.map((file) => {
+  files.forEach((file) => {
     const mediaType = getUploadMediaType(file);
     const mediaPath = `/uploads/${file.filename}`;
+    const ref = postsCollection().doc(randomUUID());
 
-    return {
-      id: randomUUID(),
+    const data = {
+      userId: ownerId,
+      platform: 'tiktok',
       originalName: file.originalname,
       fileName: file.filename,
       mimeType: file.mimetype || '',
@@ -204,8 +136,9 @@ function addUploadedPosts(files, defaults = {}) {
       hashtags: String(defaults.hashtags || '').trim(),
       publicImageUrl: String(defaults.publicImageUrl || '').trim(),
       instagramMediaUrl: String(defaults.instagramMediaUrl || '').trim(),
-      privacyLevel: String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
-      scheduledAt: null,
+      privacyLevel:
+        String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
+      scheduledTimeUTC: null,
       status: 'pending',
       order: order++,
       createdAt: now,
@@ -213,44 +146,56 @@ function addUploadedPosts(files, defaults = {}) {
       postedAt: null,
       readyAt: null,
       lastResult: null,
-      lastInstagramResult: null
+      lastInstagramResult: null,
+      disableComment: false,
+      disableDuet: false,
+      disableStitch: false,
+      contentDisclosure: false,
+      yourBrand: false,
+      brandedContent: false,
+      lockedAt: null,
+      lockedBy: null,
+      claimAttempts: 0
     };
+
+    batch.set(ref, data);
+    created.push({ ref, data });
   });
 
-  savePosts([...posts, ...created]);
-  return created;
+  await batch.commit();
+  return created.map(({ ref, data }) => postFromDoc({ id: ref.id, data: () => data }));
 }
 
-function updatePost(id, patch) {
-  const posts = getPosts();
-  const index = posts.findIndex((post) => post.id === id);
-  if (index === -1) return null;
+async function updatePost(userId, id, patch) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const ref = postsCollection().doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) return null;
+  if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
 
-  posts[index] = {
-    ...posts[index],
-    ...patch,
-    updatedAt: new Date().toISOString()
-  };
-
-  savePosts(posts);
-  return posts[index];
+  await ref.update({ ...mapPatchToFirestore(patch), updatedAt: FieldValue.serverTimestamp() });
+  const updated = await ref.get();
+  return postFromDoc(updated);
 }
 
-function deletePost(id) {
-  const posts = getPosts();
-  const post = posts.find((item) => item.id === id);
-  if (!post) return false;
+async function deletePost(userId, id) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const ref = postsCollection().doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) return false;
+  if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return false;
 
-  const nextPosts = posts.filter((item) => item.id !== id);
-  savePosts(nextPosts);
+  const fileName = snap.data().fileName;
+  await ref.delete();
 
-  if (post.fileName) {
-    const uploadPath = path.resolve(config.uploadsDir, post.fileName);
+  if (fileName) {
+    const uploadPath = path.resolve(config.uploadsDir, fileName);
     if (uploadPath.startsWith(path.resolve(config.uploadsDir))) {
       try {
         fs.unlinkSync(uploadPath);
       } catch (error) {
-        // The queue item can still be removed even if the local media is gone.
+        // The queue item is still removed even if the local media file is
+        // already gone — expected after a Render restart wiped the disk.
       }
     }
   }
@@ -258,8 +203,9 @@ function deletePost(id) {
   return true;
 }
 
-function movePost(id, direction) {
-  const posts = getPosts();
+async function movePost(userId, id, direction) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const posts = await getPosts(ownerId);
   const index = posts.findIndex((post) => post.id === id);
   const targetIndex = direction === 'up' ? index - 1 : index + 1;
 
@@ -267,59 +213,61 @@ function movePost(id, direction) {
     return false;
   }
 
-  const currentOrder = posts[index].order;
-  posts[index].order = posts[targetIndex].order;
-  posts[targetIndex].order = currentOrder;
-  posts[index].updatedAt = new Date().toISOString();
-  posts[targetIndex].updatedAt = new Date().toISOString();
-  savePosts(posts);
+  const db = getFirestore();
+  const batch = db.batch();
+  const now = FieldValue.serverTimestamp();
+  batch.update(postsCollection().doc(posts[index].id), { order: posts[targetIndex].order, updatedAt: now });
+  batch.update(postsCollection().doc(posts[targetIndex].id), { order: posts[index].order, updatedAt: now });
+  await batch.commit();
   return true;
 }
 
-function getDuePendingPosts(now = new Date()) {
-  const nowTime = now.getTime();
-  return getPosts()
-    .filter((post) => {
-      if (post.status !== 'pending' || !post.scheduledAt) return false;
-      return new Date(post.scheduledAt).getTime() <= nowTime;
-    })
-    .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
-}
-
-function autoSchedulePosts(postIds) {
+async function autoSchedulePosts(userId, postIds) {
+  const ownerId = userId || DEFAULT_USER_ID;
   const idSet = new Set(postIds);
-  const posts = getPosts();
-  const settings = getSettings();
+  const posts = await getPosts(ownerId);
+  const settings = await getSettings();
   let nextDate = getNextAvailableDate(posts, settings.dailyPostTime, idSet);
+
+  const db = getFirestore();
+  const batch = db.batch();
   let count = 0;
 
   for (const post of posts) {
     if (!idSet.has(post.id) || post.status !== 'pending') continue;
-    post.scheduledAt = nextDate.toISOString();
-    post.updatedAt = new Date().toISOString();
+    batch.update(postsCollection().doc(post.id), {
+      scheduledTimeUTC: Timestamp.fromDate(nextDate),
+      updatedAt: FieldValue.serverTimestamp()
+    });
     nextDate = addDaysAtTime(nextDate, 1, settings.dailyPostTime);
     count += 1;
   }
 
-  savePosts(posts);
+  if (count > 0) await batch.commit();
   return count;
 }
 
-function reschedulePendingQueue() {
-  const posts = getPosts();
-  const settings = getSettings();
+async function reschedulePendingQueue(userId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const posts = await getPosts(ownerId);
+  const settings = await getSettings();
   let nextDate = tomorrowAtTime(settings.dailyPostTime);
+
+  const db = getFirestore();
+  const batch = db.batch();
   let count = 0;
 
   for (const post of posts) {
     if (post.status !== 'pending') continue;
-    post.scheduledAt = nextDate.toISOString();
-    post.updatedAt = new Date().toISOString();
+    batch.update(postsCollection().doc(post.id), {
+      scheduledTimeUTC: Timestamp.fromDate(nextDate),
+      updatedAt: FieldValue.serverTimestamp()
+    });
     nextDate = addDaysAtTime(nextDate, 1, settings.dailyPostTime);
     count += 1;
   }
 
-  savePosts(posts);
+  if (count > 0) await batch.commit();
   return count;
 }
 
@@ -360,22 +308,86 @@ function setTime(date, time) {
   return next;
 }
 
-function getCounts() {
-  return getPosts().reduce(
+async function getCounts(userId) {
+  const posts = await getPosts(userId);
+  return posts.reduce(
     (counts, post) => {
       counts.total += 1;
       counts[post.status] = (counts[post.status] || 0) + 1;
       return counts;
     },
-    { total: 0, pending: 0, ready: 0, posted: 0, failed: 0 }
+    { total: 0, pending: 0, processing: 0, ready: 0, posted: 0, failed: 0 }
   );
+}
+
+// ── Settings & integration auth ─────────────────────────────────────────
+// Still a single shared doc each — today there's only one TikTok account
+// and one Instagram account for the whole app, same as before. The
+// difference from the old storage.js is just *where* they live: Firestore
+// instead of data/*.json, so a Render restart can't erase them. If you
+// later want each user to connect their own TikTok/Instagram account,
+// these would move under a per-user path — that's a separate feature.
+
+async function getSettings() {
+  const snap = await configDoc('settings').get();
+  return { ...defaultSettings, ...(snap.exists ? snap.data() : {}) };
+}
+
+async function saveSettings(settings) {
+  const next = { ...(await getSettings()), ...settings, updatedAt: new Date().toISOString() };
+  await configDoc('settings').set(next);
+  return next;
+}
+
+async function getTikTokAuth() {
+  const snap = await configDoc('tiktokAuth').get();
+  return { ...defaultTikTokAuth, ...(snap.exists ? snap.data() : {}) };
+}
+
+async function saveTikTokAuth(auth) {
+  const next = {
+    ...defaultTikTokAuth,
+    ...auth,
+    connected: Boolean(auth.connected && auth.access_token)
+  };
+  await configDoc('tiktokAuth').set(next);
+  return next;
+}
+
+async function clearTikTokAuth() {
+  await configDoc('tiktokAuth').set(defaultTikTokAuth);
+  return defaultTikTokAuth;
+}
+
+async function getInstagramAuth() {
+  const snap = await configDoc('instagramAuth').get();
+  return { ...defaultInstagramAuth, ...(snap.exists ? snap.data() : {}) };
+}
+
+async function saveInstagramAuth(auth) {
+  const previous = await getInstagramAuth();
+  const now = new Date().toISOString();
+  const next = {
+    ...defaultInstagramAuth,
+    ...previous,
+    ...auth,
+    connected: Boolean(auth.connected && (auth.access_token || previous.access_token)),
+    connected_at: previous.connected_at || auth.connected_at || now,
+    updated_at: now
+  };
+  await configDoc('instagramAuth').set(next);
+  return next;
+}
+
+async function clearInstagramAuth() {
+  await configDoc('instagramAuth').set(defaultInstagramAuth);
+  return defaultInstagramAuth;
 }
 
 module.exports = {
   ensureStorage,
   getPosts,
   getPost,
-  savePosts,
   getSettings,
   saveSettings,
   getTikTokAuth,
@@ -388,8 +400,8 @@ module.exports = {
   updatePost,
   deletePost,
   movePost,
-  getDuePendingPosts,
   autoSchedulePosts,
   reschedulePendingQueue,
-  getCounts
+  getCounts,
+  DEFAULT_USER_ID
 };

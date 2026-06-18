@@ -21,6 +21,9 @@ module.exports = {
   appName: 'CHANTER Auto Poster',
   port,
   rootDir,
+  // NOTE: the running app no longer reads these — Firestore is the source
+  // of truth now. They're kept only so scripts/migrate-to-firestore.js can
+  // find your old local data on its one-time run.
   dataDir: path.join(rootDir, 'data'),
   uploadsDir: path.join(rootDir, 'uploads'),
   postsFile: path.join(rootDir, 'data', 'posts.json'),
@@ -29,6 +32,31 @@ module.exports = {
   instagramAuthFile: path.join(rootDir, 'data', 'instagram_auth.json'),
   publicBaseUrl: (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, ''),
   cronSecret: process.env.CRON_SECRET || '',
+
+  // Placeholder identity until real auth exists (see src/auth.js). Every
+  // Firestore post document is tagged with this userId today, so the
+  // multi-user plumbing (queries, ownership checks, security rules) is
+  // already in place and just needs a real value plugged in later.
+  defaultUserId: process.env.APP_DEFAULT_USER_ID || 'owner',
+
+  scheduler: {
+    // How long a post is allowed to sit in "processing" before the
+    // watchdog assumes the worker crashed and reclaims it.
+    staleLockMinutes: Number(process.env.SCHEDULER_STALE_LOCK_MINUTES || 10),
+    // After this many claim attempts, stop retrying and mark it failed
+    // instead of looping forever on a poison-pill post.
+    maxClaimAttempts: Number(process.env.SCHEDULER_MAX_ATTEMPTS || 5),
+    // Most due posts a single tick will claim and publish.
+    batchSize: Number(process.env.SCHEDULER_BATCH_SIZE || 10)
+  },
+
+  firebase: {
+    projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || '',
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',
+    privateKey: process.env.FIREBASE_PRIVATE_KEY || '',
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || ''
+  },
+
   tiktok: {
     clientKey: process.env.TIKTOK_CLIENT_KEY || '',
     clientSecret: process.env.TIKTOK_CLIENT_SECRET || '',

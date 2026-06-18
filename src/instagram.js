@@ -161,8 +161,8 @@ async function queryInstagramProfileSafe(instagramAccountId, accessToken) {
   }
 }
 
-function getInstagramAuth() {
-  const stored = storage.getInstagramAuth();
+async function getInstagramAuth() {
+  const stored = await storage.getInstagramAuth();
   const accessToken = stored.access_token || config.instagram.accessToken;
   const instagramBusinessAccountId =
     stored.instagram_business_account_id || config.instagram.instagramBusinessAccountId;
@@ -179,8 +179,8 @@ function getInstagramAuth() {
   };
 }
 
-function getInstagramAuthStatus() {
-  const auth = getInstagramAuth();
+async function getInstagramAuthStatus() {
+  const auth = await getInstagramAuth();
   const connected = Boolean(auth.access_token);
   const tokenExpired = connected && isTokenExpired(auth);
   const hasProfessionalAccount = Boolean(auth.instagram_business_account_id);
@@ -222,8 +222,8 @@ function getInstagramAuthStatus() {
 }
 
 async function publishInstagramMedia(input = {}) {
-  const auth = getActiveInstagramAuth();
-  const post = input.post || (input.postId ? storage.getPost(input.postId) : null);
+  const auth = await getActiveInstagramAuth();
+  const post = input.post || (input.postId ? await storage.getPost(input.userId, input.postId) : null);
 
   if (input.postId && !post) {
     return {
@@ -343,7 +343,7 @@ async function publishInstagramMedia(input = {}) {
 }
 
 async function getContainerStatus(containerId) {
-  const auth = getActiveInstagramAuth();
+  const auth = await getActiveInstagramAuth();
   return queryContainerStatus(containerId, auth.access_token);
 }
 
@@ -382,8 +382,8 @@ async function waitForContainerProcessing(containerId, accessToken) {
   return latestStatus;
 }
 
-function getActiveInstagramAuth() {
-  const auth = getInstagramAuth();
+async function getActiveInstagramAuth() {
+  const auth = await getInstagramAuth();
 
   if (!auth.access_token) {
     throw new Error('Instagram not connected');

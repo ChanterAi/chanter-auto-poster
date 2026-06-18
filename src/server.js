@@ -3,9 +3,8 @@ const path = require('path');
 const config = require('./config');
 const routes = require('./routes');
 const storage = require('./storage');
+const { attachUser } = require('./auth');
 const { startScheduler } = require('./scheduler');
-
-storage.ensureStorage();
 
 const app = express();
 
@@ -13,6 +12,7 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 app.use(express.urlencoded({ extended: true }));
+app.use(attachUser);
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use('/uploads', express.static(config.uploadsDir));
 app.use('/', routes);
@@ -22,6 +22,8 @@ app.use((error, req, res, next) => {
     next();
     return;
   }
+
+  console.error('[server] request error', error);
 
   const message = error.message || 'Unexpected server error';
   const wantsJson =
@@ -40,10 +42,19 @@ app.use((error, req, res, next) => {
   res.redirect(`/?notice=${encodeURIComponent(message)}`);
 });
 
-startScheduler();
+async function start() {
+  // Fail fast and loud if Firebase credentials are missing/bad, instead of
+  // booting a "healthy-looking" server that 500s on the first real request.
+  await storage.ensureStorage();
+  startScheduler();
+  app.listen(config.port, () => {
+    console.log(`${config.appName} running at http://localhost:${config.port}`);
+  });
+}
 
-app.listen(config.port, () => {
-  console.log(`${config.appName} running at http://localhost:${config.port}`);
+start().catch((error) => {
+  console.error('[server] failed to start:', error);
+  process.exit(1);
 });
 
 module.exports = app;

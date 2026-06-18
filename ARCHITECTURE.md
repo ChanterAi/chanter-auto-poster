@@ -1,0 +1,190 @@
+# Firestore-backed scheduling architecture
+
+This replaces the local-JSON-file + node-cron scheduler with Firestore as
+the single source of truth. It does not change posting logic, OAuth, or
+the dashboard UI — only how scheduled jobs are stored and claimed.
+
+## Why the old system lost jobs
+
+Two separate problems, both caused by Render's web services having an
+ephemeral filesystem:
+
+1. **Data loss.** `data/posts.json` (and the TikTok/Instagram auth token
+   files) lived only on local disk. Any restart — a redeploy, a crash, or
+   the dyno spinning back up after being idle — reverts the filesystem to
+   what was in the deployed image, silently dropping anything written at
+   runtime.
+2. **Missed wake-ups.** `node-cron` only fires while the Node process is
+   alive. If the service spins down from inactivity, the cron job isn't
+   "paused" — it simply doesn't exist until something else makes an HTTP
+   request that wakes the dyno back up.
+
+Moving the data to Firestore fixes (1). It does not, by itself, fix (2) —
+you still need something external hitting `/run-scheduler` on a schedule
+(see "Wake-up trigger" below) so a sleeping dyno actually gets woken up in
+time. The reason this combination is safe is idempotency: no matter how
+many things call the scheduler, or how overlapping or delayed those calls
+are, Firestore transactions guarantee each post is claimed and published
+at most once.
+
+## Firestore schema
+
+### `posts/{postId}`
+
+| Field | Type | Notes |
+|---|---|---|
+| `userId` | string | Owner. Placeholder value today (see `src/auth.js`); already wired through every query and rule. |
+| `platform` | string | `"tiktok"` — the only platform the automatic scheduler publishes to today. Instagram is a manual/secondary action tracked via `lastInstagramResult`. |
+| `caption`, `hashtags` | string | The post's text content. |
+| `mediaType`, `mediaPath`, `videoPath`, `imagePath`, `fileName`, `originalName`, `mimeType` | string | Local media reference (kept flat, not nested under a `media` object — see note below). |
+| `publicImageUrl`, `instagramMediaUrl` | string | Public HTTPS URLs needed for TikTok's `PULL_FROM_URL` photo flow and Instagram. |
+| `privacyLevel`, `disableComment`, `disableDuet`, `disableStitch`, `contentDisclosure`, `yourBrand`, `brandedContent` | various | TikTok Direct Post API settings, unchanged from before. |
+| `scheduledTimeUTC` | Timestamp \| null | When this should publish. Firestore `Timestamp`, not a string — needed for correct `<=` range queries. |
+| `status` | string | `pending` \| `processing` \| `ready` \| `posted` \| `failed`. `processing` replaces the old `publishing` value (see naming note). |
+| `lockedAt` | Timestamp \| null | Set when a worker claims the post; cleared on finalize. |
+| `lockedBy` | string \| null | Which worker holds the claim. |
+| `claimAttempts` | number | Incremented on every claim; used to give up after `SCHEDULER_MAX_ATTEMPTS`. |
+| `order` | number | Manual queue ordering (move up/down). |
+| `createdAt`, `updatedAt`, `postedAt`, `readyAt` | Timestamp \| null | Lifecycle timestamps. |
+| `lastResult`, `lastInstagramResult` | map \| null | Raw publish attempt results, shown in the "Advanced" debug panel. |
+
+**Naming notes, called out explicitly rather than silently applied:**
+
+- The spec's `content` and `media` fields are represented as the flat
+  fields above (`caption`/`hashtags`, `mediaType`/`mediaPath`/etc.) rather
+  than nested `content: {}` / `media: {}` objects. Nesting them would mean
+  rewriting every call site in `tiktok.js`, `instagram.js`, and the EJS
+  view that reads `post.caption`, `post.mediaType`, and so on — a pure
+  rename with no functional benefit, and directly in tension with "don't
+  break posting logic / don't redesign the UI." If you'd still prefer the
+  literal nested shape for schema aesthetics, it's a mechanical change —
+  just say so.
+- The in-flight state is called `processing`, not `publishing`, to match
+  the spec's "pending → processing" wording. The dashboard still *shows*
+  "Publishing" — that's a label string in `routes.js`, decoupled from the
+  Firestore enum value on purpose.
+- The terminal success state is still called `posted` (not `published`)
+  because that's what the existing badges, CSS classes, and labels
+  already say throughout `index.ejs`. Functionally identical to the
+  spec's "published".
+
+### `config/{settings|tiktokAuth|instagramAuth}`
+
+Three singleton documents holding what used to be `data/settings.json`,
+`data/tiktok_auth.json`, and `data/instagram_auth.json`. These aren't
+named in the original spec (which is scoped to the posts collection), but
+moving them into Firestore too was necessary: leaving OAuth tokens on
+local disk would mean the scheduler has nothing to authenticate with
+after the very first restart, which defeats the point of fixing the
+scheduler. They remain single shared documents — there's still one TikTok
+account and one Instagram account for the whole app, same as before.
+Per-user social accounts would be a separate, bigger feature.
+
+## Atomic claim — preventing double-publish
+
+`src/scheduler.js`'s `claimPost()` runs as a single Firestore transaction:
+read the post, check its status, write `status: "processing"` plus lock
+metadata. If two callers race for the same post — two ticks overlapping,
+a tick and a manual "Post now" click, or (if you ever scale to multiple
+Render instances) two separate processes — Firestore lets exactly one
+transaction commit. The other sees on (re-)read that the status is no
+longer claimable and returns `null` instead of publishing. This holds
+regardless of how many processes are calling it; it is not based on an
+in-memory flag.
+
+The actual TikTok API call happens *outside* any transaction, after a
+successful claim — transactions should never wrap a non-idempotent
+network call, since the SDK can retry a transaction body on contention.
+
+## Recovery flow
+
+1. **Render restarts or redeploys.** Pending posts are untouched —
+   they're rows in Firestore, not files on the dyno's disk or timers in
+   its memory.
+2. **The dyno was asleep when a post became due.** `node-cron` can't fire
+   if the process isn't running. Configure something external — a Render
+   **Cron Job** (a separate, always-scheduled Render service type) or a
+   free uptime pinger — to hit `GET /run-scheduler?secret=...` every
+   minute. That request both wakes the dyno and triggers a tick. Keep the
+   in-process `node-cron` too: it's free coverage for whenever the dyno
+   happens to already be awake, and costs nothing since both paths are
+   idempotent.
+3. **The scheduler crashes mid-publish.** The post is left in
+   `processing`. Every tick first runs `reclaimStaleLocks()`, which finds
+   posts stuck in `processing` for longer than
+   `SCHEDULER_STALE_LOCK_MINUTES` (default 10) and flips them back to
+   `pending` so the next tick retries them — or, after
+   `SCHEDULER_MAX_ATTEMPTS` (default 5) retries, marks them `failed`
+   instead of looping forever on a broken post.
+4. **A known limitation, stated plainly:** if TikTok actually received
+   and processed the post right before the crash, but the app crashed
+   before recording that success, a retry will publish it again — a real
+   duplicate on TikTok's side, not a Firestore-level one. Avoiding this
+   completely would need an idempotency key on TikTok's API or storing
+   the `publish_id` immediately on submit and checking its status on
+   retry before resubmitting. Worth doing if duplicate posts become a
+   real problem; out of scope for "fix the scheduler's durability."
+
+## Multi-user
+
+Every post carries `userId`. `storage.getPosts(userId)` /
+`getPost(userId, id)` / `updatePost` / `deletePost` / `movePost` all
+filter or verify ownership, so one user's post is structurally
+unreachable from another user's requests — even though, today, every
+request resolves to the same placeholder `userId` (see `src/auth.js`,
+`APP_DEFAULT_USER_ID` env var). Wiring in real authentication later means
+changing the body of one function (`attachUser` in `src/auth.js`) to set
+`req.userId` from a verified session/token; nothing else needs to change.
+
+## Indexes
+
+See `firestore.indexes.json`. Three composite indexes: `(status,
+scheduledTimeUTC)` for the claim query, `(status, lockedAt)` for the
+stale-lock watchdog, and `(userId, order)` for the per-user dashboard
+listing. These make the scheduler's queries index range-scans regardless
+of how many total posts exist — claiming due posts doesn't get slower as
+the collection grows into the thousands. If any index here turns out to
+be misspecified, Firestore's own error message includes a direct console
+link to create the exact missing one — so the worst case is one extra
+click, not a silent failure.
+
+## Required environment variables
+
+Already present on Render per your dashboard: `FIREBASE_CLIENT_EMAIL`,
+`FIREBASE_PRIVATE_KEY`, `FIREBASE_STORAGE_BUCKET`. Add:
+
+- `FIREBASE_PROJECT_ID` — your Firebase project ID. (Falls back to
+  `VITE_FIREBASE_PROJECT_ID` if you'd rather not duplicate it, but that
+  var was almost certainly wired up for a separate frontend client SDK,
+  not this server.)
+
+Optional tuning (all have sane defaults):
+
+- `APP_DEFAULT_USER_ID` (default `owner`)
+- `SCHEDULER_STALE_LOCK_MINUTES` (default `10`)
+- `SCHEDULER_MAX_ATTEMPTS` (default `5`)
+- `SCHEDULER_BATCH_SIZE` (default `10`)
+
+## Migration
+
+1. Enable **Cloud Firestore** (Native mode) in the same Firebase project
+   you're already using for Storage, if it isn't enabled yet.
+2. Add `FIREBASE_PROJECT_ID` to Render's environment.
+3. `npm install` (adds `firebase-admin`).
+4. Optionally deploy rules/indexes: `firebase deploy --only
+   firestore:rules,firestore:indexes` (or create the composite indexes
+   by hand in the console — same effect).
+5. If you have meaningful queue data to preserve, run
+   `npm run migrate:firestore:dry-run` against a checkout that still has
+   `data/*.json` present, review the output, then `npm run
+   migrate:firestore` for real. Given the dashboard currently shows an
+   empty queue and one posted item, a clean cutover (reconnect TikTok,
+   re-upload anything pending) is also a perfectly reasonable shortcut —
+   there's very little to lose.
+6. Deploy the new code.
+7. Verify: `/health` should report Firestore-backed counts; reconnect
+   TikTok/Instagram if you skipped the migration step; upload a test post
+   scheduled two minutes out and confirm it publishes; then manually
+   restart the Render service and confirm a still-pending post survives
+   and still fires on schedule — that last check is the actual fix being
+   tested.

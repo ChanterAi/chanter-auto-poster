@@ -7,6 +7,7 @@ const storage = require('./storage');
 const scheduler = require('./scheduler');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
+const { resolveUserId } = require('./auth');
 
 const router = express.Router();
 
@@ -36,18 +37,29 @@ function defaultExtension(file) {
   return '.jpg';
 }
 
-router.get('/', async (req, res) => {
-  const posts = storage.getPosts();
-  const tiktokAuthStatus = tiktok.getTikTokAuthStatus();
-  const instagramStatus = instagram.getInstagramAuthStatus();
+// Firestore calls are async; Express 4 won't forward a rejected promise to
+// the error middleware on its own, so every handler that awaits storage/
+// tiktok/instagram is wrapped in this instead of being declared directly
+// as the route callback.
+function asyncRoute(handler) {
+  return (req, res, next) => {
+    handler(req, res, next).catch(next);
+  };
+}
+
+router.get('/', asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const posts = await storage.getPosts(userId);
+  const tiktokAuthStatus = await tiktok.getTikTokAuthStatus();
+  const instagramStatus = await instagram.getInstagramAuthStatus();
   const creatorInfo = tiktokAuthStatus.connected ? await getCreatorInfoSafe() : null;
 
   res.render('index', {
     appName: config.appName,
     posts,
     todayPost: getTodayPost(posts),
-    settings: storage.getSettings(),
-    counts: storage.getCounts(),
+    settings: await storage.getSettings(),
+    counts: await storage.getCounts(userId),
     notice: req.query.notice || '',
     tiktokConfigured: tiktokAuthStatus.connected,
     tiktokAuthStatus,
@@ -55,30 +67,31 @@ router.get('/', async (req, res) => {
     creatorInfo,
     helpers: viewHelpers
   });
-});
+}));
 
-router.get('/health', (req, res) => {
+router.get('/health', asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
   res.json({
     ok: true,
     app: config.appName,
     uptimeSeconds: Math.round(process.uptime()),
     scheduler: 'running',
     cronTrigger: true,
-    tiktokConfigured: tiktok.isConfigured(),
-    tiktokAuth: tiktok.getTikTokAuthStatus(),
-    instagram: instagram.getInstagramAuthStatus(),
-    counts: storage.getCounts()
+    tiktokConfigured: await tiktok.isConfigured(),
+    tiktokAuth: await tiktok.getTikTokAuthStatus(),
+    instagram: await instagram.getInstagramAuthStatus(),
+    counts: await storage.getCounts(userId)
   });
-});
+}));
 
-router.get('/run-scheduler', async (req, res) => {
+router.get('/run-scheduler', asyncRoute(async (req, res) => {
   if (config.cronSecret && req.query.secret !== config.cronSecret) {
     res.status(403).json({ ok: false, triggered: false, reason: 'Invalid cron secret' });
     return;
   }
   const result = await scheduler.publishNextPost();
   res.json({ ok: true, triggered: true, result });
-});
+}));
 
 router.get('/connect/tiktok', (req, res) => {
   if (!config.tiktok.clientKey || !config.tiktok.clientSecret || !config.tiktok.redirectUri) {
@@ -90,7 +103,7 @@ router.get('/connect/tiktok', (req, res) => {
   res.redirect(tiktok.buildTikTokAuthUrl(state));
 });
 
-router.get('/auth/tiktok/callback', async (req, res) => {
+router.get('/auth/tiktok/callback', asyncRoute(async (req, res) => {
   const expectedState = parseCookies(req.headers.cookie).tiktok_oauth_state;
   res.clearCookie('tiktok_oauth_state');
   if (req.query.error) {
@@ -103,17 +116,17 @@ router.get('/auth/tiktok/callback', async (req, res) => {
   }
   try {
     const auth = await tiktok.exchangeCodeForToken(String(req.query.code));
-    storage.saveTikTokAuth(auth);
+    await storage.saveTikTokAuth(auth);
     redirectWithNotice(res, 'TikTok connected.');
   } catch (error) {
     redirectWithNotice(res, `TikTok connection failed: ${error.message}`);
   }
-});
+}));
 
-router.get('/disconnect/tiktok', (req, res) => {
-  storage.clearTikTokAuth();
+router.get('/disconnect/tiktok', asyncRoute(async (req, res) => {
+  await storage.clearTikTokAuth();
   redirectWithNotice(res, 'TikTok disconnected. Manual Mode restored.');
-});
+}));
 
 router.get('/auth/instagram/start', (req, res) => {
   if (!instagram.hasOAuthConfig()) {
@@ -125,7 +138,7 @@ router.get('/auth/instagram/start', (req, res) => {
   res.redirect(instagram.buildInstagramAuthUrl(state));
 });
 
-router.get('/auth/instagram/callback', async (req, res) => {
+router.get('/auth/instagram/callback', asyncRoute(async (req, res) => {
   const expectedState = parseCookies(req.headers.cookie).instagram_oauth_state;
   res.clearCookie('instagram_oauth_state');
   if (req.query.error) {
@@ -138,20 +151,20 @@ router.get('/auth/instagram/callback', async (req, res) => {
   }
   try {
     const auth = await instagram.exchangeCodeForToken(String(req.query.code));
-    storage.saveInstagramAuth(auth);
+    await storage.saveInstagramAuth(auth);
     redirectWithNotice(res, 'Instagram connected.');
   } catch (error) {
     redirectWithNotice(res, `Instagram connection failed: ${error.message}`);
   }
-});
+}));
 
-router.get('/disconnect/instagram', (req, res) => {
-  storage.clearInstagramAuth();
+router.get('/disconnect/instagram', asyncRoute(async (req, res) => {
+  await storage.clearInstagramAuth();
   redirectWithNotice(res, 'Instagram disconnected.');
-});
+}));
 
-router.get('/api/instagram/status', async (req, res) => {
-  const status = instagram.getInstagramAuthStatus();
+router.get('/api/instagram/status', asyncRoute(async (req, res) => {
+  const status = await instagram.getInstagramAuthStatus();
   const containerId = String(req.query.containerId || '').trim();
   if (!containerId) { res.json({ ok: true, instagram: status }); return; }
   try {
@@ -160,45 +173,49 @@ router.get('/api/instagram/status', async (req, res) => {
   } catch (error) {
     res.status(400).json({ ok: false, instagram: status, reason: error.message, response: error.response || null });
   }
-});
+}));
 
-router.post('/api/instagram/publish', express.json({ limit: '1mb' }), async (req, res) => {
-  const payload = { ...(req.body || {}), postId: String((req.body && req.body.postId) || '').trim() };
+router.post('/api/instagram/publish', express.json({ limit: '1mb' }), asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const payload = { ...(req.body || {}), postId: String((req.body && req.body.postId) || '').trim(), userId };
   try {
     const result = await instagram.publishInstagramMedia(payload);
-    saveInstagramAttempt(payload.postId, result);
+    await saveInstagramAttempt(userId, payload.postId, result);
     if (wantsJson(req)) { res.status(result.ok ? 200 : 400).json({ ok: result.ok, result }); return; }
     redirectWithNotice(res, instagramNotice(result));
   } catch (error) {
     const result = { ok: false, mode: 'api', published: false, reason: error.message, response: error.response || null };
-    saveInstagramAttempt(payload.postId, result);
+    await saveInstagramAttempt(userId, payload.postId, result);
     if (wantsJson(req)) { res.status(400).json({ ok: false, result }); return; }
     redirectWithNotice(res, `Instagram attempt failed: ${error.message}`);
   }
-});
+}));
 
-router.post('/upload', upload.array('images'), (req, res) => {
+router.post('/upload', upload.array('images'), asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
   const files = req.files || [];
   if (files.length === 0) { redirectWithNotice(res, 'Choose at least one image or video to upload.'); return; }
-  const created = storage.addUploadedPosts(files, { caption: req.body.caption, hashtags: req.body.hashtags });
-  const scheduledCount = storage.autoSchedulePosts(created.map(p => p.id));
+  const created = await storage.addUploadedPosts(userId, files, { caption: req.body.caption, hashtags: req.body.hashtags });
+  const scheduledCount = await storage.autoSchedulePosts(userId, created.map((p) => p.id));
   redirectWithNotice(res, `Uploaded ${created.length}. Scheduled ${scheduledCount}.`);
-});
+}));
 
-router.post('/settings', (req, res) => {
+router.post('/settings', asyncRoute(async (req, res) => {
   const dailyPostTime = String(req.body.dailyPostTime || '').trim();
   if (!/^\d{2}:\d{2}$/.test(dailyPostTime)) { redirectWithNotice(res, 'Use a valid daily posting time.'); return; }
-  storage.saveSettings({ dailyPostTime });
+  await storage.saveSettings({ dailyPostTime });
   redirectWithNotice(res, `Schedule set to ${dailyPostTime}.`);
-});
+}));
 
-router.post('/schedule', (req, res) => {
-  const count = storage.reschedulePendingQueue();
+router.post('/schedule', asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const count = await storage.reschedulePendingQueue(userId);
   redirectWithNotice(res, `Scheduled ${count}.`);
-});
+}));
 
 // ── Updated post save — now captures interaction settings & content disclosure ──
-router.post('/posts/:id', (req, res) => {
+router.post('/posts/:id', asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
   const scheduledAt = parseDateTimeLocal(req.body.scheduledAt, req.body.timezoneOffsetMinutes);
 
   // Interaction ability: checkbox presence means enabled
@@ -211,7 +228,7 @@ router.post('/posts/:id', (req, res) => {
   const yourBrand         = contentDisclosure && req.body.yourBrand      === '1';
   const brandedContent    = contentDisclosure && req.body.brandedContent === '1';
 
-  storage.updatePost(req.params.id, {
+  await storage.updatePost(userId, req.params.id, {
     caption:            String(req.body.caption            || '').trim(),
     hashtags:           String(req.body.hashtags           || '').trim(),
     publicImageUrl:     String(req.body.publicImageUrl     || '').trim(),
@@ -229,15 +246,17 @@ router.post('/posts/:id', (req, res) => {
   });
 
   redirectWithNotice(res, 'Saved.');
-});
+}));
 
-router.post('/posts/:id/move', (req, res) => {
-  const moved = storage.movePost(req.params.id, req.body.direction);
+router.post('/posts/:id/move', asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const moved = await storage.movePost(userId, req.params.id, req.body.direction);
   redirectWithNotice(res, moved ? 'Moved.' : 'Could not move item.');
-});
+}));
 
-router.post('/posts/:id/prepare', async (req, res) => {
-  const post = storage.getPost(req.params.id);
+router.post('/posts/:id/prepare', asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const post = await storage.getPost(userId, req.params.id);
   if (!post) { redirectWithNotice(res, 'Post not found.'); return; }
 
   const forcePostNow = String(req.body.force || '') === '1';
@@ -248,30 +267,37 @@ router.post('/posts/:id/prepare', async (req, res) => {
     return;
   }
 
-  const result = await scheduler.processPost(req.params.id);
+  // Routes through the same claim-then-publish transaction the automatic
+  // scheduler uses (force: true just skips the "is it due yet" check) —
+  // so a double-click here can't trigger a double-publish either.
+  const result = await scheduler.processPost(req.params.id, { force: true });
   if (result.ok) { redirectWithNotice(res, 'TikTok accepted the publish request. Review Post Result for details.'); return; }
   if (result.mode === 'manual') { redirectWithNotice(res, 'Needs manual verification. Review Post Result for details.'); return; }
+  if (result.mode === 'skipped') { redirectWithNotice(res, 'Already publishing — give it a moment and check the result below.'); return; }
   redirectWithNotice(res, `TikTok attempt failed: ${result.reason || 'Unknown error'}`);
-});
+}));
 
-router.post('/posts/:id/posted', (req, res) => {
+router.post('/posts/:id/posted', asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
   const now = new Date().toISOString();
-  storage.updatePost(req.params.id, {
+  await storage.updatePost(userId, req.params.id, {
     status: 'posted', postedAt: now, readyAt: null,
     lastResult: { ok: true, mode: 'manual', reason: 'Marked posted manually', completedAt: now }
   });
   redirectWithNotice(res, 'Marked posted.');
-});
+}));
 
-router.post('/posts/:id/pending', (req, res) => {
-  storage.updatePost(req.params.id, { status: 'pending', postedAt: null, readyAt: null, lastResult: null });
+router.post('/posts/:id/pending', asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  await storage.updatePost(userId, req.params.id, { status: 'pending', postedAt: null, readyAt: null, lastResult: null });
   redirectWithNotice(res, 'Back to pending.');
-});
+}));
 
-router.post('/posts/:id/delete', (req, res) => {
-  storage.deletePost(req.params.id);
+router.post('/posts/:id/delete', asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  await storage.deletePost(userId, req.params.id);
   redirectWithNotice(res, 'Deleted.');
-});
+}));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -323,6 +349,9 @@ function getTodayPost(posts) {
 }
 
 // ── View helpers ──────────────────────────────────────────────────────────────
+// Unchanged from before: these all operate on plain post objects that have
+// already been resolved (awaited) before rendering, so none of them need
+// to be async themselves.
 
 const viewHelpers = {
   mediaType(post) { return getPostMediaType(post); },
@@ -385,7 +414,12 @@ function buildPostResultView(post) {
   let stateLabel = 'Scheduled', tone = 'scheduled';
   let message = post && post.scheduledAt ? `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}.` : 'Waiting for a schedule time.';
 
-  if (status === 'publishing') {
+  // NOTE: the Firestore status value is "processing" now (was "publishing"
+  // in the old file-based storage). tone/stateLabel/message are left as
+  // "publishing" below on purpose — that string only drives the CSS class
+  // and label text, which the view already expects, so the UI is visually
+  // identical to before.
+  if (status === 'processing') {
     stateLabel = 'Publishing'; tone = 'publishing';
     message = 'Publishing to TikTok. Large videos can take a moment.';
   } else if (status === 'failed' || (lastResult && lastResult.ok === false && lastResult.mode !== 'manual')) {
@@ -472,16 +506,16 @@ function getDebugJson(post) { return post && post.lastResult ? JSON.stringify(po
 function getInstagramDebugJson(post) { return post && post.lastInstagramResult ? JSON.stringify(post.lastInstagramResult, null, 2) : ''; }
 
 function statusLabel(status) {
-  const labels = { pending: 'Scheduled', publishing: 'Publishing', ready: 'Needs manual verification', posted: 'Posted', failed: 'Failed' };
+  const labels = { pending: 'Scheduled', processing: 'Publishing', ready: 'Needs manual verification', posted: 'Posted', failed: 'Failed' };
   const v = String(status || 'pending').toLowerCase();
   return labels[v] || `${v.charAt(0).toUpperCase()}${v.slice(1)}`;
 }
 
-function saveInstagramAttempt(postId, result) {
+async function saveInstagramAttempt(userId, postId, result) {
   if (!postId) return;
-  const post = storage.getPost(postId);
+  const post = await storage.getPost(userId, postId);
   if (!post) return;
-  storage.updatePost(postId, { lastInstagramResult: { ...result, completedAt: new Date().toISOString() } });
+  await storage.updatePost(userId, postId, { lastInstagramResult: { ...result, completedAt: new Date().toISOString() } });
 }
 
 function instagramNotice(result) {

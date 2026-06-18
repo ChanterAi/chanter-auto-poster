@@ -1,0 +1,37 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Posts are isolated per user via the userId field. The Admin SDK
+    // (used by the Node backend today) bypasses these rules entirely, so
+    // this only takes effect if/when a client ever talks to Firestore
+    // directly. If you build that client, you'll likely want to also
+    // restrict which fields a client update is allowed to touch (e.g.
+    // block direct writes to status/lockedAt/lockedBy/lastResult, which
+    // should only ever be set by the scheduler) — revisit this rule then.
+    match /posts/{postId} {
+      allow read: if isOwner(resource.data.userId);
+      allow create: if isOwner(request.resource.data.userId);
+      allow update: if isOwner(resource.data.userId)
+                    && request.resource.data.userId == resource.data.userId;
+      allow delete: if isOwner(resource.data.userId);
+    }
+
+    // Shared app configuration: TikTok/Instagram tokens and the daily
+    // posting schedule. Only the trusted backend should ever read or
+    // write this, so it's locked down completely rather than scoped to a
+    // user.
+    match /config/{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
