@@ -97,7 +97,7 @@ router.get('/api/storage/health', asyncRoute(async (req, res) => {
     return;
   }
 
-  const result = await storage.checkStorageHealth({ writeTest: req.query.write === '1' });
+  const result = await storage.checkMediaStorageHealth({ writeTest: req.query.write === '1' });
   res.status(result.ok ? 200 : 503).json(result);
 }));
 
@@ -241,7 +241,7 @@ router.post('/upload', upload.array('images'), asyncRoute(async (req, res) => {
   });
   const scheduledCount = await storage.autoSchedulePosts(userId, created.map((p) => p.id));
   const usedFallback = created.some((post) => post.storageFallback);
-  const sourceNotice = usedFallback ? ' Firebase Storage failed, so the submitted public URL was used.' : '';
+  const sourceNotice = usedFallback ? ' Cloudinary upload failed, so the submitted public URL was used.' : '';
   redirectWithNotice(res, `Created ${created.length}. Scheduled ${scheduledCount}.${sourceNotice}`);
 }));
 
@@ -456,8 +456,8 @@ function getPostMediaType(post) {
 
 function getPostMediaPath(post) {
   if (!post) return '';
-  if (getPostMediaType(post) === 'video') return post.videoPath || post.mediaPath || post.publicMediaUrl || post.imagePath || '';
-  return post.imagePath || post.mediaPath || post.publicMediaUrl || post.publicImageUrl || '';
+  if (getPostMediaType(post) === 'video') return post.mediaUrl || post.videoPath || post.mediaPath || post.publicMediaUrl || post.imagePath || '';
+  return post.mediaUrl || post.imagePath || post.mediaPath || post.publicMediaUrl || post.publicImageUrl || '';
 }
 
 function buildPostResultView(post) {

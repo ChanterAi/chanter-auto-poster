@@ -1,13 +1,10 @@
 'use strict';
 
 const admin = require('firebase-admin');
-const { Storage } = require('@google-cloud/storage');
-const { JWT } = require('google-auth-library');
 const config = require('./config');
 
 let app = null;
 let firestore = null;
-let storageClient = null;
 let firebaseConfigValidated = false;
 
 function getNormalizedPrivateKey() {
@@ -15,7 +12,7 @@ function getNormalizedPrivateKey() {
 }
 
 function validateFirebaseConfig() {
-  const { projectId, clientEmail, storageBucket } = config.firebase;
+  const { projectId, clientEmail } = config.firebase;
   const privateKey = getNormalizedPrivateKey();
   const missing = [];
   const privateKeyBeginsCorrectly = privateKey.startsWith('-----BEGIN PRIVATE KEY-----');
@@ -24,8 +21,7 @@ function validateFirebaseConfig() {
     console.log('[firebase] configuration', {
       projectIdExists: Boolean(projectId),
       clientEmailExists: Boolean(clientEmail),
-      privateKeyBeginsWithBeginPrivateKey: privateKeyBeginsCorrectly,
-      storageBucket
+      privateKeyBeginsWithBeginPrivateKey: privateKeyBeginsCorrectly
     });
     firebaseConfigValidated = true;
   }
@@ -33,7 +29,6 @@ function validateFirebaseConfig() {
   if (!projectId) missing.push('FIREBASE_PROJECT_ID (or VITE_FIREBASE_PROJECT_ID)');
   if (!clientEmail) missing.push('FIREBASE_CLIENT_EMAIL');
   if (!privateKey) missing.push('FIREBASE_PRIVATE_KEY');
-  if (!storageBucket) missing.push('FIREBASE_STORAGE_BUCKET');
 
   if (missing.length > 0) {
     throw new Error(`Firebase Admin configuration is missing: ${missing.join(', ')}`);
@@ -45,7 +40,7 @@ function validateFirebaseConfig() {
     throw new Error('FIREBASE_PRIVATE_KEY is not a valid PEM private key after newline normalization');
   }
 
-  return { projectId, clientEmail, privateKey, storageBucket };
+  return { projectId, clientEmail, privateKey };
 }
 
 /**
@@ -59,13 +54,12 @@ function validateFirebaseConfig() {
 function getFirebaseApp() {
   if (app) return app;
 
-  const { projectId, clientEmail, privateKey, storageBucket } = validateFirebaseConfig();
+  const { projectId, clientEmail, privateKey } = validateFirebaseConfig();
   // Render (and most dashboards) store multi-line secrets with literal
   // "\n" sequences instead of real newlines — undo that or the PEM key
   // fails to parse.
   app = admin.initializeApp({
-    credential: admin.credential.cert({ projectId, clientEmail, privateKey }),
-    storageBucket
+    credential: admin.credential.cert({ projectId, clientEmail, privateKey })
   });
 
   return app;
@@ -82,31 +76,6 @@ function getFirestore() {
   return firestore;
 }
 
-function getStorageBucket() {
-  const { projectId, clientEmail, privateKey, storageBucket } = validateFirebaseConfig();
-  getFirebaseApp();
-
-  if (!storageClient) {
-    const authClient = new JWT({
-      email: clientEmail,
-      key: privateKey,
-      scopes: ['https://www.googleapis.com/auth/devstorage.full_control']
-    });
-
-    storageClient = new Storage({
-      projectId,
-      authClient,
-      timeout: Math.max(1_000, Number(config.firebase.storageRequestTimeoutMs) || 60_000),
-      retryOptions: {
-        autoRetry: false,
-        maxRetries: 0
-      }
-    });
-  }
-
-  return storageClient.bucket(storageBucket);
-}
-
 function postsCollection() {
   return getFirestore().collection('posts');
 }
@@ -120,7 +89,6 @@ module.exports = {
   validateFirebaseConfig,
   getFirebaseApp,
   getFirestore,
-  getStorageBucket,
   postsCollection,
   configDoc,
   // Static namespaces — safe to read without an initialized app.

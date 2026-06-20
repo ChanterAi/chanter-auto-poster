@@ -6,6 +6,7 @@ const storage = require('./storage');
 const { attachUser } = require('./auth');
 const { startScheduler } = require('./scheduler');
 const { validateFirebaseConfig } = require('./firestore');
+const { configureCloudinary } = require('./cloudinary');
 
 const app = express();
 
@@ -47,6 +48,7 @@ async function start() {
   // Fail fast and loud if Firebase credentials are missing/bad, instead of
   // booting a "healthy-looking" server that 500s on the first real request.
   validateFirebaseConfig();
+  configureCloudinary();
   await storage.ensureStorage();
   startScheduler();
   app.listen(config.port, () => {

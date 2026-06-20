@@ -443,6 +443,7 @@ function getLocalMediaPath(post) {
 
 function getRemoteMediaUrl(post) {
   const candidates = [
+    post.mediaUrl,
     post.videoPath,
     post.mediaPath,
     post.publicMediaUrl,
@@ -498,7 +499,7 @@ function resolvePrivacyLevel(post, creatorInfo = null) {
 }
 
 function getPublicImageUrl(post) {
-  const publicUrl = [post.publicMediaUrl, post.publicImageUrl]
+  const publicUrl = [post.mediaUrl, post.publicMediaUrl, post.publicImageUrl]
     .map((value) => String(value || '').trim())
     .find(isUsablePublicUrl);
   if (publicUrl) return publicUrl;

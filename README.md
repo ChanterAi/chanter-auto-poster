@@ -59,6 +59,14 @@ Optional variables:
 
 ```env
 PORT=3010
+FIREBASE_PROJECT_ID=
+FIREBASE_CLIENT_EMAIL=
+FIREBASE_PRIVATE_KEY=
+
+CLOUDINARY_CLOUD_NAME=
+CLOUDINARY_API_KEY=
+CLOUDINARY_API_SECRET=
+
 TIKTOK_CLIENT_KEY=
 TIKTOK_CLIENT_SECRET=
 TIKTOK_REDIRECT_URI=http://localhost:3010/auth/tiktok/callback
@@ -185,19 +193,17 @@ The in-process `node-cron` task remains as a second trigger. Firestore transacti
 
 ## Data Storage
 
-Queue state, settings, and OAuth tokens live in Firestore. New uploads are copied to Firebase Storage before their Firestore post is created, so a Render deploy or restart cannot remove scheduled media. The local `uploads/` directory is temporary staging only.
+Queue state, settings, and OAuth tokens remain in Firestore. New image and video uploads are sent from the Node.js backend to Cloudinary with `resource_type: "auto"`; Firestore stores the returned `secure_url` as `mediaUrl`. The local `uploads/` directory is temporary staging only, so Render restarts do not remove scheduled media.
 
-Small disk uploads are read into a buffer and written with `bucket.file(...).save()`; larger uploads use a fresh non-resumable write stream. Both paths disable resumable-session creation and client checksum validation, and store a Firebase download token for the stable HTTPS media URL.
+Set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` on the Render web service. The API secret is server-only and must never use a `VITE_` prefix or be added to frontend code.
 
-Storage uses an explicit `google-auth-library` v10 JWT client with the same validated Firebase service-account credentials. This avoids the older Storage dependency's `www.googleapis.com/oauth2/v4/token` transport while leaving Firestore and application OAuth tokens unchanged.
-
-After deployment, verify the configured bucket and a complete write/read/delete cycle using the existing `CRON_SECRET`:
+After deployment, verify Cloudinary connectivity and an optional upload/read/delete cycle using the existing `CRON_SECRET`:
 
 ```bash
 curl -H "x-cron-secret: $CRON_SECRET" "$APP_URL/api/storage/health?write=1"
 ```
 
-The Add Media form also accepts an HTTPS Public Media URL without a file. When one file and a public URL are submitted together, the URL is used automatically if Firebase Storage exhausts its upload retries.
+The Add Media form also accepts an HTTPS Public Media URL without a file. When one file and a public URL are submitted together, the URL is used automatically if Cloudinary exhausts its upload retries.
 
 Posts uploaded before this storage change may still reference Render-local `/uploads/...` paths. Re-upload those pending items after deployment if their media is no longer present.
 
@@ -211,6 +217,7 @@ chanter-auto-poster/
   src/
     server.js
     config.js
+    cloudinary.js
     scheduler.js
     storage.js
     tiktok.js

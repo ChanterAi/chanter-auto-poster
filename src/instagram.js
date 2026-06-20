@@ -454,6 +454,9 @@ function resolvePublicMediaUrl(input, post, publishKind) {
     const instagramUrl = String(post.instagramMediaUrl || '').trim();
     if (instagramUrl) return instagramUrl;
 
+    const mediaUrl = String(post.mediaUrl || '').trim();
+    if (mediaUrl) return mediaUrl;
+
     const publicMediaUrl = String(post.publicMediaUrl || '').trim();
     if (publicMediaUrl) return publicMediaUrl;
 

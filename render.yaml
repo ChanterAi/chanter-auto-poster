@@ -20,6 +20,12 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 22
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
       - fromGroup: chanter-scheduler-shared
 
   - type: cron

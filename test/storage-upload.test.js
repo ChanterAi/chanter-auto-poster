@@ -6,53 +6,48 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-test('uploads small images and videos, retries safely, and preserves URL fallback', async (t) => {
-  process.env.FIREBASE_STORAGE_UPLOAD_ATTEMPTS = '3';
-  process.env.FIREBASE_STORAGE_RETRY_BASE_MS = '100';
-  process.env.FIREBASE_STORAGE_BUFFER_THRESHOLD_BYTES = '10485760';
-
+test('persists Cloudinary image/video URLs and keeps public URL fallback', async (t) => {
   const firestorePath = require.resolve('../src/firestore');
+  const cloudinaryPath = require.resolve('../src/cloudinary');
   const storagePath = require.resolve('../src/storage');
   const mapperPath = require.resolve('../src/postsMapper');
-  const configPath = require.resolve('../src/config');
   delete require.cache[storagePath];
   delete require.cache[mapperPath];
-  delete require.cache[configPath];
 
   const committed = [];
-  const saveCalls = [];
+  const uploadCalls = [];
+  const destroyed = [];
   const timestamp = { toDate: () => new Date('2026-06-20T12:00:00.000Z') };
-  let saveBehavior = async () => {};
-  let bucketMetadataBehavior = async () => {};
-  const objectData = new Map();
+  let uploadBehavior = async (file) => ({
+    mediaUrl: file.mimetype.startsWith('video/')
+      ? 'https://res.cloudinary.com/test/video/upload/video.mp4'
+      : 'https://res.cloudinary.com/test/image/upload/image.jpg',
+    publicId: file.mimetype.startsWith('video/') ? 'uploads/video' : 'uploads/image',
+    resourceType: file.mimetype.startsWith('video/') ? 'video' : 'image'
+  });
 
-  const bucket = {
-    name: 'test-project.appspot.com',
-    getMetadata: () => bucketMetadataBehavior(),
-    file(objectPath) {
-      return {
-        async save(buffer, options) {
-          saveCalls.push({ objectPath, buffer, options });
-          await saveBehavior();
-          objectData.set(objectPath, Buffer.from(buffer));
-        },
-        async download() {
-          return [objectData.get(objectPath) || Buffer.alloc(0)];
-        },
-        async delete() {
-          objectData.delete(objectPath);
-        },
-        createWriteStream() {
-          throw new Error('Small test media should use file.save(buffer)');
-        }
-      };
+  require.cache[cloudinaryPath] = {
+    id: cloudinaryPath,
+    filename: cloudinaryPath,
+    loaded: true,
+    exports: {
+      uploadMediaFile: async (file) => {
+        uploadCalls.push(file);
+        return uploadBehavior(file);
+      },
+      destroyMediaAsset: async (publicId, resourceType) => destroyed.push({ publicId, resourceType }),
+      checkCloudinaryHealth: async ({ writeTest }) => ({
+        ok: true,
+        provider: 'cloudinary',
+        writeTest: { requested: writeTest }
+      })
     }
   };
+
   const postsCollection = {
     where: () => ({ select: () => ({ get: async () => ({ docs: [] }) }) }),
     doc: (id) => ({ id })
   };
-
   require.cache[firestorePath] = {
     id: firestorePath,
     filename: firestorePath,
@@ -66,20 +61,19 @@ test('uploads small images and videos, retries safely, and preserves URL fallbac
           commit: async () => {}
         })
       }),
-      getFirebaseApp: () => ({}),
-      getStorageBucket: () => bucket,
       Timestamp: { now: () => timestamp, fromDate: () => timestamp },
       FieldValue: { serverTimestamp: () => timestamp, increment: () => 1 }
     }
   };
 
   const storage = require('../src/storage');
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-storage-test-'));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-cloudinary-test-'));
   t.after(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
     delete require.cache[storagePath];
     delete require.cache[mapperPath];
     delete require.cache[firestorePath];
+    delete require.cache[cloudinaryPath];
   });
 
   const imagePath = path.join(tempDir, 'small.jpg');
@@ -102,43 +96,26 @@ test('uploads small images and videos, retries safely, and preserves URL fallbac
     mimetype: 'video/mp4'
   }]);
 
-  assert.equal(saveCalls[0].options.resumable, false);
-  assert.equal(saveCalls[0].options.validation, false);
-  assert.equal(saveCalls[1].options.resumable, false);
-  assert.equal(saveCalls[1].options.validation, false);
-  assert.equal(imagePost.mediaSource, 'firebase_storage');
+  assert.equal(uploadCalls.length, 2);
+  assert.equal(imagePost.mediaSource, 'cloudinary');
+  assert.equal(imagePost.mediaUrl, 'https://res.cloudinary.com/test/image/upload/image.jpg');
+  assert.equal(imagePost.mediaPath, imagePost.mediaUrl);
+  assert.equal(imagePost.cloudinaryPublicId, 'uploads/image');
+  assert.equal(imagePost.mediaStoragePath, '');
   assert.equal(videoPost.mediaType, 'video');
-  assert.match(imagePost.mediaPath, /^https:\/\/firebasestorage\.googleapis\.com\//);
-  assert.ok(imagePost.mediaStoragePath.startsWith('uploads/'));
-  assert.ok(!imagePost.mediaPath.startsWith('/uploads/'));
+  assert.equal(videoPost.mediaUrl, 'https://res.cloudinary.com/test/video/upload/video.mp4');
+  assert.equal(videoPost.cloudinaryResourceType, 'video');
+
   const restoredImagePost = require('../src/postsMapper').postFromDoc({
     id: committed[0].ref.id,
     data: () => committed[0].data
   });
-  assert.equal(restoredImagePost.mediaPath, imagePost.mediaPath);
-  assert.equal(restoredImagePost.mediaStoragePath, imagePost.mediaStoragePath);
+  assert.equal(restoredImagePost.mediaUrl, imagePost.mediaUrl);
+  assert.equal(restoredImagePost.cloudinaryPublicId, imagePost.cloudinaryPublicId);
 
-  let retryAttempts = 0;
-  saveBehavior = async () => {
-    retryAttempts += 1;
-    if (retryAttempts < 3) {
-      const error = new Error('Premature close');
-      error.code = 'ERR_STREAM_PREMATURE_CLOSE';
-      throw error;
-    }
-  };
-  await storage.addUploadedPosts('owner', [{
-    path: imagePath,
-    size: fs.statSync(imagePath).size,
-    filename: 'retry.jpg',
-    originalname: 'retry.jpg',
-    mimetype: 'image/jpeg'
-  }]);
-  assert.equal(retryAttempts, 3);
-
-  saveBehavior = async () => {
-    const error = new Error('Premature close');
-    error.code = 'ERR_STREAM_PREMATURE_CLOSE';
+  uploadBehavior = async () => {
+    const error = new Error('Cloudinary unavailable');
+    error.code = 'CLOUDINARY_UPLOAD_FAILED';
     throw error;
   };
   const [fallbackPost] = await storage.addUploadedPosts('owner', [{
@@ -150,38 +127,21 @@ test('uploads small images and videos, retries safely, and preserves URL fallbac
   }], { publicMediaUrl: 'https://cdn.example.com/fallback.jpg' });
   assert.equal(fallbackPost.mediaSource, 'public_url');
   assert.equal(fallbackPost.storageFallback, true);
-  assert.equal(fallbackPost.mediaPath, 'https://cdn.example.com/fallback.jpg');
+  assert.equal(fallbackPost.mediaUrl, 'https://cdn.example.com/fallback.jpg');
 
-  const callsBeforeUrlOnly = saveCalls.length;
+  const callsBeforeUrlOnly = uploadCalls.length;
   const [urlOnlyPost] = await storage.addUploadedPosts('owner', [], {
     publicMediaUrl: 'https://cdn.example.com/public-only.jpg'
   });
-  assert.equal(saveCalls.length, callsBeforeUrlOnly);
+  assert.equal(uploadCalls.length, callsBeforeUrlOnly);
   assert.equal(urlOnlyPost.mediaSource, 'public_url');
-  assert.equal(committed.length, 5);
+  assert.equal(committed.length, 4);
 
-  saveBehavior = async () => {};
-  bucketMetadataBehavior = async () => [{ name: bucket.name }];
-  const health = await storage.checkStorageHealth({ writeTest: true });
-  assert.equal(health.ok, true);
-  assert.equal(health.adminInitialized, true);
-  assert.equal(health.bucketAccessible, true);
-  assert.deepEqual(health.writeTest, {
-    requested: true,
-    write: true,
-    read: true,
-    delete: true
+  const health = await storage.checkMediaStorageHealth({ writeTest: true });
+  assert.deepEqual(health, {
+    ok: true,
+    provider: 'cloudinary',
+    writeTest: { requested: true }
   });
-
-  bucketMetadataBehavior = async () => {
-    const error = new Error('Forbidden');
-    error.response = { status: 403 };
-    throw error;
-  };
-  const deniedHealth = await storage.checkStorageHealth();
-  assert.equal(deniedHealth.ok, false);
-  assert.deepEqual(deniedHealth.error, {
-    code: 'FIREBASE_BUCKET_NOT_ACCESSIBLE',
-    message: 'Firebase Storage bucket is not accessible. Check the bucket name and service-account permissions.'
-  });
+  assert.deepEqual(destroyed, []);
 });
