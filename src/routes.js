@@ -208,10 +208,25 @@ router.post('/api/instagram/publish', express.json({ limit: '1mb' }), asyncRoute
 router.post('/upload', upload.array('images'), asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const files = req.files || [];
-  if (files.length === 0) { redirectWithNotice(res, 'Choose at least one image or video to upload.'); return; }
-  const created = await storage.addUploadedPosts(userId, files, { caption: req.body.caption, hashtags: req.body.hashtags });
+  const publicMediaUrl = String(req.body.publicMediaUrl || req.body.publicImageUrl || '').trim();
+  if (publicMediaUrl && !isPublicHttpsUrl(publicMediaUrl)) {
+    redirectWithNotice(res, 'Public Media URL must be a valid HTTPS URL.');
+    return;
+  }
+  if (files.length === 0 && !publicMediaUrl) {
+    redirectWithNotice(res, 'Choose a media file or enter a Public Media URL.');
+    return;
+  }
+
+  const created = await storage.addUploadedPosts(userId, files, {
+    caption: req.body.caption,
+    hashtags: req.body.hashtags,
+    publicMediaUrl
+  });
   const scheduledCount = await storage.autoSchedulePosts(userId, created.map((p) => p.id));
-  redirectWithNotice(res, `Uploaded ${created.length}. Scheduled ${scheduledCount}.`);
+  const usedFallback = created.some((post) => post.storageFallback);
+  const sourceNotice = usedFallback ? ' Firebase Storage failed, so the submitted public URL was used.' : '';
+  redirectWithNotice(res, `Created ${created.length}. Scheduled ${scheduledCount}.${sourceNotice}`);
 }));
 
 router.post('/settings', asyncRoute(async (req, res) => {
@@ -231,6 +246,11 @@ router.post('/schedule', asyncRoute(async (req, res) => {
 router.post('/posts/:id', asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const scheduledAt = parseDateTimeLocal(req.body.scheduledAt, req.body.timezoneOffsetMinutes);
+  const publicMediaUrl = String(req.body.publicMediaUrl || req.body.publicImageUrl || '').trim();
+  if (publicMediaUrl && !isPublicHttpsUrl(publicMediaUrl)) {
+    redirectWithNotice(res, 'Public Media URL must be a valid HTTPS URL.');
+    return;
+  }
 
   // Interaction ability: checkbox presence means enabled
   const allowComment    = req.body.allowComment    === '1';
@@ -245,7 +265,8 @@ router.post('/posts/:id', asyncRoute(async (req, res) => {
   await storage.updatePost(userId, req.params.id, {
     caption:            String(req.body.caption            || '').trim(),
     hashtags:           String(req.body.hashtags           || '').trim(),
-    publicImageUrl:     String(req.body.publicImageUrl     || '').trim(),
+    publicMediaUrl,
+    publicImageUrl:     publicMediaUrl,
     instagramMediaUrl:  String(req.body.instagramMediaUrl  || '').trim(),
     privacyLevel:       String(req.body.privacyLevel       || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
     scheduledAt,
@@ -334,6 +355,14 @@ function parseCookies(header) {
     }, {});
 }
 
+function isPublicHttpsUrl(value) {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+}
+
 function parseDateTimeLocal(value, timezoneOffsetMinutes) {
   if (!value) return null;
   const fallback = () => { const d = new Date(value); return isNaN(d.getTime()) ? null : d.toISOString(); };
@@ -411,8 +440,8 @@ function getPostMediaType(post) {
 
 function getPostMediaPath(post) {
   if (!post) return '';
-  if (getPostMediaType(post) === 'video') return post.videoPath || post.mediaPath || post.imagePath || '';
-  return post.imagePath || post.mediaPath || '';
+  if (getPostMediaType(post) === 'video') return post.videoPath || post.mediaPath || post.publicMediaUrl || post.imagePath || '';
+  return post.imagePath || post.mediaPath || post.publicMediaUrl || post.publicImageUrl || '';
 }
 
 function buildPostResultView(post) {

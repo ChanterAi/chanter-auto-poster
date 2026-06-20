@@ -187,6 +187,8 @@ The in-process `node-cron` task remains as a second trigger. Firestore transacti
 
 Queue state, settings, and OAuth tokens live in Firestore. New uploads are copied to Firebase Storage before their Firestore post is created, so a Render deploy or restart cannot remove scheduled media. The local `uploads/` directory is temporary staging only.
 
+The Add Media form also accepts an HTTPS Public Media URL without a file. When one file and a public URL are submitted together, the URL is used automatically if Firebase Storage exhausts its upload retries.
+
 Posts uploaded before this storage change may still reference Render-local `/uploads/...` paths. Re-upload those pending items after deployment if their media is no longer present.
 
 ## Project Structure

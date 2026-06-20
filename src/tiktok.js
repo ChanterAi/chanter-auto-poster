@@ -498,8 +498,10 @@ function resolvePrivacyLevel(post, creatorInfo = null) {
 }
 
 function getPublicImageUrl(post) {
-  const publicImageUrl = String(post.publicImageUrl || '').trim();
-  if (isUsablePublicUrl(publicImageUrl)) return publicImageUrl;
+  const publicUrl = [post.publicMediaUrl, post.publicImageUrl]
+    .map((value) => String(value || '').trim())
+    .find(isUsablePublicUrl);
+  if (publicUrl) return publicUrl;
 
   const localImagePath = String(post.imageUrl || post.mediaPath || '').trim();
   if (!config.publicBaseUrl || !localImagePath) return '';

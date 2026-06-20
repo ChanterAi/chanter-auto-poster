@@ -266,8 +266,58 @@ function cleanupLocalUpload(file) {
   }
 }
 
+function getPublicMediaType(mediaUrl) {
+  try {
+    const pathname = new URL(mediaUrl).pathname.toLowerCase();
+    return ['.mp4', '.mov', '.webm'].some((extension) => pathname.endsWith(extension))
+      ? 'video'
+      : 'photo';
+  } catch (error) {
+    return 'photo';
+  }
+}
+
+function isPublicHttpsUrl(mediaUrl) {
+  try {
+    return new URL(mediaUrl).protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+}
+
+function getPublicMediaName(mediaUrl) {
+  try {
+    return path.basename(new URL(mediaUrl).pathname) || 'public-media';
+  } catch (error) {
+    return 'public-media';
+  }
+}
+
+function getPublicMediaMimeType(mediaType, mediaUrl) {
+  const pathname = String(mediaUrl || '').toLowerCase();
+  if (pathname.includes('.png')) return 'image/png';
+  if (pathname.includes('.webp')) return 'image/webp';
+  if (pathname.includes('.mov')) return 'video/quicktime';
+  if (pathname.includes('.webm')) return 'video/webm';
+  return mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
+}
+
 async function addUploadedPosts(userId, files, defaults = {}) {
   const ownerId = userId || DEFAULT_USER_ID;
+  const uploadFiles = Array.isArray(files) ? files : [];
+  const fallbackUrl = String(defaults.publicMediaUrl || defaults.publicImageUrl || '').trim();
+  if (fallbackUrl && !isPublicHttpsUrl(fallbackUrl)) {
+    const error = new Error('Public Media URL must be a valid HTTPS URL');
+    error.status = 400;
+    throw error;
+  }
+  const sources = uploadFiles.length > 0 ? uploadFiles : (fallbackUrl ? [null] : []);
+  if (sources.length === 0) {
+    const error = new Error('Choose a media file or enter a public HTTPS media URL');
+    error.status = 400;
+    throw error;
+  }
+
   let order = (await getMaxOrder(ownerId)) + 1;
   const now = Timestamp.now();
   const db = getFirestore();
@@ -277,28 +327,49 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   let committed = false;
 
   try {
-    for (const file of files) {
-      const mediaType = getUploadMediaType(file);
-      const fileName = getStoredFileName(file);
-      const { mediaStoragePath, mediaUrl } = await saveUploadToCloud(file, fileName);
-      storedObjects.push(mediaStoragePath);
+    for (const file of sources) {
+      const mediaType = file ? getUploadMediaType(file) : getPublicMediaType(fallbackUrl);
+      const fileName = file ? getStoredFileName(file) : getPublicMediaName(fallbackUrl);
+      let mediaStoragePath = '';
+      let mediaUrl = fallbackUrl;
+      let storageFallback = false;
+
+      if (file) {
+        try {
+          const uploaded = await saveUploadToCloud(file, fileName);
+          mediaStoragePath = uploaded.mediaStoragePath;
+          mediaUrl = uploaded.mediaUrl;
+          storedObjects.push(mediaStoragePath);
+        } catch (error) {
+          if (!fallbackUrl || uploadFiles.length !== 1) throw error;
+          storageFallback = true;
+          console.warn('[firebase-storage] using submitted public media URL after upload failure', {
+            code: error.code || 'STORAGE_UPLOAD_FAILED'
+          });
+        }
+      }
+
       const ref = postsCollection().doc(randomUUID());
+      const publicMediaUrl = mediaStoragePath ? mediaUrl : fallbackUrl;
 
       const data = {
         userId: ownerId,
         platform: 'tiktok',
-        originalName: file.originalname,
+        originalName: file ? file.originalname : fileName,
         fileName,
-        mimeType: file.mimetype || '',
+        mimeType: (file && file.mimetype) || getPublicMediaMimeType(mediaType, publicMediaUrl),
         mediaType,
         mediaPath: mediaUrl,
         mediaStoragePath,
         videoPath: mediaType === 'video' ? mediaUrl : '',
         imagePath: mediaType === 'photo' ? mediaUrl : '',
+        publicMediaUrl,
+        mediaSource: mediaStoragePath ? 'firebase_storage' : 'public_url',
+        storageFallback,
         caption: String(defaults.caption || '').trim(),
         hashtags: String(defaults.hashtags || '').trim(),
-        publicImageUrl: String(defaults.publicImageUrl || (mediaType === 'photo' ? mediaUrl : '')).trim(),
-        instagramMediaUrl: String(defaults.instagramMediaUrl || mediaUrl).trim(),
+        publicImageUrl: mediaType === 'photo' ? publicMediaUrl : '',
+        instagramMediaUrl: String(defaults.instagramMediaUrl || publicMediaUrl).trim(),
         privacyLevel:
           String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
         scheduledTimeUTC: null,
@@ -329,7 +400,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     committed = true;
     return created.map(({ ref, data }) => postFromDoc({ id: ref.id, data: () => data }));
   } finally {
-    files.forEach(cleanupLocalUpload);
+    uploadFiles.forEach(cleanupLocalUpload);
     if (!committed) {
       await Promise.all(storedObjects.map(deleteCloudObject));
     }

@@ -440,12 +440,16 @@
       <!-- ─── Dashboard Grid ─── -->
       <div class="dashboard-grid" aria-label="Poster controls">
         <section class="panel">
-          <div class="panel-head"><h2>Upload Media</h2></div>
+          <div class="panel-head"><h2>Add Media</h2></div>
           <form action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
             <div class="form-grid">
               <label class="wide">
                 Media
-                <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple required data-media-upload />
+                <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple data-media-upload />
+              </label>
+              <label class="wide">
+                Public Media URL
+                <input type="url" name="publicMediaUrl" placeholder="https://example.com/media.jpg" data-public-media-url />
               </label>
               <label>
                 Caption
@@ -456,7 +460,7 @@
                 <textarea name="hashtags" placeholder="#chanter #viral"></textarea>
               </label>
             </div>
-            <div class="actions"><button type="submit" class="btn btn-primary">Upload &amp; Schedule</button></div>
+            <div class="actions"><button type="submit" class="btn btn-primary">Create &amp; Schedule</button></div>
           </form>
         </section>
 
@@ -662,11 +666,11 @@
                     <summary>Advanced / URLs</summary>
                     <div class="advanced-body">
                       <label>
-                        Public image URL
+                        Public Media URL
                         <input
-                          type="url" name="publicImageUrl" value="<%= post.publicImageUrl || '' %>"
-                          placeholder="<%= mediaType === 'video' ? 'Not required for video posts' : 'https://example.com/image.png' %>"
-                          data-public-image-url
+                          type="url" name="publicMediaUrl" value="<%= post.publicMediaUrl || post.publicImageUrl || '' %>"
+                          placeholder="<%= mediaType === 'video' ? 'https://example.com/video.mp4' : 'https://example.com/image.png' %>"
+                          data-public-media-url
                         />
                       </label>
                       <label>
@@ -786,29 +790,41 @@
       // Upload form validation
       document.querySelectorAll('[data-upload-form]').forEach(form => {
         const input = form.querySelector('[data-media-upload]');
-        if (!input) return;
+        const publicUrlInput = form.querySelector('[data-public-media-url]');
+        if (!input || !publicUrlInput) return;
         const validate = () => {
           const files = Array.from(input.files || []);
+          const publicUrl = publicUrlInput.value.trim();
           let msg = '';
-          if (files.length === 0) msg = 'Choose at least one image or video file.';
+          let urlMsg = '';
+          if (files.length === 0 && !publicUrl) msg = 'Choose a media file or enter a Public Media URL.';
           else if (files.some(f => !getFileKind(f))) msg = 'Use image files or MP4, MOV, or WebM video files.';
+          if (publicUrl && !publicUrl.toLowerCase().startsWith('https://')) urlMsg = 'Public Media URL must use HTTPS.';
           input.setCustomValidity(msg);
-          return !msg;
+          publicUrlInput.setCustomValidity(urlMsg);
+          return !msg && !urlMsg;
         };
         input.addEventListener('change', validate);
-        form.addEventListener('submit', e => { if (!validate()) { e.preventDefault(); input.reportValidity(); } });
+        publicUrlInput.addEventListener('input', validate);
+        form.addEventListener('submit', e => {
+          if (!validate()) {
+            e.preventDefault();
+            if (input.validationMessage) input.reportValidity();
+            else publicUrlInput.reportValidity();
+          }
+        });
       });
 
-      // Edit form: public image URL validation
+      // Edit form: public media URL validation
       document.querySelectorAll('[data-edit-form]').forEach(form => {
-        const input = form.querySelector('[data-public-image-url]');
+        const input = form.querySelector('[data-public-media-url]');
         if (!input) return;
         const validate = () => {
           const mediaType = form.dataset.mediaType;
           const hasLocal = form.dataset.hasLocalMedia === 'true';
           const hasUrl = input.value.trim().length > 0;
           const missing = mediaType === 'photo' && !hasLocal && !hasUrl;
-          input.setCustomValidity(missing ? 'Add an image file or public image URL for photo posts.' : '');
+          input.setCustomValidity(missing ? 'Add a Public Media URL for photo posts.' : '');
           return !missing;
         };
         input.addEventListener('input', validate);
