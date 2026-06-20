@@ -41,6 +41,90 @@ const defaultInstagramAuth = {
   updated_at: null
 };
 
+const STORAGE_UPLOAD_ATTEMPTS = Math.max(1, Number(config.firebase.storageUploadAttempts) || 3);
+const STORAGE_RETRY_BASE_MS = Math.max(100, Number(config.firebase.storageRetryBaseMs) || 500);
+const STORAGE_RESUMABLE_THRESHOLD_BYTES = Math.max(
+  0,
+  Number(config.firebase.storageResumableThresholdBytes) || 10 * 1024 * 1024
+);
+
+function getErrorChain(error) {
+  const chain = [];
+  const queue = [error];
+  const seen = new Set();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    chain.push(current);
+    if (current.cause) queue.push(current.cause);
+    if (current.error) queue.push(current.error);
+    if (Array.isArray(current.errors)) queue.push(...current.errors);
+  }
+
+  return chain;
+}
+
+function isPrematureCloseError(error) {
+  return getErrorChain(error).some((item) => {
+    const code = String(item.code || item.errno || '').toUpperCase();
+    const message = String(item.message || '').toUpperCase();
+    return code === 'ERR_STREAM_PREMATURE_CLOSE' ||
+      message.includes('ERR_STREAM_PREMATURE_CLOSE') ||
+      message.includes('PREMATURE CLOSE');
+  });
+}
+
+function storageErrorCode(error) {
+  const match = getErrorChain(error).find((item) => item.code || item.errno);
+  return String((match && (match.code || match.errno)) || 'STORAGE_UPLOAD_FAILED');
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function uploadWithRetry(upload) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= STORAGE_UPLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      return await upload();
+    } catch (error) {
+      lastError = error;
+      const retryable = isPrematureCloseError(error);
+      const code = retryable ? 'ERR_STREAM_PREMATURE_CLOSE' : storageErrorCode(error);
+
+      if (!retryable || attempt === STORAGE_UPLOAD_ATTEMPTS) {
+        console.error('[firebase-storage] upload failed', {
+          attempts: attempt,
+          code,
+          retryable
+        });
+        const cleanError = new Error(
+          retryable
+            ? `Firebase Storage upload failed after ${attempt} attempts because the Google OAuth connection closed early`
+            : `Firebase Storage upload failed (${code})`
+        );
+        cleanError.code = code;
+        cleanError.status = 503;
+        throw cleanError;
+      }
+
+      const delayMs = STORAGE_RETRY_BASE_MS * (2 ** (attempt - 1));
+      console.warn('[firebase-storage] OAuth response closed early; retrying upload', {
+        attempt,
+        maxAttempts: STORAGE_UPLOAD_ATTEMPTS,
+        delayMs
+      });
+      await wait(delayMs);
+    }
+  }
+
+  throw lastError;
+}
+
 // ── Bootstrap ────────────────────────────────────────────────────────────
 
 async function ensureStorage() {
@@ -131,23 +215,29 @@ async function saveUploadToCloud(file, fileName) {
   const bucket = getFirebaseApp().storage().bucket();
   const object = bucket.file(mediaStoragePath);
   const contentType = file.mimetype || 'application/octet-stream';
+  const uploadSize = Number(file.size || (file.path && fs.statSync(file.path).size) || 0);
+  const resumable = uploadSize > STORAGE_RESUMABLE_THRESHOLD_BYTES;
   const downloadToken = randomUUID();
   const metadata = {
     contentType,
     metadata: { firebaseStorageDownloadTokens: downloadToken }
   };
 
-  if (file.buffer) {
-    await object.save(file.buffer, {
-      resumable: false,
-      metadata
-    });
-  } else {
+  await uploadWithRetry(async () => {
+    if (file.buffer) {
+      await object.save(file.buffer, {
+        resumable,
+        metadata
+      });
+      return;
+    }
+
     await bucket.upload(file.path, {
       destination: mediaStoragePath,
+      resumable,
       metadata
     });
-  }
+  });
 
   const mediaUrl =
     `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}` +

@@ -5,6 +5,44 @@ const config = require('./config');
 
 let app = null;
 let firestore = null;
+let firebaseConfigValidated = false;
+
+function getNormalizedPrivateKey() {
+  return String(config.firebase.privateKey || '').replace(/\\n/g, '\n').trim();
+}
+
+function validateFirebaseConfig() {
+  const { projectId, clientEmail, storageBucket } = config.firebase;
+  const privateKey = getNormalizedPrivateKey();
+  const missing = [];
+
+  if (!projectId) missing.push('FIREBASE_PROJECT_ID (or VITE_FIREBASE_PROJECT_ID)');
+  if (!clientEmail) missing.push('FIREBASE_CLIENT_EMAIL');
+  if (!privateKey) missing.push('FIREBASE_PRIVATE_KEY');
+  if (!storageBucket) missing.push('FIREBASE_STORAGE_BUCKET');
+
+  if (missing.length > 0) {
+    throw new Error(`Firebase Admin configuration is missing: ${missing.join(', ')}`);
+  }
+  if (!String(clientEmail).includes('@')) {
+    throw new Error('FIREBASE_CLIENT_EMAIL is not a valid service-account email');
+  }
+  if (!privateKey.includes('-----BEGIN PRIVATE KEY-----') || !privateKey.includes('-----END PRIVATE KEY-----')) {
+    throw new Error('FIREBASE_PRIVATE_KEY is not a valid PEM private key after newline normalization');
+  }
+
+  if (!firebaseConfigValidated) {
+    console.log('[firebase] configuration validated', {
+      projectIdSet: true,
+      clientEmailSet: true,
+      privateKeySet: true,
+      storageBucketSet: true
+    });
+    firebaseConfigValidated = true;
+  }
+
+  return { projectId, clientEmail, privateKey, storageBucket };
+}
 
 /**
  * Lazily initializes the Firebase Admin SDK from service-account
@@ -17,22 +55,13 @@ let firestore = null;
 function getFirebaseApp() {
   if (app) return app;
 
-  const { projectId, clientEmail } = config.firebase;
+  const { projectId, clientEmail, privateKey, storageBucket } = validateFirebaseConfig();
   // Render (and most dashboards) store multi-line secrets with literal
   // "\n" sequences instead of real newlines — undo that or the PEM key
   // fails to parse.
-  const privateKey = String(config.firebase.privateKey || '').replace(/\\n/g, '\n');
-
-  if (!projectId || !clientEmail || !privateKey) {
-    throw new Error(
-      'Firebase Admin credentials are missing. Set FIREBASE_PROJECT_ID ' +
-        '(or VITE_FIREBASE_PROJECT_ID), FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY.'
-    );
-  }
-
   app = admin.initializeApp({
     credential: admin.credential.cert({ projectId, clientEmail, privateKey }),
-    storageBucket: config.firebase.storageBucket || undefined
+    storageBucket
   });
 
   return app;
@@ -59,6 +88,7 @@ function configDoc(name) {
 
 module.exports = {
   admin,
+  validateFirebaseConfig,
   getFirebaseApp,
   getFirestore,
   postsCollection,

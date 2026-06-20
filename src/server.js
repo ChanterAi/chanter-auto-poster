@@ -5,6 +5,7 @@ const routes = require('./routes');
 const storage = require('./storage');
 const { attachUser } = require('./auth');
 const { startScheduler } = require('./scheduler');
+const { validateFirebaseConfig } = require('./firestore');
 
 const app = express();
 
@@ -45,6 +46,7 @@ app.use((error, req, res, next) => {
 async function start() {
   // Fail fast and loud if Firebase credentials are missing/bad, instead of
   // booting a "healthy-looking" server that 500s on the first real request.
+  validateFirebaseConfig();
   await storage.ensureStorage();
   startScheduler();
   app.listen(config.port, () => {

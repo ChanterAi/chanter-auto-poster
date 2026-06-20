@@ -56,7 +56,12 @@ module.exports = {
     projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || '',
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',
     privateKey: process.env.FIREBASE_PRIVATE_KEY || '',
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || ''
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || '',
+    storageUploadAttempts: Number(process.env.FIREBASE_STORAGE_UPLOAD_ATTEMPTS || 3),
+    storageRetryBaseMs: Number(process.env.FIREBASE_STORAGE_RETRY_BASE_MS || 500),
+    storageResumableThresholdBytes: Number(
+      process.env.FIREBASE_STORAGE_RESUMABLE_THRESHOLD_BYTES || 10 * 1024 * 1024
+    )
   },
 
   tiktok: {
