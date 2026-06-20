@@ -14,6 +14,14 @@ const TICK_BATCH_SIZE = Math.max(1, config.scheduler.batchSize);
 const WORKER_ID = `${process.env.RENDER_INSTANCE_ID || 'local'}-${process.pid}`;
 
 let task = null;
+const schedulerState = {
+  startedAt: null,
+  lastTickStartedAt: null,
+  lastTickFinishedAt: null,
+  lastResult: null,
+  lastError: null,
+  skippedTicks: 0
+};
 let tickInFlight = false; // politeness only — see note in runSchedulerTick().
 
 function startScheduler() {
@@ -25,7 +33,18 @@ function startScheduler() {
     });
   });
 
+  schedulerState.startedAt = new Date().toISOString();
+
   return task;
+}
+
+function getSchedulerState() {
+  return {
+    ...schedulerState,
+    running: Boolean(task),
+    tickInFlight,
+    workerId: WORKER_ID
+  };
 }
 
 /**
@@ -43,10 +62,12 @@ function startScheduler() {
  */
 async function runSchedulerTick({ batchSize = TICK_BATCH_SIZE } = {}) {
   if (tickInFlight) {
+    schedulerState.skippedTicks += 1;
     return { ok: true, skipped: true, reason: 'Previous tick still running on this instance' };
   }
 
   tickInFlight = true;
+  schedulerState.lastTickStartedAt = new Date().toISOString();
   try {
     await reclaimStaleLocks();
     const dueIds = await findDuePostIds(batchSize);
@@ -56,8 +77,18 @@ async function runSchedulerTick({ batchSize = TICK_BATCH_SIZE } = {}) {
       results.push(await processPost(id, { force: false, workerId: WORKER_ID }));
     }
 
-    return { ok: true, processed: results.length, results };
+    const result = { ok: true, processed: results.length, dueIds, results };
+    schedulerState.lastResult = result;
+    schedulerState.lastError = null;
+    return result;
+  } catch (error) {
+    schedulerState.lastError = {
+      message: error.message || String(error),
+      at: new Date().toISOString()
+    };
+    throw error;
   } finally {
+    schedulerState.lastTickFinishedAt = new Date().toISOString();
     tickInFlight = false;
   }
 }
@@ -257,6 +288,7 @@ async function finalize(id, workerId, result) {
 
 module.exports = {
   startScheduler,
+  getSchedulerState,
   publishNextPost,
   runSchedulerTick,
   processPost

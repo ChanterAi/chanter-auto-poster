@@ -14,8 +14,8 @@
  * that still has data/*.json present).
  *
  * Usage:
- *   node scripts/migrate-to-firestore.js              # writes to Firestore
- *   node scripts/migrate-to-firestore.js --dry-run     # preview only
+ *   node src/migrate-to-firestore.js              # writes to Firestore
+ *   node src/migrate-to-firestore.js --dry-run     # preview only
  */
 
 const fs = require('fs');

@@ -1,8 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
+const { DateTime } = require('luxon');
 const config = require('./config');
-const { postsCollection, configDoc, getFirestore, Timestamp, FieldValue } = require('./firestore');
+const { postsCollection, configDoc, getFirestore, getFirebaseApp, Timestamp, FieldValue } = require('./firestore');
 const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore } = require('./postsMapper');
 
 const defaultSettings = {
@@ -92,11 +93,9 @@ async function getPost(userId, id) {
 async function getMaxOrder(userId) {
   const snapshot = await postsCollection()
     .where('userId', '==', userId)
-    .orderBy('order', 'desc')
-    .limit(1)
+    .select('order')
     .get();
-  if (snapshot.empty) return 0;
-  return Number(snapshot.docs[0].data().order || 0);
+  return snapshot.docs.reduce((max, doc) => Math.max(max, Number(doc.data().order || 0)), 0);
 }
 
 function getUploadMediaType(file) {
@@ -109,6 +108,74 @@ function getUploadMediaType(file) {
   return 'photo';
 }
 
+function defaultExtension(file) {
+  const mime = String(file.mimetype || '').toLowerCase();
+  if (mime === 'video/mp4') return '.mp4';
+  if (mime === 'video/quicktime') return '.mov';
+  if (mime === 'video/webm') return '.webm';
+  if (mime === 'image/png') return '.png';
+  if (mime === 'image/webp') return '.webp';
+  return path.extname(file.originalname || '').toLowerCase() || '.jpg';
+}
+
+function getStoredFileName(file) {
+  return file.filename || `${Date.now()}-${randomUUID()}${defaultExtension(file)}`;
+}
+
+async function saveUploadToCloud(file, fileName) {
+  if (!file || (!file.path && !file.buffer)) {
+    throw new Error('Upload file is missing its temporary content');
+  }
+
+  const mediaStoragePath = `uploads/${fileName}`;
+  const bucket = getFirebaseApp().storage().bucket();
+  const object = bucket.file(mediaStoragePath);
+  const contentType = file.mimetype || 'application/octet-stream';
+  const downloadToken = randomUUID();
+  const metadata = {
+    contentType,
+    metadata: { firebaseStorageDownloadTokens: downloadToken }
+  };
+
+  if (file.buffer) {
+    await object.save(file.buffer, {
+      resumable: false,
+      metadata
+    });
+  } else {
+    await bucket.upload(file.path, {
+      destination: mediaStoragePath,
+      metadata
+    });
+  }
+
+  const mediaUrl =
+    `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}` +
+    `/o/${encodeURIComponent(mediaStoragePath)}?alt=media&token=${encodeURIComponent(downloadToken)}`;
+
+  return { mediaStoragePath, mediaUrl };
+}
+
+async function deleteCloudObject(mediaStoragePath) {
+  if (!mediaStoragePath) return;
+  try {
+    await getFirebaseApp().storage().bucket().file(mediaStoragePath).delete({ ignoreNotFound: true });
+  } catch (error) {
+    console.warn('[storage] failed to delete cloud media', mediaStoragePath, error.message);
+  }
+}
+
+function cleanupLocalUpload(file) {
+  if (!file || !file.path) return;
+  try {
+    const uploadPath = path.resolve(file.path);
+    const uploadsRoot = path.resolve(config.uploadsDir);
+    if (uploadPath.startsWith(uploadsRoot)) fs.unlinkSync(uploadPath);
+  } catch (error) {
+    // The durable copy already lives in Firebase Storage; local cleanup is best effort.
+  }
+}
+
 async function addUploadedPosts(userId, files, defaults = {}) {
   const ownerId = userId || DEFAULT_USER_ID;
   let order = (await getMaxOrder(ownerId)) + 1;
@@ -116,54 +183,67 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   const db = getFirestore();
   const batch = db.batch();
   const created = [];
+  const storedObjects = [];
+  let committed = false;
 
-  files.forEach((file) => {
-    const mediaType = getUploadMediaType(file);
-    const mediaPath = `/uploads/${file.filename}`;
-    const ref = postsCollection().doc(randomUUID());
+  try {
+    for (const file of files) {
+      const mediaType = getUploadMediaType(file);
+      const fileName = getStoredFileName(file);
+      const { mediaStoragePath, mediaUrl } = await saveUploadToCloud(file, fileName);
+      storedObjects.push(mediaStoragePath);
+      const ref = postsCollection().doc(randomUUID());
 
-    const data = {
-      userId: ownerId,
-      platform: 'tiktok',
-      originalName: file.originalname,
-      fileName: file.filename,
-      mimeType: file.mimetype || '',
-      mediaType,
-      mediaPath,
-      videoPath: mediaType === 'video' ? mediaPath : '',
-      imagePath: mediaType === 'photo' ? mediaPath : '',
-      caption: String(defaults.caption || '').trim(),
-      hashtags: String(defaults.hashtags || '').trim(),
-      publicImageUrl: String(defaults.publicImageUrl || '').trim(),
-      instagramMediaUrl: String(defaults.instagramMediaUrl || '').trim(),
-      privacyLevel:
-        String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
-      scheduledTimeUTC: null,
-      status: 'pending',
-      order: order++,
-      createdAt: now,
-      updatedAt: now,
-      postedAt: null,
-      readyAt: null,
-      lastResult: null,
-      lastInstagramResult: null,
-      disableComment: false,
-      disableDuet: false,
-      disableStitch: false,
-      contentDisclosure: false,
-      yourBrand: false,
-      brandedContent: false,
-      lockedAt: null,
-      lockedBy: null,
-      claimAttempts: 0
-    };
+      const data = {
+        userId: ownerId,
+        platform: 'tiktok',
+        originalName: file.originalname,
+        fileName,
+        mimeType: file.mimetype || '',
+        mediaType,
+        mediaPath: mediaUrl,
+        mediaStoragePath,
+        videoPath: mediaType === 'video' ? mediaUrl : '',
+        imagePath: mediaType === 'photo' ? mediaUrl : '',
+        caption: String(defaults.caption || '').trim(),
+        hashtags: String(defaults.hashtags || '').trim(),
+        publicImageUrl: String(defaults.publicImageUrl || (mediaType === 'photo' ? mediaUrl : '')).trim(),
+        instagramMediaUrl: String(defaults.instagramMediaUrl || mediaUrl).trim(),
+        privacyLevel:
+          String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
+        scheduledTimeUTC: null,
+        status: 'pending',
+        order: order++,
+        createdAt: now,
+        updatedAt: now,
+        postedAt: null,
+        readyAt: null,
+        lastResult: null,
+        lastInstagramResult: null,
+        disableComment: false,
+        disableDuet: false,
+        disableStitch: false,
+        contentDisclosure: false,
+        yourBrand: false,
+        brandedContent: false,
+        lockedAt: null,
+        lockedBy: null,
+        claimAttempts: 0
+      };
 
-    batch.set(ref, data);
-    created.push({ ref, data });
-  });
+      batch.set(ref, data);
+      created.push({ ref, data });
+    }
 
-  await batch.commit();
-  return created.map(({ ref, data }) => postFromDoc({ id: ref.id, data: () => data }));
+    await batch.commit();
+    committed = true;
+    return created.map(({ ref, data }) => postFromDoc({ id: ref.id, data: () => data }));
+  } finally {
+    files.forEach(cleanupLocalUpload);
+    if (!committed) {
+      await Promise.all(storedObjects.map(deleteCloudObject));
+    }
+  }
 }
 
 async function updatePost(userId, id, patch) {
@@ -185,8 +265,11 @@ async function deletePost(userId, id) {
   if (!snap.exists) return false;
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return false;
 
-  const fileName = snap.data().fileName;
+  const data = snap.data();
+  const fileName = data.fileName;
+  const mediaStoragePath = data.mediaStoragePath;
   await ref.delete();
+  await deleteCloudObject(mediaStoragePath);
 
   if (fileName) {
     const uploadPath = path.resolve(config.uploadsDir, fileName);
@@ -287,25 +370,38 @@ function getNextAvailableDate(posts, dailyPostTime, newlyCreatedIds) {
 }
 
 function tomorrowAtTime(time) {
-  const date = new Date();
-  date.setDate(date.getDate() + 1);
-  return setTime(date, time);
+  return zonedDayAtTime(DateTime.now().setZone(getScheduleTimeZone()).plus({ days: 1 }), time);
 }
 
 function addDaysAtTime(date, days, time) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return setTime(next, time);
+  const base = DateTime.fromJSDate(date, { zone: 'utc' }).setZone(getScheduleTimeZone()).plus({ days });
+  return zonedDayAtTime(base, time);
 }
 
-function setTime(date, time) {
+function zonedDayAtTime(day, time) {
+  const zone = getScheduleTimeZone();
+  const { hours, minutes } = parseDailyTime(time);
+  return day
+    .setZone(zone)
+    .set({ hour: hours, minute: minutes, second: 0, millisecond: 0 })
+    .toUTC()
+    .toJSDate();
+}
+
+function parseDailyTime(time) {
   const [hours, minutes] = String(time || '09:00')
     .split(':')
     .map((part) => Number(part));
 
-  const next = new Date(date);
-  next.setHours(Number.isFinite(hours) ? hours : 9, Number.isFinite(minutes) ? minutes : 0, 0, 0);
-  return next;
+  return {
+    hours: Number.isInteger(hours) && hours >= 0 && hours <= 23 ? hours : 9,
+    minutes: Number.isInteger(minutes) && minutes >= 0 && minutes <= 59 ? minutes : 0
+  };
+}
+
+function getScheduleTimeZone() {
+  const zone = config.appTimeZone || 'UTC';
+  return DateTime.now().setZone(zone).isValid ? zone : 'UTC';
 }
 
 async function getCounts(userId) {

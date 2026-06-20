@@ -44,6 +44,7 @@ function postFromDoc(doc) {
     mediaPath: data.mediaPath || '',
     videoPath: data.videoPath || '',
     imagePath: data.imagePath || '',
+    mediaStoragePath: data.mediaStoragePath || '',
     caption: data.caption || '',
     hashtags: data.hashtags || '',
     publicImageUrl: data.publicImageUrl || '',

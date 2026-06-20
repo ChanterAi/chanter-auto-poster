@@ -1,0 +1,37 @@
+envVarGroups:
+  - name: chanter-scheduler-shared
+    envVars:
+      - key: CRON_SECRET
+        generateValue: true
+      - key: APP_TIME_ZONE
+        value: Asia/Nicosia
+      - key: TZ
+        value: Asia/Nicosia
+
+services:
+  - type: web
+    name: chanter-auto-poster
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - fromGroup: chanter-scheduler-shared
+
+  - type: cron
+    name: chanter-scheduler-ping
+    runtime: node
+    schedule: "* * * * *"
+    buildCommand: npm ci
+    startCommand: npm run scheduler:ping
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: APP_URL
+        sync: false
+      - fromGroup: chanter-scheduler-shared

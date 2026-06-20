@@ -75,8 +75,9 @@ router.get('/health', asyncRoute(async (req, res) => {
     ok: true,
     app: config.appName,
     uptimeSeconds: Math.round(process.uptime()),
-    scheduler: 'running',
-    cronTrigger: true,
+    scheduler: scheduler.getSchedulerState(),
+    cronTrigger: Boolean(config.cronSecret),
+    appTimeZone: config.appTimeZone,
     tiktokConfigured: await tiktok.isConfigured(),
     tiktokAuth: await tiktok.getTikTokAuthStatus(),
     instagram: await instagram.getInstagramAuthStatus(),
@@ -85,12 +86,25 @@ router.get('/health', asyncRoute(async (req, res) => {
 }));
 
 router.get('/run-scheduler', asyncRoute(async (req, res) => {
-  if (config.cronSecret && req.query.secret !== config.cronSecret) {
+  if (!config.cronSecret) {
+    res.status(503).json({ ok: false, triggered: false, reason: 'CRON_SECRET is not configured' });
+    return;
+  }
+
+  const suppliedSecret = req.get('x-cron-secret') || req.query.secret;
+  if (suppliedSecret !== config.cronSecret) {
     res.status(403).json({ ok: false, triggered: false, reason: 'Invalid cron secret' });
     return;
   }
-  const result = await scheduler.publishNextPost();
-  res.json({ ok: true, triggered: true, result });
+  const tick = scheduler.publishNextPost();
+  if (req.query.wait === '1') {
+    const result = await tick;
+    res.json({ ok: true, triggered: true, result });
+    return;
+  }
+
+  tick.catch((error) => console.error('[scheduler] externally triggered tick failed:', error));
+  res.status(202).json({ ok: true, triggered: true, accepted: true });
 }));
 
 router.get('/connect/tiktok', (req, res) => {
@@ -202,7 +216,7 @@ router.post('/upload', upload.array('images'), asyncRoute(async (req, res) => {
 
 router.post('/settings', asyncRoute(async (req, res) => {
   const dailyPostTime = String(req.body.dailyPostTime || '').trim();
-  if (!/^\d{2}:\d{2}$/.test(dailyPostTime)) { redirectWithNotice(res, 'Use a valid daily posting time.'); return; }
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dailyPostTime)) { redirectWithNotice(res, 'Use a valid daily posting time.'); return; }
   await storage.saveSettings({ dailyPostTime });
   redirectWithNotice(res, `Schedule set to ${dailyPostTime}.`);
 }));

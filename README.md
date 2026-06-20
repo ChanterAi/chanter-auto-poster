@@ -80,6 +80,10 @@ INSTAGRAM_STATUS_POLL_ATTEMPTS=5
 INSTAGRAM_STATUS_POLL_INTERVAL_MS=3000
 
 PUBLIC_BASE_URL=https://chanterr.com
+APP_URL=https://chanter-auto-poster.onrender.com
+APP_TIME_ZONE=Asia/Nicosia
+TZ=Asia/Nicosia
+CRON_SECRET=use-the-same-long-random-value-on-web-and-cron
 ```
 
 `PUBLIC_BASE_URL` is only a fallback. For testing, paste a per-post `publicImageUrl` such as `https://chanterr.com/media/tiktok-posts/test-image.png` into the queue item.
@@ -173,17 +177,17 @@ If TikTok API credentials or a public image URL are not configured, the schedule
 4. The dashboard shows `Open image` and `Copy caption` controls.
 5. After posting manually in TikTok, click `Mark posted manually`.
 
+## Render Scheduling
+
+`render.yaml` defines an always-on Starter web service and a Render Cron Job that calls `/run-scheduler` every minute. Set `APP_URL` on the cron service to the Render web-service URL. Both services must use the same `CRON_SECRET`; the Blueprint environment group handles this when deployed from `render.yaml`.
+
+The in-process `node-cron` task remains as a second trigger. Firestore transactions ensure concurrent triggers cannot claim the same post twice.
+
 ## Data Storage
 
-This MVP uses JSON files and local uploads:
+Queue state, settings, and OAuth tokens live in Firestore. New uploads are copied to Firebase Storage before their Firestore post is created, so a Render deploy or restart cannot remove scheduled media. The local `uploads/` directory is temporary staging only.
 
-```text
-data/posts.json
-data/settings.json
-uploads/
-```
-
-There is no database yet. Back up `data/` and `uploads/` if you care about preserving the queue.
+Posts uploaded before this storage change may still reference Render-local `/uploads/...` paths. Re-upload those pending items after deployment if their media is no longer present.
 
 ## Project Structure
 
@@ -201,10 +205,7 @@ chanter-auto-poster/
     routes.js
     views/
       index.ejs
-  data/
-    posts.json
-    settings.json
-    tiktok_auth.json
-    instagram_auth.json
-  uploads/
+  render.yaml
+  firestore.indexes.json
+  uploads/             # temporary staging only
 ```

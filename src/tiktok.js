@@ -7,6 +7,10 @@ const tokenRefreshBufferMs = 5 * 60 * 1000;
 const videoInitUrl = 'https://open.tiktokapis.com/v2/post/publish/video/init/';
 const creatorInfoQueryUrl = 'https://open.tiktokapis.com/v2/post/publish/creator_info/query/';
 
+function requestSignal(timeoutMs = config.tiktok.requestTimeoutMs) {
+  return AbortSignal.timeout(Math.max(1, Number(timeoutMs) || 30_000));
+}
+
 async function isConfigured() {
   return (await getTikTokAuthStatus()).connected;
 }
@@ -119,44 +123,23 @@ function isVideoPost(post) {
 }
 
 async function publishVideoPost(post, accessToken, creatorInfo = null) {
-  const videoPath = getLocalMediaPath(post);
-  if (!videoPath) {
-    return {
-      ok: false,
-      mode: 'manual',
-      reason: 'Local video file missing'
-    };
-  }
+  const source = await getVideoSource(post);
+  if (!source.ok) return source;
 
-  let stats;
-  try {
-    stats = fs.statSync(videoPath);
-  } catch (error) {
-    return {
-      ok: false,
-      mode: 'manual',
-      reason: `Video file not found: ${path.basename(videoPath)}`
-    };
-  }
-
-  if (!stats.isFile() || stats.size <= 0) {
-    return {
-      ok: false,
-      mode: 'manual',
-      reason: 'Video file is empty'
-    };
-  }
-
-  const fileSize = stats.size;
+  const fileSize = source.fileSize;
   const mimeType = getVideoMimeType(post);
 
   const payload = buildVideoPayload(post, fileSize, creatorInfo);
   const initResult = await postVideoInitPayload(payload, accessToken);
 
-  if (!initResult.ok) return initResult;
+  if (!initResult.ok) {
+    await cancelVideoSource(source);
+    return initResult;
+  }
 
   const uploadUrl = getUploadUrl(initResult.response);
   if (!uploadUrl) {
+    await cancelVideoSource(source);
     return {
       ok: false,
       mode: 'api',
@@ -165,7 +148,8 @@ async function publishVideoPost(post, accessToken, creatorInfo = null) {
     };
   }
 
-  const uploadResult = await uploadVideoFile(uploadUrl, videoPath, fileSize, mimeType);
+  const uploadResult = await uploadVideoFile(uploadUrl, source, fileSize, mimeType);
+  await cancelVideoSource(source);
   if (!uploadResult.ok) return uploadResult;
 
   return {
@@ -176,6 +160,72 @@ async function publishVideoPost(post, accessToken, creatorInfo = null) {
       upload: uploadResult.response
     }
   };
+}
+
+async function cancelVideoSource(source) {
+  if (!source || !source.stream || typeof source.stream.cancel !== 'function') return;
+  try {
+    await source.stream.cancel();
+  } catch (error) {
+    // The upload may already own or have consumed the stream.
+  }
+}
+
+async function getVideoSource(post) {
+  const videoPath = getLocalMediaPath(post);
+
+  if (videoPath) {
+    try {
+      const stats = fs.statSync(videoPath);
+      if (stats.isFile() && stats.size > 0) {
+        return { ok: true, source: 'local', videoPath, fileSize: stats.size };
+      }
+    } catch (error) {
+      // Render restarts wipe local uploads. Fall through to the durable URL.
+    }
+  }
+
+  const remoteUrl = getRemoteMediaUrl(post);
+  if (!remoteUrl) {
+    return {
+      ok: false,
+      mode: 'manual',
+      reason: videoPath ? `Video file not found: ${path.basename(videoPath)}` : 'Video media URL missing'
+    };
+  }
+
+  try {
+    const response = await fetch(remoteUrl, { signal: requestSignal(config.tiktok.uploadTimeoutMs) });
+    if (!response.ok) {
+      return {
+        ok: false,
+        mode: 'api',
+        reason: `Video media download returned HTTP ${response.status}`
+      };
+    }
+
+    const contentLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > 0 && response.body) {
+      return { ok: true, source: 'remote', stream: response.body, fileSize: contentLength };
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length === 0) {
+      return {
+        ok: false,
+        mode: 'api',
+        reason: 'Video file is empty'
+      };
+    }
+
+    return { ok: true, source: 'remote', buffer, fileSize: buffer.length };
+  } catch (error) {
+    return {
+      ok: false,
+      mode: 'api',
+      reason: `Could not load video media: ${error.message}`
+    };
+  }
 }
 
 async function queryCreatorInfo() {
@@ -203,7 +253,8 @@ async function queryCreatorInfoWithToken(accessToken) {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json; charset=UTF-8'
     },
-    body: JSON.stringify({})
+    body: JSON.stringify({}),
+    signal: requestSignal()
   });
 
   const body = await parseResponseBody(response);
@@ -274,7 +325,8 @@ async function postVideoInitPayload(payload, accessToken) {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json; charset=UTF-8'
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: requestSignal()
     });
 
     const body = await parseResponseBody(response);
@@ -324,21 +376,24 @@ async function postVideoInitPayload(payload, accessToken) {
   }
 }
 
-async function uploadVideoFile(uploadUrl, videoPath, fileSize, mimeType) {
+async function uploadVideoFile(uploadUrl, source, fileSize, mimeType) {
   try {
     const firstByte = 0;
     const lastByte = fileSize - 1;
-    const fileBuffer = fs.readFileSync(videoPath);
-
-    const response = await fetch(uploadUrl, {
+    const uploadBody = source.stream || source.buffer || fs.createReadStream(source.videoPath);
+    const requestOptions = {
       method: 'PUT',
       headers: {
         'Content-Type': mimeType,
         'Content-Length': String(fileSize),
         'Content-Range': `bytes ${firstByte}-${lastByte}/${fileSize}`
       },
-      body: fileBuffer
-    });
+      body: uploadBody,
+      signal: requestSignal(config.tiktok.uploadTimeoutMs)
+    };
+    if (source.stream || source.videoPath) requestOptions.duplex = 'half';
+
+    const response = await fetch(uploadUrl, requestOptions);
 
     const body = await parseResponseBody(response);
 
@@ -384,6 +439,17 @@ function getLocalMediaPath(post) {
 
   if (!uploadPath.startsWith(uploadsRoot)) return '';
   return uploadPath;
+}
+
+function getRemoteMediaUrl(post) {
+  const candidates = [
+    post.videoPath,
+    post.mediaPath,
+    post.publicMediaUrl,
+    post.publicImageUrl
+  ];
+
+  return candidates.map((value) => String(value || '').trim()).find(isUsablePublicUrl) || '';
 }
 
 function getVideoMimeType(post) {
@@ -473,7 +539,8 @@ async function postPhotoPayload(payload, accessToken) {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json; charset=UTF-8'
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: requestSignal()
     });
 
     const body = await parseResponseBody(response);
@@ -532,7 +599,8 @@ async function requestTikTokToken(params) {
       'Content-Type': 'application/x-www-form-urlencoded',
       'Cache-Control': 'no-cache'
     },
-    body: new URLSearchParams(params).toString()
+    body: new URLSearchParams(params).toString(),
+    signal: requestSignal()
   });
 
   const body = await parseResponseBody(response);
