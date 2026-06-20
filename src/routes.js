@@ -85,6 +85,22 @@ router.get('/health', asyncRoute(async (req, res) => {
   });
 }));
 
+router.get('/api/storage/health', asyncRoute(async (req, res) => {
+  if (!config.cronSecret) {
+    res.status(503).json({ ok: false, reason: 'CRON_SECRET is not configured' });
+    return;
+  }
+
+  const suppliedSecret = req.get('x-cron-secret') || req.query.secret;
+  if (suppliedSecret !== config.cronSecret) {
+    res.status(403).json({ ok: false, reason: 'Invalid debug secret' });
+    return;
+  }
+
+  const result = await storage.checkStorageHealth({ writeTest: req.query.write === '1' });
+  res.status(result.ok ? 200 : 503).json(result);
+}));
+
 router.get('/run-scheduler', asyncRoute(async (req, res) => {
   if (!config.cronSecret) {
     res.status(503).json({ ok: false, triggered: false, reason: 'CRON_SECRET is not configured' });

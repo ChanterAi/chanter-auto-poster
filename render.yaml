@@ -19,7 +19,7 @@ services:
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
-        value: 20
+        value: 22
       - fromGroup: chanter-scheduler-shared
 
   - type: cron
@@ -31,7 +31,7 @@ services:
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
-        value: 20
+        value: 22
       - key: APP_URL
         sync: false
       - fromGroup: chanter-scheduler-shared

@@ -4,7 +4,8 @@
   "description": "Local TikTok/Instagram photo+video queue and scheduler for the CHANTER content workflow, backed by Firebase Firestore.",
   "main": "src/server.js",
   "scripts": {
-    "build": "node --check src/server.js && node --check src/routes.js && node --check src/scheduler.js && node --check src/ping-scheduler.js && node --check src/storage.js && node --check src/tiktok.js && node --check src/instagram.js && node --check src/firestore.js && node --check src/postsMapper.js && node --check src/auth.js && node --check src/config.js && node -e \"const ejs=require('ejs'),fs=require('fs'); ejs.compile(fs.readFileSync('src/views/index.ejs','utf8'),{filename:'src/views/index.ejs'});\"",
+    "build": "node --check src/server.js && node --check src/routes.js && node --check src/scheduler.js && node --check src/ping-scheduler.js && node --check src/storage.js && node --check src/tiktok.js && node --check src/instagram.js && node --check src/firestore.js && node --check src/postsMapper.js && node --check src/auth.js && node --check src/config.js && node --check test/firebase-config.test.js && node --check test/storage-upload.test.js && node -e \"const ejs=require('ejs'),fs=require('fs'); ejs.compile(fs.readFileSync('src/views/index.ejs','utf8'),{filename:'src/views/index.ejs'});\"",
+    "test": "node --test test/*.test.js",
     "start": "node src/server.js",
     "dev": "nodemon --ignore data --ignore uploads src/server.js",
     "scheduler:ping": "node src/ping-scheduler.js",
@@ -12,13 +13,15 @@
     "migrate:firestore:dry-run": "node src/migrate-to-firestore.js --dry-run"
   },
   "engines": {
-    "node": ">=18"
+    "node": "22.x"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.21.0",
     "dotenv": "^16.4.7",
     "ejs": "^3.1.10",
     "express": "^4.21.2",
     "firebase-admin": "^13.10.0",
+    "google-auth-library": "^10.7.0",
     "luxon": "^3.7.2",
     "multer": "^2.1.1",
     "node-cron": "^3.0.3"

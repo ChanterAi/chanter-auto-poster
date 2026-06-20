@@ -1,9 +1,10 @@
 const fs = require('fs');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 const { randomUUID } = require('crypto');
 const { DateTime } = require('luxon');
 const config = require('./config');
-const { postsCollection, configDoc, getFirestore, getFirebaseApp, Timestamp, FieldValue } = require('./firestore');
+const { postsCollection, configDoc, getFirestore, getFirebaseApp, getStorageBucket, Timestamp, FieldValue } = require('./firestore');
 const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore } = require('./postsMapper');
 
 const defaultSettings = {
@@ -43,9 +44,9 @@ const defaultInstagramAuth = {
 
 const STORAGE_UPLOAD_ATTEMPTS = Math.max(1, Number(config.firebase.storageUploadAttempts) || 3);
 const STORAGE_RETRY_BASE_MS = Math.max(100, Number(config.firebase.storageRetryBaseMs) || 500);
-const STORAGE_RESUMABLE_THRESHOLD_BYTES = Math.max(
+const STORAGE_BUFFER_THRESHOLD_BYTES = Math.max(
   0,
-  Number(config.firebase.storageResumableThresholdBytes) || 10 * 1024 * 1024
+  Number(config.firebase.storageBufferThresholdBytes) || 10 * 1024 * 1024
 );
 
 function getErrorChain(error) {
@@ -76,9 +77,83 @@ function isPrematureCloseError(error) {
   });
 }
 
-function storageErrorCode(error) {
-  const match = getErrorChain(error).find((item) => item.code || item.errno);
-  return String((match && (match.code || match.errno)) || 'STORAGE_UPLOAD_FAILED');
+function getStorageErrorDetails(error) {
+  const chain = getErrorChain(error);
+  const codes = chain
+    .flatMap((item) => [item.code, item.errno])
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => String(value));
+  const messages = chain.map((item) => String(item.message || '')).filter(Boolean);
+  const statuses = chain
+    .map((item) => {
+      const explicit = item.status || item.statusCode || (item.response && item.response.status);
+      if (explicit) return Number(explicit);
+      return /^\d{3}$/.test(String(item.code || '')) ? Number(item.code) : null;
+    })
+    .filter((value) => Number.isFinite(value));
+  const status = statuses.length > 0 ? statuses[0] : null;
+
+  return { codes, messages, status };
+}
+
+function classifyStorageError(error) {
+  if (isPrematureCloseError(error)) {
+    return {
+      code: 'ERR_STREAM_PREMATURE_CLOSE',
+      retryable: true,
+      message: 'Google OAuth connection closed early'
+    };
+  }
+
+  const { codes, messages, status } = getStorageErrorDetails(error);
+  const text = [...codes, ...messages].join(' ').toLowerCase();
+
+  if (
+    status === 401 ||
+    text.includes('invalid-credential') ||
+    text.includes('invalid_grant') ||
+    text.includes('failed to parse private key') ||
+    text.includes('invalid pem')
+  ) {
+    return {
+      code: 'FIREBASE_CREDENTIALS_INVALID',
+      retryable: false,
+      message: 'Firebase credentials are invalid. Check the project ID, client email, and private key.'
+    };
+  }
+
+  if (status === 403 || status === 404 || text.includes('bucket not found')) {
+    return {
+      code: 'FIREBASE_BUCKET_NOT_ACCESSIBLE',
+      retryable: false,
+      message: 'Firebase Storage bucket is not accessible. Check the bucket name and service-account permissions.'
+    };
+  }
+
+  const transientCodes = new Set([
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'ETIMEDOUT',
+    'EAI_AGAIN',
+    'ENETUNREACH',
+    'ECONNABORTED'
+  ]);
+  const transient = codes.some((code) => transientCodes.has(code.toUpperCase())) ||
+    status === 408 || status === 429 || (status !== null && status >= 500);
+
+  if (transient) {
+    return {
+      code: codes[0] || `HTTP_${status}`,
+      retryable: true,
+      message: 'Firebase Storage upload hit a temporary network error'
+    };
+  }
+
+  return {
+    code: codes[0] || 'STORAGE_UPLOAD_FAILED',
+    retryable: false,
+    message: 'Firebase Storage upload failed'
+  };
 }
 
 function wait(ms) {
@@ -86,43 +161,41 @@ function wait(ms) {
 }
 
 async function uploadWithRetry(upload) {
-  let lastError;
-
   for (let attempt = 1; attempt <= STORAGE_UPLOAD_ATTEMPTS; attempt += 1) {
     try {
       return await upload();
     } catch (error) {
-      lastError = error;
-      const retryable = isPrematureCloseError(error);
-      const code = retryable ? 'ERR_STREAM_PREMATURE_CLOSE' : storageErrorCode(error);
+      const failure = classifyStorageError(error);
 
-      if (!retryable || attempt === STORAGE_UPLOAD_ATTEMPTS) {
+      if (!failure.retryable || attempt === STORAGE_UPLOAD_ATTEMPTS) {
         console.error('[firebase-storage] upload failed', {
           attempts: attempt,
-          code,
-          retryable
+          code: failure.code,
+          retryable: failure.retryable
         });
+        const exhausted = failure.retryable && attempt > 1;
         const cleanError = new Error(
-          retryable
+          failure.code === 'ERR_STREAM_PREMATURE_CLOSE'
             ? `Firebase Storage upload failed after ${attempt} attempts because the Google OAuth connection closed early`
-            : `Firebase Storage upload failed (${code})`
+            : exhausted
+              ? `Firebase Storage upload failed after ${attempt} attempts: ${failure.message}`
+              : failure.message
         );
-        cleanError.code = code;
+        cleanError.code = failure.code;
         cleanError.status = 503;
         throw cleanError;
       }
 
       const delayMs = STORAGE_RETRY_BASE_MS * (2 ** (attempt - 1));
-      console.warn('[firebase-storage] OAuth response closed early; retrying upload', {
+      console.warn('[firebase-storage] temporary upload failure; retrying', {
         attempt,
         maxAttempts: STORAGE_UPLOAD_ATTEMPTS,
-        delayMs
+        delayMs,
+        code: failure.code
       });
       await wait(delayMs);
     }
   }
-
-  throw lastError;
 }
 
 // ── Bootstrap ────────────────────────────────────────────────────────────
@@ -148,6 +221,76 @@ async function ensureConfigDoc(name, defaults) {
   const snap = await ref.get();
   if (!snap.exists) {
     await ref.set(defaults);
+  }
+}
+
+function cleanStorageFailure(error) {
+  if (error && error.code && String(error.code).startsWith('FIREBASE_')) {
+    return { code: error.code, message: error.message || 'Firebase Storage check failed' };
+  }
+  if (error && error.code === 'ERR_STREAM_PREMATURE_CLOSE') {
+    return { code: error.code, message: 'Google OAuth connection closed early' };
+  }
+  const failure = classifyStorageError(error);
+  return { code: failure.code, message: failure.message };
+}
+
+async function checkStorageHealth({ writeTest = false } = {}) {
+  const checkedAt = new Date().toISOString();
+  const result = {
+    ok: false,
+    checkedAt,
+    adminInitialized: false,
+    bucketConfigured: Boolean(config.firebase.storageBucket),
+    bucket: config.firebase.storageBucket || null,
+    bucketAccessible: false,
+    writeTest: writeTest ? { requested: true, write: false, read: false, delete: false } : { requested: false }
+  };
+
+  let testObject = null;
+  try {
+    getFirebaseApp();
+    result.adminInitialized = true;
+
+    const bucket = getStorageBucket();
+    await bucket.getMetadata();
+    result.bucketAccessible = true;
+
+    if (writeTest) {
+      const objectPath = `health/storage-check-${Date.now()}-${randomUUID()}.txt`;
+      testObject = bucket.file(objectPath);
+      const payload = Buffer.from(`chanter-storage-health:${checkedAt}`, 'utf8');
+
+      await uploadWithRetry(() => testObject.save(payload, {
+        resumable: false,
+        validation: false,
+        metadata: { contentType: 'text/plain; charset=utf-8' }
+      }));
+      result.writeTest.write = true;
+
+      const [downloaded] = await testObject.download({ validation: false });
+      result.writeTest.read = downloaded.equals(payload);
+
+      await testObject.delete({ ignoreNotFound: true });
+      result.writeTest.delete = true;
+      testObject = null;
+    }
+
+    result.ok = result.bucketAccessible &&
+      (!writeTest || (result.writeTest.write && result.writeTest.read && result.writeTest.delete));
+    return result;
+  } catch (error) {
+    result.error = cleanStorageFailure(error);
+    return result;
+  } finally {
+    if (testObject) {
+      try {
+        await testObject.delete({ ignoreNotFound: true });
+        result.writeTest.delete = true;
+      } catch (cleanupError) {
+        result.writeTest.delete = false;
+      }
+    }
   }
 }
 
@@ -212,31 +355,37 @@ async function saveUploadToCloud(file, fileName) {
   }
 
   const mediaStoragePath = `uploads/${fileName}`;
-  const bucket = getFirebaseApp().storage().bucket();
+  const bucket = getStorageBucket();
   const object = bucket.file(mediaStoragePath);
   const contentType = file.mimetype || 'application/octet-stream';
   const uploadSize = Number(file.size || (file.path && fs.statSync(file.path).size) || 0);
-  const resumable = uploadSize > STORAGE_RESUMABLE_THRESHOLD_BYTES;
   const downloadToken = randomUUID();
   const metadata = {
     contentType,
     metadata: { firebaseStorageDownloadTokens: downloadToken }
   };
+  const uploadOptions = {
+    resumable: false,
+    validation: false,
+    metadata
+  };
 
   await uploadWithRetry(async () => {
     if (file.buffer) {
-      await object.save(file.buffer, {
-        resumable,
-        metadata
-      });
+      await object.save(file.buffer, uploadOptions);
       return;
     }
 
-    await bucket.upload(file.path, {
-      destination: mediaStoragePath,
-      resumable,
-      metadata
-    });
+    if (uploadSize <= STORAGE_BUFFER_THRESHOLD_BYTES) {
+      const buffer = await fs.promises.readFile(file.path);
+      await object.save(buffer, uploadOptions);
+      return;
+    }
+
+    await pipeline(
+      fs.createReadStream(file.path),
+      object.createWriteStream(uploadOptions)
+    );
   });
 
   const mediaUrl =
@@ -249,7 +398,7 @@ async function saveUploadToCloud(file, fileName) {
 async function deleteCloudObject(mediaStoragePath) {
   if (!mediaStoragePath) return;
   try {
-    await getFirebaseApp().storage().bucket().file(mediaStoragePath).delete({ ignoreNotFound: true });
+    await getStorageBucket().file(mediaStoragePath).delete({ ignoreNotFound: true });
   } catch (error) {
     console.warn('[storage] failed to delete cloud media', mediaStoragePath, error.message);
   }
@@ -643,6 +792,7 @@ async function clearInstagramAuth() {
 
 module.exports = {
   ensureStorage,
+  checkStorageHealth,
   getPosts,
   getPost,
   getSettings,

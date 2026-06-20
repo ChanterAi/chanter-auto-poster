@@ -4,6 +4,11 @@ require('dotenv').config();
 const rootDir = path.resolve(__dirname, '..');
 const port = Number(process.env.PORT || 3000);
 const metaGraphVersion = process.env.META_GRAPH_VERSION || process.env.INSTAGRAM_GRAPH_VERSION || 'v24.0';
+const firebasePrivateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n').trim() || '';
+const firebaseStorageBucket = String(process.env.FIREBASE_STORAGE_BUCKET || '')
+  .trim()
+  .replace(/^gs:\/\//i, '')
+  .replace(/\/+$/, '');
 
 function envFlag(name, fallback = false) {
   const raw = process.env[name];
@@ -55,12 +60,15 @@ module.exports = {
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || '',
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',
-    privateKey: process.env.FIREBASE_PRIVATE_KEY || '',
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || '',
+    privateKey: firebasePrivateKey,
+    storageBucket: firebaseStorageBucket,
     storageUploadAttempts: Number(process.env.FIREBASE_STORAGE_UPLOAD_ATTEMPTS || 3),
     storageRetryBaseMs: Number(process.env.FIREBASE_STORAGE_RETRY_BASE_MS || 500),
-    storageResumableThresholdBytes: Number(
-      process.env.FIREBASE_STORAGE_RESUMABLE_THRESHOLD_BYTES || 10 * 1024 * 1024
+    storageRequestTimeoutMs: Number(process.env.FIREBASE_STORAGE_REQUEST_TIMEOUT_MS || 60_000),
+    storageBufferThresholdBytes: Number(
+      process.env.FIREBASE_STORAGE_BUFFER_THRESHOLD_BYTES ||
+        process.env.FIREBASE_STORAGE_RESUMABLE_THRESHOLD_BYTES ||
+        10 * 1024 * 1024
     )
   },
 
