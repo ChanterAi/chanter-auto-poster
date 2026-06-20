@@ -1,117 +1,129 @@
 'use strict';
 
-const cron = require('node-cron');
+const { randomUUID } = require('crypto');
 const config = require('./config');
 const { postsCollection, getFirestore, Timestamp, FieldValue } = require('./firestore');
-const { postFromDoc } = require('./postsMapper');
+const { postFromDoc, toTimestampOrNull } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
-const TICK_BATCH_SIZE = Math.max(1, config.scheduler.batchSize);
-// Identifies which process/instance is holding a lock — useful in logs and
-// in the `lockedBy` field if you ever need to debug a stuck post by hand.
-const WORKER_ID = `${process.env.RENDER_INSTANCE_ID || 'local'}-${process.pid}`;
-
-let task = null;
-const schedulerState = {
-  startedAt: null,
-  lastTickStartedAt: null,
-  lastTickFinishedAt: null,
-  lastResult: null,
-  lastError: null,
-  skippedTicks: 0
-};
-let tickInFlight = false; // politeness only — see note in runSchedulerTick().
-
-function startScheduler() {
-  if (task) return task;
-
-  task = cron.schedule('* * * * *', () => {
-    runSchedulerTick().catch((error) => {
-      console.error('[scheduler] tick failed:', error);
-    });
-  });
-
-  schedulerState.startedAt = new Date().toISOString();
-
-  return task;
-}
 
 function getSchedulerState() {
   return {
-    ...schedulerState,
-    running: Boolean(task),
-    tickInFlight,
-    workerId: WORKER_ID
+    mode: 'external_cron',
+    persistent: true,
+    inMemoryTimer: false,
+    schedule: 'every minute',
+    endpoint: '/api/cron/tick'
   };
 }
 
-/**
- * One pass: reclaim anything stuck from a crash, then claim and publish
- * whatever is currently due.
- *
- * `tickInFlight` only prevents two ticks overlapping *within this one
- * process* — it is NOT what makes this safe to call concurrently or from
- * multiple Render instances. That guarantee comes entirely from the
- * Firestore transaction inside claimPost(): if two processes (or this
- * in-process cron and an external ping to /run-scheduler) both try to
- * claim the same post at the same moment, Firestore lets exactly one
- * transaction win and the other sees status is no longer "pending" and
- * backs off. This flag just avoids a bit of wasted work, nothing more.
- */
-async function runSchedulerTick({ batchSize = TICK_BATCH_SIZE } = {}) {
-  if (tickInFlight) {
-    schedulerState.skippedTicks += 1;
-    return { ok: true, skipped: true, reason: 'Previous tick still running on this instance' };
-  }
+async function runSchedulerTick({ now = new Date() } = {}) {
+  const nowDate = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(nowDate.getTime())) throw new Error('Scheduler tick received an invalid time');
 
-  tickInFlight = true;
-  schedulerState.lastTickStartedAt = new Date().toISOString();
+  const nowTimestamp = Timestamp.fromDate(nowDate);
+  const workerId = `${process.env.RENDER_INSTANCE_ID || 'local'}-${randomUUID()}`;
+  const summary = {
+    ok: true,
+    now: nowDate.toISOString(),
+    checked: 0,
+    due: 0,
+    posted: 0,
+    failed: 0,
+    errors: []
+  };
+
+  console.log(`[CRON_TICK] now=${summary.now}`);
+  console.log('[CRON_QUERY] checking scheduled jobs');
+
   try {
-    await reclaimStaleLocks();
-    const dueIds = await findDuePostIds(batchSize);
-
-    const results = [];
-    for (const id of dueIds) {
-      results.push(await processPost(id, { force: false, workerId: WORKER_ID }));
-    }
-
-    const result = { ok: true, processed: results.length, dueIds, results };
-    schedulerState.lastResult = result;
-    schedulerState.lastError = null;
-    return result;
+    await reclaimStaleLocks(nowDate);
   } catch (error) {
-    schedulerState.lastError = {
-      message: error.message || String(error),
-      at: new Date().toISOString()
-    };
-    throw error;
-  } finally {
-    schedulerState.lastTickFinishedAt = new Date().toISOString();
-    tickInFlight = false;
+    const message = error.message || String(error);
+    summary.errors.push({ error: `Stale lock recovery failed: ${message}` });
+    console.error(`[LOCK_RECOVERY_FAILED] error=${message}`);
   }
+
+  let dueJobs;
+  try {
+    dueJobs = await findDueJobs(nowTimestamp);
+    summary.checked = dueJobs.length;
+    summary.due = dueJobs.length;
+  } catch (error) {
+    const detail = describeQueryError(error);
+    summary.ok = false;
+    summary.errors.push({ error: detail.message, indexUrl: detail.indexUrl || undefined });
+    console.error(`[CRON_QUERY_FAILED] error=${detail.message}`);
+    if (detail.indexUrl) console.error(`[CRON_INDEX_REQUIRED] url=${detail.indexUrl}`);
+    return summary;
+  }
+
+  for (const job of dueJobs) {
+    console.log(`[JOB_FOUND] id=${job.id} scheduledAt=${job.scheduledAt}`);
+    console.log(`[JOB_DUE] id=${job.id}`);
+
+    try {
+      const result = await processPost(job.id, { force: false, workerId, now: nowDate });
+      if (result.ok) {
+        summary.posted += 1;
+      } else if (result.mode !== 'skipped') {
+        summary.failed += 1;
+        summary.errors.push({ id: job.id, error: result.reason || 'Unknown publish error' });
+      }
+    } catch (error) {
+      const message = error.message || String(error);
+      summary.failed += 1;
+      summary.errors.push({ id: job.id, error: message });
+      console.error(`[POST_FAILED] id=${job.id} error=${message}`);
+    }
+  }
+
+  return summary;
 }
 
-// Name kept for compatibility with the existing /run-scheduler route.
+// Kept for the old /run-scheduler route while deployments move to /api/cron/tick.
 async function publishNextPost() {
   return runSchedulerTick();
 }
 
-async function findDuePostIds(limit) {
-  const now = Timestamp.now();
-  const snapshot = await postsCollection()
-    .where('status', '==', 'pending')
-    .where('scheduledTimeUTC', '<=', now)
-    .orderBy('scheduledTimeUTC', 'asc')
-    .limit(limit)
+async function findDueJobs(nowTimestamp) {
+  const jobs = new Map();
+
+  const canonical = await postsCollection()
+    .where('status', '==', 'scheduled')
+    .where('scheduledAt', '<=', nowTimestamp)
+    .orderBy('scheduledAt', 'asc')
     .get();
 
-  return snapshot.docs.map((doc) => doc.id);
+  for (const doc of canonical.docs) {
+    jobs.set(doc.id, {
+      id: doc.id,
+      scheduledAt: timestampToIso(doc.data().scheduledAt)
+    });
+  }
+
+  // Recover jobs created by versions deployed before scheduledAt became the
+  // canonical field. Remove this query after those documents are migrated.
+  const legacy = await postsCollection()
+    .where('status', '==', 'pending')
+    .where('scheduledTimeUTC', '<=', nowTimestamp)
+    .orderBy('scheduledTimeUTC', 'asc')
+    .get();
+
+  for (const doc of legacy.docs) {
+    jobs.set(doc.id, {
+      id: doc.id,
+      scheduledAt: timestampToIso(doc.data().scheduledTimeUTC)
+    });
+  }
+
+  return [...jobs.values()].sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
 }
 
-async function reclaimStaleLocks() {
-  const threshold = Timestamp.fromMillis(Date.now() - STALE_LOCK_MS);
+async function reclaimStaleLocks(nowDate) {
+  const threshold = Timestamp.fromMillis(nowDate.getTime() - STALE_LOCK_MS);
   const snapshot = await postsCollection()
     .where('status', '==', 'processing')
     .where('lockedAt', '<=', threshold)
@@ -127,50 +139,38 @@ async function reclaimOne(ref) {
       if (!snap.exists) return;
 
       const data = snap.data();
-      if (data.status !== 'processing') return; // already resolved elsewhere
+      if (data.status !== 'processing') return;
 
       const attempts = Number(data.claimAttempts || 0);
-
       if (attempts >= MAX_CLAIM_ATTEMPTS) {
+        const reason = `Publish worker stopped during ${attempts} attempts`;
         tx.update(ref, {
           status: 'failed',
           lockedAt: null,
           lockedBy: null,
+          failedAt: FieldValue.serverTimestamp(),
+          errorMessage: reason,
           updatedAt: FieldValue.serverTimestamp(),
-          lastResult: {
-            ok: false,
-            mode: 'api',
-            reason: `Gave up after ${attempts} attempts — the worker likely crashed mid-publish each time.`,
-            completedAt: new Date().toISOString()
-          }
+          lastResult: { ok: false, mode: 'api', reason, completedAt: new Date().toISOString() }
         });
         return;
       }
 
-      // Send it back to pending so the next tick (or a manual "Post now")
-      // picks it up again. This is the actual crash-recovery mechanism:
-      // nothing needs to "remember" this post was in flight — Firestore
-      // already has it, just no longer marked as claimed.
+      const scheduledAt = data.scheduledAt || data.scheduledTimeUTC || Timestamp.now();
       tx.update(ref, {
-        status: 'pending',
+        status: 'scheduled',
+        scheduledAt,
         lockedAt: null,
         lockedBy: null,
         updatedAt: FieldValue.serverTimestamp()
       });
     });
   } catch (error) {
-    console.error('[scheduler] failed to reclaim stale lock', ref.id, error);
+    console.error(`[LOCK_RECOVERY_FAILED] id=${ref.id} error=${error.message || error}`);
   }
 }
 
-/**
- * The only place a post's status moves to "processing". Runs as a single
- * Firestore transaction: read current state, decide, write — if another
- * worker's transaction commits first, this one's read no longer matches
- * and Firestore aborts/retries it automatically, so at most one caller
- * ever succeeds for a given post.
- */
-async function claimPost(id, { force, workerId }) {
+async function claimPost(id, { force, workerId, now = new Date() }) {
   const ref = postsCollection().doc(id);
 
   return getFirestore().runTransaction(async (tx) => {
@@ -178,12 +178,18 @@ async function claimPost(id, { force, workerId }) {
     if (!snap.exists) return null;
 
     const data = snap.data();
-    if (data.status === 'processing') return null; // never double-claim
+    if (data.status === 'processing') return null;
 
     if (!force) {
-      if (data.status !== 'pending') return null;
-      const now = Timestamp.now();
-      if (!data.scheduledTimeUTC || data.scheduledTimeUTC.toMillis() > now.toMillis()) return null;
+      const isCanonical = data.status === 'scheduled';
+      const isLegacy = data.status === 'pending' && data.scheduledTimeUTC;
+      if (!isCanonical && !isLegacy) return null;
+
+      const scheduledAt = data.scheduledAt || data.scheduledTimeUTC;
+      const scheduledTimestamp = normalizeTimestamp(scheduledAt);
+      if (!scheduledTimestamp || scheduledTimestamp.toMillis() > now.getTime()) return null;
+    } else if (!['pending', 'scheduled', 'failed', 'ready'].includes(data.status)) {
+      return null;
     }
 
     tx.update(ref, {
@@ -195,29 +201,27 @@ async function claimPost(id, { force, workerId }) {
     });
 
     const claimed = postFromDoc(snap);
-    claimed.status = 'processing'; // snap predates the write above
+    claimed.status = 'processing';
     return claimed;
   });
 }
 
-/**
- * Claim-then-publish-then-finalize for one post. Safe to call from the
- * automatic tick (force: false — must be pending and due) or from the
- * "Post now" button (force: true — anything except already-processing).
- * Either path goes through the same transaction, so a double-click and a
- * tick racing each other can't both publish.
- */
-async function processPost(id, { force = false, workerId = `manual-${process.pid}` } = {}) {
-  const claimed = await claimPost(id, { force, workerId });
+async function processPost(id, {
+  force = false,
+  workerId = `manual-${randomUUID()}`,
+  now = new Date()
+} = {}) {
+  const claimed = await claimPost(id, { force, workerId, now });
   if (!claimed) {
     return {
       ok: false,
       mode: 'skipped',
       postId: id,
-      reason: 'Not claimable right now (already publishing, already handled, or not due yet).'
+      reason: 'Job was already claimed, already handled, or is not due.'
     };
   }
 
+  console.log(`[POST_START] id=${id}`);
   let result;
   try {
     result = await publishPhotoPost(claimed);
@@ -225,71 +229,114 @@ async function processPost(id, { force = false, workerId = `manual-${process.pid
     result = {
       ok: false,
       mode: 'api',
-      reason: error.message || 'Unexpected publish error',
+      reason: error.message || 'Unexpected TikTok publish error',
       response: error.response || null
     };
   }
 
-  return finalize(id, workerId, result);
+  const finalized = await finalize(id, workerId, result);
+  if (finalized.ok) {
+    console.log(`[POST_SUCCESS] id=${id} tiktokResponse=${JSON.stringify(safeTikTokSummary(result))}`);
+  } else {
+    console.error(`[POST_FAILED] id=${id} error=${finalized.reason || 'Unknown publish error'}`);
+  }
+  return finalized;
 }
 
 async function finalize(id, workerId, result) {
   const ref = postsCollection().doc(id);
   const completedAt = new Date().toISOString();
+  const reason = result.reason || 'TikTok publish failed';
+  let applied = false;
 
-  // Guarded: only the worker that still holds the lock may finalize it. If
-  // the stale-lock watchdog already reclaimed this post (this worker took
-  // too long and a retry is already underway elsewhere), step aside rather
-  // than clobbering the retry with a late result.
-  const guardedUpdate = async (fields) => {
-    let applied = false;
-    await getFirestore().runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (!snap.exists) return;
-      const data = snap.data();
-      if (data.status !== 'processing' || data.lockedBy !== workerId) return;
-      tx.update(ref, { ...fields, updatedAt: FieldValue.serverTimestamp() });
-      applied = true;
-    });
-    return applied;
-  };
+  await getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return;
+    const data = snap.data();
+    if (data.status !== 'processing' || data.lockedBy !== workerId) return;
 
-  if (result.ok) {
-    await guardedUpdate({
-      status: 'posted',
-      postedAt: Timestamp.now(),
-      readyAt: null,
-      lockedAt: null,
-      lockedBy: null,
-      lastResult: { ...result, completedAt }
-    });
-    return { ok: true, mode: result.mode, postId: id };
-  }
-
-  if (result.mode === 'manual') {
-    await guardedUpdate({
-      status: 'ready',
-      readyAt: Timestamp.now(),
-      lockedAt: null,
-      lockedBy: null,
-      lastResult: { ...result, completedAt }
-    });
-    return { ok: false, mode: 'manual', postId: id, reason: result.reason };
-  }
-
-  await guardedUpdate({
-    status: 'failed',
-    lockedAt: null,
-    lockedBy: null,
-    lastResult: { ...result, completedAt }
+    if (result.ok) {
+      tx.update(ref, {
+        status: 'posted',
+        postedAt: Timestamp.now(),
+        readyAt: null,
+        failedAt: null,
+        errorMessage: null,
+        lockedAt: null,
+        lockedBy: null,
+        lastResult: { ...result, completedAt },
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    } else {
+      tx.update(ref, {
+        status: 'failed',
+        failedAt: Timestamp.now(),
+        errorMessage: reason,
+        lockedAt: null,
+        lockedBy: null,
+        lastResult: { ...result, completedAt },
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    }
+    applied = true;
   });
-  return { ok: false, mode: result.mode || 'api', postId: id, reason: result.reason };
+
+  if (!applied) {
+    return { ok: false, mode: 'skipped', postId: id, reason: 'Job lock changed before completion.' };
+  }
+  if (result.ok) return { ok: true, mode: result.mode || 'api', postId: id };
+  return { ok: false, mode: result.mode || 'api', postId: id, reason };
+}
+
+function normalizeTimestamp(value) {
+  if (value && typeof value.toMillis === 'function') return value;
+  return toTimestampOrNull(value);
+}
+
+function timestampToIso(value) {
+  if (value && typeof value.toDate === 'function') return value.toDate().toISOString();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function safeTikTokSummary(result) {
+  const response = result && result.response;
+  const publishId = findSafeValue(response, new Set(['publish_id', 'publishid']));
+  const status = findSafeValue(response, new Set(['status', 'publish_status']));
+  return {
+    mode: result && result.mode ? result.mode : 'api',
+    publishId: publishId || null,
+    status: status || 'accepted'
+  };
+}
+
+function findSafeValue(value, keys) {
+  if (!value || typeof value !== 'object') return null;
+  for (const [key, child] of Object.entries(value)) {
+    if (keys.has(key.toLowerCase()) && ['string', 'number', 'boolean'].includes(typeof child)) {
+      return child;
+    }
+    const nested = findSafeValue(child, keys);
+    if (nested !== null) return nested;
+  }
+  return null;
+}
+
+function describeQueryError(error) {
+  const message = error && error.message ? error.message : String(error);
+  const match = message.match(/https:\/\/console\.firebase\.google\.com\/[^\s)]+/);
+  return { message, indexUrl: match ? match[0] : null };
 }
 
 module.exports = {
-  startScheduler,
   getSchedulerState,
   publishNextPost,
   runSchedulerTick,
-  processPost
+  processPost,
+  _private: {
+    claimPost,
+    findDueJobs,
+    describeQueryError,
+    safeTikTokSummary
+  }
 };

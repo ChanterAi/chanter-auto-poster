@@ -27,7 +27,7 @@ function toIsoOrNull(value) {
  * site (routes.js, tiktok.js, the EJS view) does `new Date(post.scheduledAt)`
  * or just prints it, so keeping the in-app shape unchanged means none of
  * that code needs to be touched. Only this file and the Firestore documents
- * themselves use the spec's `scheduledTimeUTC` Timestamp field.
+ * themselves use the canonical `scheduledAt` Timestamp field.
  */
 function postFromDoc(doc) {
   const data = doc.data() || {};
@@ -56,7 +56,7 @@ function postFromDoc(doc) {
     storageFallback: Boolean(data.storageFallback),
     instagramMediaUrl: data.instagramMediaUrl || '',
     privacyLevel: data.privacyLevel || 'SELF_ONLY',
-    scheduledAt: toIsoOrNull(data.scheduledTimeUTC),
+    scheduledAt: toIsoOrNull(data.scheduledAt || data.scheduledTimeUTC),
     status: data.status || 'pending',
     order: Number(data.order || 0),
     createdAt: toIsoOrNull(data.createdAt),
@@ -88,8 +88,7 @@ function mapPatchToFirestore(patch) {
   const result = { ...patch };
 
   if ('scheduledAt' in result) {
-    result.scheduledTimeUTC = toTimestampOrNull(result.scheduledAt);
-    delete result.scheduledAt;
+    result.scheduledAt = toTimestampOrNull(result.scheduledAt);
   }
   if ('postedAt' in result) {
     result.postedAt = toTimestampOrNull(result.postedAt);

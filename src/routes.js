@@ -86,41 +86,32 @@ router.get('/health', asyncRoute(async (req, res) => {
 }));
 
 router.get('/api/storage/health', asyncRoute(async (req, res) => {
-  if (!config.cronSecret) {
-    res.status(503).json({ ok: false, reason: 'CRON_SECRET is not configured' });
-    return;
-  }
-
-  const suppliedSecret = req.get('x-cron-secret') || req.query.secret;
-  if (suppliedSecret !== config.cronSecret) {
-    res.status(403).json({ ok: false, reason: 'Invalid debug secret' });
-    return;
-  }
+  if (!authorizeCronRequest(req, res, 'debug')) return;
 
   const result = await storage.checkMediaStorageHealth({ writeTest: req.query.write === '1' });
   res.status(result.ok ? 200 : 503).json(result);
 }));
 
-router.get('/run-scheduler', asyncRoute(async (req, res) => {
-  if (!config.cronSecret) {
-    res.status(503).json({ ok: false, triggered: false, reason: 'CRON_SECRET is not configured' });
-    return;
-  }
+router.get('/api/cron/tick', asyncRoute(runCronTick));
 
-  const suppliedSecret = req.get('x-cron-secret') || req.query.secret;
-  if (suppliedSecret !== config.cronSecret) {
-    res.status(403).json({ ok: false, triggered: false, reason: 'Invalid cron secret' });
-    return;
-  }
-  const tick = scheduler.publishNextPost();
-  if (req.query.wait === '1') {
-    const result = await tick;
-    res.json({ ok: true, triggered: true, result });
-    return;
-  }
+// Compatibility endpoint for existing Render cron jobs during deployment.
+router.get('/run-scheduler', asyncRoute(runCronTick));
 
-  tick.catch((error) => console.error('[scheduler] externally triggered tick failed:', error));
-  res.status(202).json({ ok: true, triggered: true, accepted: true });
+router.get('/api/debug/jobs', asyncRoute(async (req, res) => {
+  if (!authorizeCronRequest(req, res, 'debug')) return;
+  const jobs = await storage.getRecentJobs(req.query.limit);
+  res.json({
+    ok: true,
+    jobs: jobs.map((job) => ({
+      id: job.id,
+      status: job.status,
+      scheduledAt: job.scheduledAt,
+      title: firstNonEmptyLine(job.caption) || job.originalName || job.fileName || 'Untitled',
+      privacy: job.privacyLevel,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt
+    }))
+  });
 }));
 
 router.get('/connect/tiktok', (req, res) => {
@@ -340,8 +331,16 @@ router.post('/posts/:id/posted', asyncRoute(async (req, res) => {
 
 router.post('/posts/:id/pending', asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  await storage.updatePost(userId, req.params.id, { status: 'pending', postedAt: null, readyAt: null, lastResult: null });
-  redirectWithNotice(res, 'Back to pending.');
+  const post = await storage.getPost(userId, req.params.id);
+  if (!post) { redirectWithNotice(res, 'Post not found.'); return; }
+  await storage.updatePost(userId, req.params.id, {
+    status: post.scheduledAt ? 'scheduled' : 'pending',
+    postedAt: null,
+    readyAt: null,
+    errorMessage: null,
+    lastResult: null
+  });
+  redirectWithNotice(res, post.scheduledAt ? 'Back to schedule.' : 'Back to pending.');
 }));
 
 router.post('/posts/:id/delete', asyncRoute(async (req, res) => {
@@ -354,6 +353,29 @@ router.post('/posts/:id/delete', asyncRoute(async (req, res) => {
 
 function redirectWithNotice(res, notice) {
   res.redirect(`/?notice=${encodeURIComponent(notice)}`);
+}
+
+async function runCronTick(req, res) {
+  if (!authorizeCronRequest(req, res, 'cron')) return;
+  const result = await scheduler.runSchedulerTick();
+  res.status(result.ok ? 200 : 500).json(result);
+}
+
+function authorizeCronRequest(req, res, purpose) {
+  if (!config.cronSecret) {
+    res.status(503).json({ ok: false, reason: 'CRON_SECRET is not configured' });
+    return false;
+  }
+  const suppliedSecret = req.get('x-cron-secret') || req.query.secret;
+  if (suppliedSecret !== config.cronSecret) {
+    res.status(403).json({ ok: false, reason: `Invalid ${purpose} secret` });
+    return false;
+  }
+  return true;
+}
+
+function firstNonEmptyLine(value) {
+  return String(value || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
 }
 
 async function getCreatorInfoSafe() {
@@ -565,7 +587,7 @@ function getDebugJson(post) { return post && post.lastResult ? JSON.stringify(po
 function getInstagramDebugJson(post) { return post && post.lastInstagramResult ? JSON.stringify(post.lastInstagramResult, null, 2) : ''; }
 
 function statusLabel(status) {
-  const labels = { pending: 'Scheduled', processing: 'Publishing', ready: 'Needs manual verification', posted: 'Posted', failed: 'Failed' };
+  const labels = { pending: 'Unscheduled', scheduled: 'Scheduled', processing: 'Publishing', ready: 'Needs manual verification', posted: 'Posted', failed: 'Failed' };
   const v = String(status || 'pending').toLowerCase();
   return labels[v] || `${v.charAt(0).toUpperCase()}${v.slice(1)}`;
 }

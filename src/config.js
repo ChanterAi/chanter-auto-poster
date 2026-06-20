@@ -48,9 +48,9 @@ module.exports = {
     staleLockMinutes: Number(process.env.SCHEDULER_STALE_LOCK_MINUTES || 20),
     // After this many claim attempts, stop retrying and mark it failed
     // instead of looping forever on a poison-pill post.
-    maxClaimAttempts: Number(process.env.SCHEDULER_MAX_ATTEMPTS || 5),
-    // Most due posts a single tick will claim and publish.
-    batchSize: Number(process.env.SCHEDULER_BATCH_SIZE || 10)
+    maxClaimAttempts: Number(
+      process.env.SCHEDULER_MAX_CLAIM_ATTEMPTS || process.env.SCHEDULER_MAX_ATTEMPTS || 5
+    )
   },
 
   firebase: {

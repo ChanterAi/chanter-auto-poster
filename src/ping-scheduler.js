@@ -10,27 +10,20 @@ async function main() {
     throw new Error('CRON_SECRET must be configured on both Render services');
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 55_000);
+  const response = await fetch(`${config.appUrl}/api/cron/tick`, {
+    headers: {
+      accept: 'application/json',
+      'x-cron-secret': config.cronSecret
+    },
+    signal: AbortSignal.timeout(15 * 60 * 1000)
+  });
+  const body = await response.text();
 
-  try {
-    const response = await fetch(`${config.appUrl}/run-scheduler`, {
-      headers: {
-        accept: 'application/json',
-        'x-cron-secret': config.cronSecret
-      },
-      signal: controller.signal
-    });
-    const body = await response.text();
-
-    if (!response.ok) {
-      throw new Error(`Scheduler trigger returned HTTP ${response.status}: ${body.slice(0, 500)}`);
-    }
-
-    console.log('[scheduler-ping]', body);
-  } finally {
-    clearTimeout(timeout);
+  if (!response.ok) {
+    throw new Error(`Scheduler tick returned HTTP ${response.status}: ${body.slice(0, 1000)}`);
   }
+
+  console.log('[scheduler-ping]', body);
 }
 
 main().catch((error) => {

@@ -102,6 +102,10 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
   assert.equal(imagePost.mediaPath, imagePost.mediaUrl);
   assert.equal(imagePost.cloudinaryPublicId, 'uploads/image');
   assert.equal(imagePost.mediaStoragePath, '');
+  assert.equal(imagePost.status, 'pending');
+  assert.equal(imagePost.scheduledAt, null);
+  assert.equal(committed[0].data.scheduledAt, null);
+  assert.equal('scheduledTimeUTC' in committed[0].data, false);
   assert.equal(videoPost.mediaType, 'video');
   assert.equal(videoPost.mediaUrl, 'https://res.cloudinary.com/test/video/upload/video.mp4');
   assert.equal(videoPost.cloudinaryResourceType, 'video');

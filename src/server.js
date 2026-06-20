@@ -4,7 +4,6 @@ const config = require('./config');
 const routes = require('./routes');
 const storage = require('./storage');
 const { attachUser } = require('./auth');
-const { startScheduler } = require('./scheduler');
 const { validateFirebaseConfig } = require('./firestore');
 const { configureCloudinary } = require('./cloudinary');
 
@@ -50,9 +49,9 @@ async function start() {
   validateFirebaseConfig();
   configureCloudinary();
   await storage.ensureStorage();
-  startScheduler();
   app.listen(config.port, () => {
     console.log(`${config.appName} running at http://localhost:${config.port}`);
+    console.log('[scheduler] persistent mode enabled; invoke GET /api/cron/tick every minute');
   });
 }
 

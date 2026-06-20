@@ -95,6 +95,15 @@ async function getPost(userId, id) {
   return postFromDoc(snap);
 }
 
+async function getRecentJobs(limit = 50) {
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
+  const snapshot = await postsCollection()
+    .orderBy('updatedAt', 'desc')
+    .limit(safeLimit)
+    .get();
+  return snapshot.docs.map(postFromDoc);
+}
+
 async function getMaxOrder(userId) {
   const snapshot = await postsCollection()
     .where('userId', '==', userId)
@@ -256,7 +265,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         instagramMediaUrl: String(defaults.instagramMediaUrl || publicMediaUrl).trim(),
         privacyLevel:
           String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
-        scheduledTimeUTC: null,
+        scheduledAt: null,
         status: 'pending',
         order: order++,
         createdAt: now,
@@ -300,7 +309,11 @@ async function updatePost(userId, id, patch) {
   if (!snap.exists) return null;
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
 
-  await ref.update({ ...mapPatchToFirestore(patch), updatedAt: FieldValue.serverTimestamp() });
+  const firestorePatch = mapPatchToFirestore(patch);
+  if ('scheduledAt' in firestorePatch && !['processing', 'posted'].includes(snap.data().status)) {
+    firestorePatch.status = firestorePatch.scheduledAt ? 'scheduled' : 'pending';
+  }
+  await ref.update({ ...firestorePatch, updatedAt: FieldValue.serverTimestamp() });
   const updated = await ref.get();
   return postFromDoc(updated);
 }
@@ -367,7 +380,8 @@ async function autoSchedulePosts(userId, postIds) {
   for (const post of posts) {
     if (!idSet.has(post.id) || post.status !== 'pending') continue;
     batch.update(postsCollection().doc(post.id), {
-      scheduledTimeUTC: Timestamp.fromDate(nextDate),
+      scheduledAt: Timestamp.fromDate(nextDate),
+      status: 'scheduled',
       updatedAt: FieldValue.serverTimestamp()
     });
     nextDate = addDaysAtTime(nextDate, 1, settings.dailyPostTime);
@@ -389,9 +403,10 @@ async function reschedulePendingQueue(userId) {
   let count = 0;
 
   for (const post of posts) {
-    if (post.status !== 'pending') continue;
+    if (!['pending', 'scheduled'].includes(post.status)) continue;
     batch.update(postsCollection().doc(post.id), {
-      scheduledTimeUTC: Timestamp.fromDate(nextDate),
+      scheduledAt: Timestamp.fromDate(nextDate),
+      status: 'scheduled',
       updatedAt: FieldValue.serverTimestamp()
     });
     nextDate = addDaysAtTime(nextDate, 1, settings.dailyPostTime);
@@ -406,7 +421,7 @@ function getNextAvailableDate(posts, dailyPostTime, newlyCreatedIds) {
   const tomorrow = tomorrowAtTime(dailyPostTime);
   const futureScheduledTimes = posts
     .filter((post) => !newlyCreatedIds.has(post.id))
-    .filter((post) => post.status === 'pending' && post.scheduledAt)
+    .filter((post) => post.status === 'scheduled' && post.scheduledAt)
     .map((post) => new Date(post.scheduledAt))
     .filter((date) => date.getTime() >= tomorrow.getTime())
     .map((date) => date.getTime());
@@ -460,7 +475,7 @@ async function getCounts(userId) {
       counts[post.status] = (counts[post.status] || 0) + 1;
       return counts;
     },
-    { total: 0, pending: 0, processing: 0, ready: 0, posted: 0, failed: 0 }
+    { total: 0, pending: 0, scheduled: 0, processing: 0, ready: 0, posted: 0, failed: 0 }
   );
 }
 
@@ -533,6 +548,7 @@ module.exports = {
   checkMediaStorageHealth,
   getPosts,
   getPost,
+  getRecentJobs,
   getSettings,
   saveSettings,
   getTikTokAuth,

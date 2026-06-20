@@ -56,7 +56,9 @@ async function migratePosts() {
     // state; the Firestore version calls it "processing". Anything
     // caught mid-flight at migration time obviously isn't actually being
     // published right now, so normalize it back to pending.
-    const status = post.status === 'publishing' ? 'pending' : (post.status || 'pending');
+    const scheduledAt = toTimestampOrNull(post.scheduledAt);
+    const originalStatus = post.status === 'publishing' ? 'pending' : (post.status || 'pending');
+    const status = originalStatus === 'pending' && scheduledAt ? 'scheduled' : originalStatus;
 
     const doc = {
       userId: config.defaultUserId,
@@ -73,7 +75,7 @@ async function migratePosts() {
       publicImageUrl: post.publicImageUrl || '',
       instagramMediaUrl: post.instagramMediaUrl || '',
       privacyLevel: post.privacyLevel || 'SELF_ONLY',
-      scheduledTimeUTC: toTimestampOrNull(post.scheduledAt),
+      scheduledAt,
       status,
       order: Number(post.order || 0),
       createdAt: toTimestampOrNull(post.createdAt) || Timestamp.now(),

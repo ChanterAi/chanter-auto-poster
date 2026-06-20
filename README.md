@@ -187,9 +187,24 @@ If TikTok API credentials or a public image URL are not configured, the schedule
 
 ## Render Scheduling
 
-`render.yaml` defines an always-on Starter web service and a Render Cron Job that calls `/run-scheduler` every minute. Set `APP_URL` on the cron service to the Render web-service URL. Both services must use the same `CRON_SECRET`; the Blueprint environment group handles this when deployed from `render.yaml`.
+`render.yaml` defines a web service and a Render Cron Job that calls `/api/cron/tick` every minute. Set `APP_URL` on the cron service to the Render web-service URL. Both services must use the same `CRON_SECRET`; the Blueprint environment group handles this when deployed from `render.yaml`.
 
-The in-process `node-cron` task remains as a second trigger. Firestore transactions ensure concurrent triggers cannot claim the same post twice.
+There is no in-process timer. Firestore is the source of truth, so a sleeping or restarted web service recovers overdue `scheduled` jobs on the next external tick. Each job is atomically changed to `processing` before TikTok publishing, then to `posted` or `failed`.
+
+Deploy the required Firestore indexes before enabling the cron job:
+
+```bash
+firebase deploy --only firestore:indexes
+```
+
+To run and inspect one tick manually:
+
+```bash
+curl -H "x-cron-secret: $CRON_SECRET" "$APP_URL/api/cron/tick"
+curl -H "x-cron-secret: $CRON_SECRET" "$APP_URL/api/debug/jobs"
+```
+
+The tick response reports `now`, `checked`, `due`, `posted`, `failed`, and `errors`. Render logs include `[CRON_TICK]`, `[CRON_QUERY]`, `[JOB_FOUND]`, `[JOB_DUE]`, `[POST_START]`, and either `[POST_SUCCESS]` or `[POST_FAILED]`.
 
 ## Data Storage
 
