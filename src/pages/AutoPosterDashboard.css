@@ -52,6 +52,10 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
 .product-link small { margin-top: 3px; color: #667085; font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .internal-label { display: inline-flex; align-items: center; gap: 7px; color: #667085; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .internal-label > span { width: 7px; height: 7px; border-radius: 50%; background: #12b76a; box-shadow: 0 0 0 3px #d1fadf; }
+.dashboard-nav-actions { display: flex; align-items: center; gap: 16px; }
+.dashboard-nav-actions form { display: inline-flex; }
+.dashboard-nav-actions button { border: 1px solid #d0d5dd; border-radius: 8px; background: #fff; color: #475467; padding: 7px 10px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.dashboard-nav-actions button:hover { background: #f9fafb; color: #101828; }
 
 .page-header,
 .section-heading,

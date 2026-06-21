@@ -3,7 +3,7 @@ const path = require('path');
 const config = require('./config');
 const routes = require('./routes');
 const storage = require('./storage');
-const { attachUser } = require('./auth');
+const { attachUser, requireAdminPage, validateAdminConfig } = require('./auth');
 const { validateFirebaseConfig } = require('./firestore');
 const { configureCloudinary } = require('./cloudinary');
 
@@ -11,11 +11,17 @@ const app = express();
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
+app.set('trust proxy', 1);
 
 app.use(express.urlencoded({ extended: true }));
 app.use(attachUser);
+app.use(
+  '/autoposter-dashboard',
+  requireAdminPage,
+  express.static(path.join(__dirname, '..', 'public', 'autoposter-dashboard'))
+);
 app.use(express.static(path.join(__dirname, '..', 'public')));
-app.use('/uploads', express.static(config.uploadsDir));
+app.use('/uploads', requireAdminPage, express.static(config.uploadsDir));
 app.use('/', routes);
 
 app.use((error, req, res, next) => {
@@ -40,10 +46,11 @@ app.use((error, req, res, next) => {
     return;
   }
 
-  res.redirect(`/?notice=${encodeURIComponent(message)}`);
+  res.redirect(`/private/autoposter?notice=${encodeURIComponent(message)}`);
 });
 
 async function start() {
+  validateAdminConfig();
   // Fail fast and loud if Firebase credentials are missing/bad, instead of
   // booting a "healthy-looking" server that 500s on the first real request.
   validateFirebaseConfig();

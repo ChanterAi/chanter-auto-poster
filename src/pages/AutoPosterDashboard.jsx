@@ -329,7 +329,10 @@ export default function AutoPosterDashboard() {
           <span className="product-mark">C</span>
           <span><strong>CHANTER</strong><small>Auto Poster</small></span>
         </a>
-        <span className="internal-label"><span></span>Internal control room</span>
+        <div className="dashboard-nav-actions">
+          <span className="internal-label"><span></span>Internal control room</span>
+          <form action="/logout" method="post"><button type="submit">Log out</button></form>
+        </div>
       </nav>
 
       <header className="page-header">

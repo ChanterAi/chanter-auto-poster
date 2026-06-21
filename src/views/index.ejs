@@ -122,6 +122,7 @@
       .btn-dashboard::after { content: "\2197"; color: var(--text3); font-size: 12px; }
       .btn-dashboard:hover { border-color: rgba(255,255,255,.24); background: rgba(255,255,255,.12); transform: translateY(-1px); }
       .btn-disconnect { color: #85899a; }
+      .logout-form { display: inline-flex; }
 
       .account-context {
         display: grid; grid-template-columns: minmax(180px, .7fr) minmax(210px, .72fr) minmax(280px, 1fr);
@@ -510,6 +511,7 @@
             <% if (tiktokConfigured) { %>
               <a class="btn btn-ghost btn-disconnect" href="/disconnect/tiktok">Disconnect</a>
             <% } %>
+            <form class="logout-form" action="/logout" method="post"><button class="btn btn-ghost" type="submit">Log out</button></form>
 
             <% if (enableInstagram) { %>
               <%

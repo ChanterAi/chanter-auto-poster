@@ -1,30 +1,186 @@
 'use strict';
 
+const { createHash, createHmac, randomBytes, timingSafeEqual } = require('crypto');
 const config = require('./config');
 
-/**
- * There's no login system in this app yet, so every request is attributed
- * to the same placeholder user. The Firestore schema, the per-user queries
- * in storage.js, and firestore.rules are all already keyed on `userId` —
- * so adding real auth later (Firebase Auth, a session cookie, whatever)
- * means replacing the body of `attachUser` below with something that sets
- * `req.userId` to a verified value, and nothing else in the app changes.
- */
+const ADMIN_SESSION_COOKIE = 'chanter_admin_session';
+const SESSION_VERSION = 1;
+
+function validateAdminConfig() {
+  if (!config.adminPassword) {
+    throw new Error('ADMIN_PASSWORD is required; refusing to start an unprotected AutoPoster');
+  }
+  if (config.adminPassword.length < 12) {
+    throw new Error('ADMIN_PASSWORD must contain at least 12 characters');
+  }
+  return true;
+}
+
+function parseCookies(header) {
+  return String(header || '').split(';').map((part) => part.trim()).filter(Boolean)
+    .reduce((cookies, part) => {
+      const separator = part.indexOf('=');
+      if (separator === -1) return cookies;
+      try {
+        cookies[decodeURIComponent(part.slice(0, separator))] = decodeURIComponent(part.slice(separator + 1));
+      } catch (error) {
+        // Ignore malformed cookies instead of failing the entire request.
+      }
+      return cookies;
+    }, {});
+}
+
+function signingKey() {
+  return createHash('sha256')
+    .update(`chanter-admin-session:${config.adminSessionSecret || config.adminPassword}`)
+    .digest();
+}
+
+function sign(value) {
+  return createHmac('sha256', signingKey()).update(value).digest('base64url');
+}
+
+function createAdminSessionToken(now = Date.now()) {
+  validateAdminConfig();
+  const payload = Buffer.from(JSON.stringify({
+    v: SESSION_VERSION,
+    role: 'admin',
+    sub: config.defaultUserId,
+    iat: now,
+    exp: now + config.adminSessionHours * 60 * 60 * 1000,
+    nonce: randomBytes(16).toString('base64url')
+  })).toString('base64url');
+  return `${payload}.${sign(payload)}`;
+}
+
+function verifyAdminSessionToken(token, now = Date.now()) {
+  if (!token || !config.adminPassword) return null;
+  const [payload, signature, extra] = String(token).split('.');
+  if (!payload || !signature || extra) return null;
+  const expected = Buffer.from(sign(payload));
+  const actual = Buffer.from(signature);
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+
+  try {
+    const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (
+      session.v !== SESSION_VERSION ||
+      session.role !== 'admin' ||
+      session.sub !== config.defaultUserId ||
+      !Number.isFinite(session.exp) ||
+      session.exp <= now
+    ) return null;
+    return session;
+  } catch (error) {
+    return null;
+  }
+}
+
+function verifyAdminPassword(candidate) {
+  if (!config.adminPassword) return false;
+  const expected = createHash('sha256').update(config.adminPassword).digest();
+  const actual = createHash('sha256').update(String(candidate || '')).digest();
+  return timingSafeEqual(expected, actual);
+}
+
+function isSecureRequest(req) {
+  return Boolean(req.secure || String(req.get('x-forwarded-proto') || '').toLowerCase() === 'https');
+}
+
+function setAdminSessionCookie(req, res) {
+  const token = createAdminSessionToken();
+  res.cookie(ADMIN_SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure: isSecureRequest(req),
+    sameSite: 'lax',
+    maxAge: config.adminSessionHours * 60 * 60 * 1000,
+    path: '/'
+  });
+}
+
+function clearAdminSessionCookie(req, res) {
+  res.clearCookie(ADMIN_SESSION_COOKIE, {
+    httpOnly: true,
+    secure: isSecureRequest(req),
+    sameSite: 'lax',
+    path: '/'
+  });
+}
+
 function attachUser(req, res, next) {
-  req.userId = config.defaultUserId;
+  const token = parseCookies(req.headers.cookie)[ADMIN_SESSION_COOKIE];
+  const session = verifyAdminSessionToken(token);
+  req.adminSession = session;
+  req.isAdmin = Boolean(session);
+  if (session) req.userId = session.sub;
   next();
 }
 
 function resolveUserId(req) {
-  return (req && req.userId) || config.defaultUserId;
+  return req && req.adminSession ? req.adminSession.sub : null;
+}
+
+function safeReturnTo(value) {
+  const candidate = String(value || '').trim();
+  if (!candidate.startsWith('/') || candidate.startsWith('//')) return '/private/autoposter';
+  try {
+    const parsed = new URL(candidate, 'http://autoposter.local');
+    const allowedPath = parsed.pathname === '/private/autoposter'
+      || parsed.pathname === '/private/autoposter/dashboard'
+      || parsed.pathname === '/connect/tiktok';
+    return allowedPath ? `${parsed.pathname}${parsed.search}` : '/private/autoposter';
+  } catch (error) {
+    return '/private/autoposter';
+  }
+}
+
+function requireAdminPage(req, res, next) {
+  if (req.isAdmin) {
+    next();
+    return;
+  }
+  const returnTo = safeReturnTo(req.originalUrl);
+  res.redirect(`/admin-login?returnTo=${encodeURIComponent(returnTo)}`);
+}
+
+function requireAdminOAuth(req, res, next) {
+  if (req.isAdmin) {
+    next();
+    return;
+  }
+  res.redirect('/admin-login?notice=Your+admin+session+expired.+Log+in+and+connect+TikTok+again.');
+}
+
+function requireAdminApi(req, res, next) {
+  if (req.isAdmin) {
+    next();
+    return;
+  }
+  res.status(401).json({ ok: false, reason: 'Admin authentication required' });
 }
 
 function requireUser(req, res, next) {
-  if (!req.userId) {
-    res.status(401).json({ ok: false, reason: 'Authentication required' });
+  if (String(req.path || '').startsWith('/api/')) {
+    requireAdminApi(req, res, next);
     return;
   }
-  next();
+  requireAdminPage(req, res, next);
 }
 
-module.exports = { attachUser, requireUser, resolveUserId, DEFAULT_USER_ID: config.defaultUserId };
+module.exports = {
+  ADMIN_SESSION_COOKIE,
+  DEFAULT_USER_ID: config.defaultUserId,
+  attachUser,
+  clearAdminSessionCookie,
+  createAdminSessionToken,
+  requireAdminApi,
+  requireAdminOAuth,
+  requireAdminPage,
+  requireUser,
+  resolveUserId,
+  safeReturnTo,
+  setAdminSessionCookie,
+  validateAdminConfig,
+  verifyAdminPassword,
+  verifyAdminSessionToken
+};

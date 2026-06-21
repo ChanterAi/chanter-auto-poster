@@ -1,5 +1,7 @@
 'use strict';
 
+process.env.ADMIN_PASSWORD = 'test-admin-password-123';
+
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -9,6 +11,7 @@ const express = require('express');
 const storage = require('../src/storage');
 const tiktok = require('../src/tiktok');
 const instagram = require('../src/instagram');
+const { attachUser } = require('../src/auth');
 
 const accounts = [
   { accountId: 'account-a', open_id: 'account-a', username: 'account_a', connected: true },
@@ -62,10 +65,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   app.set('view engine', 'ejs');
   app.set('views', path.join(__dirname, '..', 'src', 'views'));
   app.use(express.urlencoded({ extended: true }));
-  app.use((req, res, next) => {
-    req.userId = 'owner';
-    next();
-  });
+  app.use(attachUser);
   app.use(routes);
 
   const server = await new Promise((resolve) => {
@@ -75,9 +75,53 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
 
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
+
+  const [unauthorizedAutoPoster, unauthorizedDashboard, unauthorizedApi, unauthorizedConnect] = await Promise.all([
+    fetch(`${baseUrl}/private/autoposter`, { redirect: 'manual' }),
+    fetch(`${baseUrl}/private/autoposter/dashboard`, { redirect: 'manual' }),
+    fetch(`${baseUrl}/api/private/autoposter/dashboard`),
+    fetch(`${baseUrl}/connect/tiktok`, { redirect: 'manual' })
+  ]);
+  assert.equal(unauthorizedAutoPoster.status, 302);
+  assert.match(unauthorizedAutoPoster.headers.get('location'), /^\/admin-login/);
+  assert.equal(unauthorizedDashboard.status, 302);
+  assert.match(unauthorizedDashboard.headers.get('location'), /^\/admin-login/);
+  assert.equal(unauthorizedApi.status, 401);
+  assert.deepEqual(await unauthorizedApi.json(), { ok: false, reason: 'Admin authentication required' });
+  assert.equal(unauthorizedConnect.status, 302);
+  assert.match(unauthorizedConnect.headers.get('location'), /^\/admin-login/);
+
+  const loginPageResponse = await fetch(`${baseUrl}/admin-login`);
+  const loginPageHtml = await loginPageResponse.text();
+  assert.equal(loginPageResponse.status, 200);
+  assert.match(loginPageHtml, /Admin login/);
+  assert.doesNotMatch(loginPageHtml, /test-admin-password-123/);
+
+  const failedLogin = await fetch(`${baseUrl}/admin-login`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ password: 'incorrect-password', returnTo: '/private/autoposter' })
+  });
+  assert.equal(failedLogin.status, 401);
+  assert.equal(failedLogin.headers.get('set-cookie'), null);
+
+  const loginResponse = await fetch(`${baseUrl}/admin-login`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ password: 'test-admin-password-123', returnTo: '/private/autoposter' })
+  });
+  const adminCookie = String(loginResponse.headers.get('set-cookie') || '').split(';')[0];
+  assert.equal(loginResponse.status, 302);
+  assert.equal(loginResponse.headers.get('location'), '/private/autoposter');
+  assert.match(adminCookie, /^chanter_admin_session=/);
+  assert.match(String(loginResponse.headers.get('set-cookie')), /HttpOnly/i);
+  assert.match(String(loginResponse.headers.get('set-cookie')), /SameSite=Lax/i);
+
   const [autoPosterResponse, dashboardResponse] = await Promise.all([
-    fetch(`${baseUrl}/private/autoposter`),
-    fetch(`${baseUrl}/private/autoposter/dashboard`)
+    fetch(`${baseUrl}/private/autoposter`, { headers: { Cookie: adminCookie } }),
+    fetch(`${baseUrl}/private/autoposter/dashboard`, { headers: { Cookie: adminCookie } })
   ]);
   const [autoPosterHtml, dashboardHtml] = await Promise.all([
     autoPosterResponse.text(),
@@ -101,7 +145,9 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   );
   assert.match(dashboardSource, /href="\/private\/autoposter"/);
 
-  const dashboardDataResponse = await fetch(`${baseUrl}/api/private/autoposter/dashboard`);
+  const dashboardDataResponse = await fetch(`${baseUrl}/api/private/autoposter/dashboard`, {
+    headers: { Cookie: adminCookie }
+  });
   const dashboardData = await dashboardDataResponse.json();
   assert.equal(dashboardDataResponse.status, 200);
   assert.equal(dashboardData.selectedAccountId, 'account-a');
@@ -111,7 +157,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   const switchResponse = await fetch(`${baseUrl}/private/autoposter/account`, {
     method: 'POST',
     redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: adminCookie },
     body: new URLSearchParams({ accountId: 'account-b' })
   });
   const accountCookie = String(switchResponse.headers.get('set-cookie') || '').split(';')[0];
@@ -119,7 +165,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(accountCookie, /autoposter_tiktok_account_id=account-b/);
 
   const accountBResponse = await fetch(`${baseUrl}/private/autoposter`, {
-    headers: { Cookie: accountCookie }
+    headers: { Cookie: `${adminCookie}; ${accountCookie}` }
   });
   const accountBHtml = await accountBResponse.text();
   assert.match(accountBHtml, /account-b-queue\.jpg/);
@@ -135,7 +181,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   const saveResponse = await fetch(`${baseUrl}/posts/post-a`, {
     method: 'POST',
     redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: adminCookie },
     body: new URLSearchParams({
       caption: 'Updated TikTok post',
       hashtags: '#updated',

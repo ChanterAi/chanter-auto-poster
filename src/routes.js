@@ -7,10 +7,22 @@ const storage = require('./storage');
 const scheduler = require('./scheduler');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
-const { requireUser, resolveUserId } = require('./auth');
+const {
+  clearAdminSessionCookie,
+  requireAdminApi,
+  requireAdminOAuth,
+  requireAdminPage,
+  resolveUserId,
+  safeReturnTo,
+  setAdminSessionCookie,
+  verifyAdminPassword
+} = require('./auth');
 
 const router = express.Router();
 const ACTIVE_TIKTOK_ACCOUNT_COOKIE = 'autoposter_tiktok_account_id';
+const loginAttempts = new Map();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 5;
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -79,14 +91,64 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
   });
 });
 
-router.get('/', renderAutoPoster);
-router.get('/private/autoposter', requireUser, renderAutoPoster);
+router.get('/admin-login', (req, res) => {
+  if (req.isAdmin) {
+    res.redirect(safeReturnTo(req.query.returnTo));
+    return;
+  }
+  res.set('Cache-Control', 'no-store');
+  res.render('admin-login', {
+    appName: config.appName,
+    error: '',
+    notice: String(req.query.notice || ''),
+    returnTo: safeReturnTo(req.query.returnTo)
+  });
+});
 
-router.get('/private/autoposter/dashboard', requireUser, (req, res) => {
+router.post('/admin-login', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const attempt = getLoginAttempt(req.ip);
+  const returnTo = safeReturnTo(req.body.returnTo);
+  if (attempt.locked) {
+    res.status(429).render('admin-login', {
+      appName: config.appName,
+      error: 'Too many login attempts. Try again in 15 minutes.',
+      notice: '',
+      returnTo
+    });
+    return;
+  }
+
+  if (!verifyAdminPassword(req.body.password)) {
+    recordFailedLogin(req.ip);
+    res.status(401).render('admin-login', {
+      appName: config.appName,
+      error: 'Incorrect admin password.',
+      notice: '',
+      returnTo
+    });
+    return;
+  }
+
+  loginAttempts.delete(req.ip);
+  setAdminSessionCookie(req, res);
+  res.redirect(returnTo);
+});
+
+router.post('/logout', requireAdminPage, (req, res) => {
+  clearAdminSessionCookie(req, res);
+  res.clearCookie(ACTIVE_TIKTOK_ACCOUNT_COOKIE);
+  res.redirect('/admin-login?notice=You+have+been+logged+out.');
+});
+
+router.get('/', requireAdminPage, renderAutoPoster);
+router.get('/private/autoposter', requireAdminPage, renderAutoPoster);
+
+router.get('/private/autoposter/dashboard', requireAdminPage, (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'autoposter-dashboard', 'dashboard.html'));
 });
 
-router.get('/api/private/autoposter/dashboard', requireUser, asyncRoute(async (req, res) => {
+router.get('/api/private/autoposter/dashboard', requireAdminApi, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const [jobs, accountContext] = await Promise.all([
     storage.getDashboardJobs(userId),
@@ -105,28 +167,16 @@ router.get('/api/private/autoposter/dashboard', requireUser, asyncRoute(async (r
   });
 }));
 
-router.get('/health', asyncRoute(async (req, res) => {
-  const userId = resolveUserId(req);
-  const accounts = await storage.getTikTokAccounts(userId);
-  const selectedId = parseCookies(req.headers.cookie)[ACTIVE_TIKTOK_ACCOUNT_COOKIE] || '';
-  const activeAccount = accounts.find((account) => account.accountId === selectedId) || accounts[0] || null;
-  const activeAccountId = activeAccount ? activeAccount.accountId : '';
+router.get('/health', (req, res) => {
   res.json({
     ok: true,
     app: config.appName,
     uptimeSeconds: Math.round(process.uptime()),
     scheduler: scheduler.getSchedulerState(),
     cronTrigger: Boolean(config.cronSecret),
-    appTimeZone: config.appTimeZone,
-    tiktokConfigured: await tiktok.isConfigured(activeAccountId, userId),
-    tiktokAuth: await tiktok.getTikTokAuthStatus(activeAccountId, userId),
-    tiktokAccounts: accounts.map(publicTikTokAccount),
-    instagram: config.ENABLE_INSTAGRAM
-      ? await instagram.getInstagramAuthStatus()
-      : { enabled: false, connected: false },
-    counts: activeAccountId ? await storage.getCounts(userId, activeAccountId) : emptyPostCounts()
+    appTimeZone: config.appTimeZone
   });
-}));
+});
 
 router.get('/api/storage/health', asyncRoute(async (req, res) => {
   if (!authorizeCronRequest(req, res, 'debug')) return;
@@ -157,7 +207,7 @@ router.get('/api/debug/jobs', asyncRoute(async (req, res) => {
   });
 }));
 
-router.post('/private/autoposter/account', requireUser, asyncRoute(async (req, res) => {
+router.post('/private/autoposter/account', requireAdminPage, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const accountId = String(req.body.accountId || '').trim();
   const account = await storage.getTikTokAccount(userId, accountId);
@@ -169,7 +219,7 @@ router.post('/private/autoposter/account', requireUser, asyncRoute(async (req, r
   redirectWithNotice(res, `Active TikTok account changed to ${accountLabel(account)}.`);
 }));
 
-router.get('/connect/tiktok', (req, res) => {
+router.get('/connect/tiktok', requireAdminPage, (req, res) => {
   if (!config.tiktok.clientKey || !config.tiktok.clientSecret || !config.tiktok.redirectUri) {
     redirectWithNotice(res, 'Add TikTok client key, secret, and redirect URI to .env first.');
     return;
@@ -182,7 +232,7 @@ router.get('/connect/tiktok', (req, res) => {
   res.redirect(tiktok.buildTikTokAuthUrl(state));
 });
 
-router.get('/auth/tiktok/callback', asyncRoute(async (req, res) => {
+router.get('/auth/tiktok/callback', requireAdminOAuth, asyncRoute(async (req, res) => {
   const expectedState = parseCookies(req.headers.cookie).tiktok_oauth_state;
   res.clearCookie('tiktok_oauth_state');
   if (req.query.error) {
@@ -210,7 +260,7 @@ router.get('/auth/tiktok/callback', asyncRoute(async (req, res) => {
   }
 }));
 
-router.get('/disconnect/tiktok', asyncRoute(async (req, res) => {
+router.get('/disconnect/tiktok', requireAdminPage, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const { activeAccount } = await resolveTikTokAccountContext(req, res);
   if (!activeAccount) {
@@ -221,7 +271,7 @@ router.get('/disconnect/tiktok', asyncRoute(async (req, res) => {
   redirectWithNotice(res, `${accountLabel(activeAccount)} disconnected. Its jobs and history were preserved.`);
 }));
 
-router.get('/auth/instagram/start', (req, res) => {
+router.get('/auth/instagram/start', requireAdminPage, (req, res) => {
   if (!instagram.hasOAuthConfig()) {
     redirectWithNotice(res, 'Add Meta app ID, app secret, and redirect URI to .env first.');
     return;
@@ -231,7 +281,7 @@ router.get('/auth/instagram/start', (req, res) => {
   res.redirect(instagram.buildInstagramAuthUrl(state));
 });
 
-router.get('/auth/instagram/callback', asyncRoute(async (req, res) => {
+router.get('/auth/instagram/callback', requireAdminOAuth, asyncRoute(async (req, res) => {
   const expectedState = parseCookies(req.headers.cookie).instagram_oauth_state;
   res.clearCookie('instagram_oauth_state');
   if (req.query.error) {
@@ -251,12 +301,12 @@ router.get('/auth/instagram/callback', asyncRoute(async (req, res) => {
   }
 }));
 
-router.get('/disconnect/instagram', asyncRoute(async (req, res) => {
+router.get('/disconnect/instagram', requireAdminPage, asyncRoute(async (req, res) => {
   await storage.clearInstagramAuth();
   redirectWithNotice(res, 'Instagram disconnected.');
 }));
 
-router.get('/api/instagram/status', asyncRoute(async (req, res) => {
+router.get('/api/instagram/status', requireAdminApi, asyncRoute(async (req, res) => {
   const status = await instagram.getInstagramAuthStatus();
   const containerId = String(req.query.containerId || '').trim();
   if (!containerId) { res.json({ ok: true, instagram: status }); return; }
@@ -268,7 +318,7 @@ router.get('/api/instagram/status', asyncRoute(async (req, res) => {
   }
 }));
 
-router.post('/api/instagram/publish', express.json({ limit: '1mb' }), asyncRoute(async (req, res) => {
+router.post('/api/instagram/publish', requireAdminApi, express.json({ limit: '1mb' }), asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const payload = { ...(req.body || {}), postId: String((req.body && req.body.postId) || '').trim(), userId };
   try {
@@ -312,7 +362,7 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
   redirectWithNotice(res, `Created ${created.length}. Scheduled ${scheduledCount}.${sourceNotice}`);
 }));
 
-router.post('/settings', asyncRoute(async (req, res) => {
+router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
   const dailyPostTime = String(req.body.dailyPostTime || '').trim();
   if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dailyPostTime)) { redirectWithNotice(res, 'Use a valid daily posting time.'); return; }
   await storage.saveSettings({ dailyPostTime });
@@ -433,6 +483,10 @@ router.post('/posts/:id/delete', requireConnectedTikTokAccount, asyncRoute(async
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function requireConnectedTikTokAccount(req, res, next) {
+  if (!req.isAdmin) {
+    requireAdminPage(req, res, next);
+    return;
+  }
   resolveTikTokAccountContext(req, res)
     .then(({ activeAccount }) => {
       if (!activeAccount || !activeAccount.connected) {
@@ -443,6 +497,26 @@ function requireConnectedTikTokAccount(req, res, next) {
       next();
     })
     .catch(next);
+}
+
+function getLoginAttempt(ip, now = Date.now()) {
+  const key = String(ip || 'unknown');
+  const attempt = loginAttempts.get(key);
+  if (!attempt || now - attempt.startedAt >= LOGIN_WINDOW_MS) {
+    loginAttempts.delete(key);
+    return { locked: false, count: 0 };
+  }
+  return { locked: attempt.count >= LOGIN_MAX_ATTEMPTS, count: attempt.count };
+}
+
+function recordFailedLogin(ip, now = Date.now()) {
+  const key = String(ip || 'unknown');
+  const current = loginAttempts.get(key);
+  if (!current || now - current.startedAt >= LOGIN_WINDOW_MS) {
+    loginAttempts.set(key, { count: 1, startedAt: now });
+    return;
+  }
+  current.count += 1;
 }
 
 async function resolveTikTokAccountContext(req, res) {

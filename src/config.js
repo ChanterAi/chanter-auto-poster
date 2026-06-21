@@ -35,6 +35,9 @@ module.exports = {
   instagramAuthFile: path.join(rootDir, 'data', 'instagram_auth.json'),
   publicBaseUrl: (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, ''),
   cronSecret: process.env.CRON_SECRET || '',
+  adminPassword: process.env.ADMIN_PASSWORD || '',
+  adminSessionSecret: process.env.ADMIN_SESSION_SECRET || '',
+  adminSessionHours: Math.max(1, Number(process.env.ADMIN_SESSION_HOURS || 12)),
   appUrl: (process.env.APP_URL || '').replace(/\/+$/, ''),
   appTimeZone: process.env.APP_TIME_ZONE || process.env.TZ || 'UTC',
 
