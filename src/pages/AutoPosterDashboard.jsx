@@ -154,18 +154,26 @@ function MediaPreview({ job }) {
 
   if (job.isVideo && job.mediaUrl) {
     return (
-      <video
-        className="job-media"
-        src={job.mediaUrl}
-        poster={job.thumbnailUrl || undefined}
-        controls
-        muted
-        preload="metadata"
-      />
+      <div className="media-frame">
+        <video
+          className="job-media"
+          src={job.mediaUrl}
+          poster={job.thumbnailUrl || undefined}
+          controls
+          muted
+          preload="metadata"
+        />
+        <span className="media-type-label">Video</span>
+      </div>
     );
   }
 
-  return <img className="job-media" src={job.thumbnailUrl || job.mediaUrl} alt="" loading="lazy" />;
+  return (
+    <div className="media-frame">
+      <img className="job-media" src={job.thumbnailUrl || job.mediaUrl} alt="" loading="lazy" />
+      <span className="media-type-label">Photo</span>
+    </div>
+  );
 }
 
 function DetailItem({ label, value }) {
@@ -196,7 +204,7 @@ function JobCard({ job, account }) {
       <div className="job-content">
         <div className="job-heading">
           <div>
-            <span className="account-kicker">{accountLabel(account)}</span>
+            <span className="account-kicker">{accountLabel(account)} · Job {job.id.slice(0, 8)}</span>
             <h2>{job.title}</h2>
           </div>
           <span className={`status-badge status-${job.status}`}>{job.status}</span>
@@ -315,9 +323,17 @@ export default function AutoPosterDashboard() {
 
   return (
     <main className="control-room">
+      <nav className="dashboard-nav" aria-label="AutoPoster navigation">
+        <a className="product-link" href="/private/autoposter">
+          <span className="product-mark">C</span>
+          <span><strong>CHANTER</strong><small>Auto Poster</small></span>
+        </a>
+        <span className="internal-label"><span></span>Internal control room</span>
+      </nav>
+
       <header className="page-header">
         <div>
-          <a className="back-link" href="/private/autoposter">← AutoPoster</a>
+          <a className="back-link" href="/private/autoposter">← Back to AutoPoster</a>
           <p className="eyebrow">Internal operations</p>
           <h1>AutoPoster Control Room</h1>
           <p>Monitor TikTok schedules, posting progress, and failures from one read-only view.</p>
@@ -344,6 +360,22 @@ export default function AutoPosterDashboard() {
               />
             ))}
           </div>
+        </section>
+      )}
+
+      {!loading && !error && (
+        <section className="metric-grid" aria-label="Job status overview">
+          {['all', 'scheduled', 'processing', 'posted', 'failed'].map((status) => (
+            <button
+              type="button"
+              className={statusFilter === status ? 'metric-card active' : 'metric-card'}
+              onClick={() => setStatusFilter(status)}
+              key={status}
+            >
+              <span>{status === 'all' ? 'Total jobs' : status}</span>
+              <strong>{counts[status] || 0}</strong>
+            </button>
+          ))}
         </section>
       )}
 
