@@ -411,16 +411,18 @@
               <a class="btn btn-primary" href="/connect/tiktok">Connect TikTok</a>
             <% } %>
 
-            <%
-              const igPillClass = instagramStatus.state === 'ready' ? 'pill-cyan'
-                : instagramStatus.state === 'token_expired' ? 'pill-err'
-                : instagramStatus.connected ? 'pill-ok' : 'pill-warn';
-            %>
-            <div class="pill <%= igPillClass %>"><span class="dot"></span>Instagram <%= instagramStatus.label %></div>
-            <% if (instagramStatus.connected) { %>
-              <a class="btn btn-ghost" href="/disconnect/instagram">Disconnect IG</a>
-            <% } else { %>
-              <a class="btn btn-secondary" href="/auth/instagram/start">Connect Instagram</a>
+            <% if (enableInstagram) { %>
+              <%
+                const igPillClass = instagramStatus.state === 'ready' ? 'pill-cyan'
+                  : instagramStatus.state === 'token_expired' ? 'pill-err'
+                  : instagramStatus.connected ? 'pill-ok' : 'pill-warn';
+              %>
+              <div class="pill <%= igPillClass %>"><span class="dot"></span>Instagram <%= instagramStatus.label %></div>
+              <% if (instagramStatus.connected) { %>
+                <a class="btn btn-ghost" href="/disconnect/instagram">Disconnect IG</a>
+              <% } else { %>
+                <a class="btn btn-secondary" href="/auth/instagram/start">Connect Instagram</a>
+              <% } %>
             <% } %>
           </div>
         </div>
@@ -502,7 +504,7 @@
             <% const mediaType = helpers.mediaType(post); %>
             <% const isPhoto = mediaType === 'photo'; %>
             <% const result = helpers.postResult(post); %>
-            <% const igResult = helpers.instagramPostResult(post); %>
+            <% const igResult = enableInstagram ? helpers.instagramPostResult(post) : null; %>
             <%
               // Resolve interaction ability from creatorInfo
               const commentDisabled = creatorInfo && creatorInfo.comment_disabled;
@@ -545,7 +547,7 @@
                 <% } else if (result.message && result.tone !== 'scheduled' && result.tone !== 'accepted') { %>
                   <p class="result-message"><%= result.message %></p>
                 <% } %>
-                <% if (igResult.hasAttempt) { %>
+                <% if (enableInstagram && igResult.hasAttempt) { %>
                   <p class="result-message <%= igResult.tone === 'failed' ? 'is-failed' : '' %>">Instagram: <%= igResult.message %></p>
                 <% } %>
 
@@ -674,15 +676,17 @@
                           data-public-media-url
                         />
                       </label>
-                      <label>
-                        Instagram media URL
-                        <input
-                          type="url" name="instagramMediaUrl" value="<%= post.instagramMediaUrl || '' %>"
-                          placeholder="<%= mediaType === 'video' ? 'https://example.com/reel.mp4' : 'https://example.com/image.jpg' %>"
-                        />
-                      </label>
+                      <% if (enableInstagram) { %>
+                        <label>
+                          Instagram media URL
+                          <input
+                            type="url" name="instagramMediaUrl" value="<%= post.instagramMediaUrl || '' %>"
+                            placeholder="<%= mediaType === 'video' ? 'https://example.com/reel.mp4' : 'https://example.com/image.jpg' %>"
+                          />
+                        </label>
+                      <% } %>
                       <% if (result.hasDebug) { %><pre><%= result.debugJson %></pre><% } %>
-                      <% if (igResult.hasDebug) { %><pre><%= igResult.debugJson %></pre><% } %>
+                      <% if (enableInstagram && igResult.hasDebug) { %><pre><%= igResult.debugJson %></pre><% } %>
                     </div>
                   </details>
                 </form>
@@ -699,7 +703,7 @@
                     <input type="hidden" name="force" value="1" />
                     <button type="submit" class="btn btn-secondary">Post now</button>
                   </form>
-                  <% if (instagramStatus.readyToPublish) { %>
+                  <% if (enableInstagram && instagramStatus.readyToPublish) { %>
                     <form class="inline-action" action="/api/instagram/publish" method="post" data-instagram-publish-form>
                       <input type="hidden" name="postId" value="<%= post.id %>" />
                       <input type="hidden" name="dryRun" value="1" />
@@ -843,13 +847,15 @@
         });
       });
 
-      // Instagram test form
-      document.querySelectorAll('[data-instagram-publish-form]').forEach(form => {
-        form.addEventListener('submit', () => {
-          const btn = form.querySelector('button');
-          if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
+      <% if (enableInstagram) { %>
+        // Instagram test form
+        document.querySelectorAll('[data-instagram-publish-form]').forEach(form => {
+          form.addEventListener('submit', () => {
+            const btn = form.querySelector('button');
+            if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
+          });
         });
-      });
+      <% } %>
 
       // Missing media thumbnails
       document.querySelectorAll('[data-preview-media]').forEach(media => {

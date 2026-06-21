@@ -3,6 +3,7 @@ require('dotenv').config();
 
 const rootDir = path.resolve(__dirname, '..');
 const port = Number(process.env.PORT || 3000);
+const ENABLE_INSTAGRAM = false;
 const metaGraphVersion = process.env.META_GRAPH_VERSION || process.env.INSTAGRAM_GRAPH_VERSION || 'v24.0';
 const firebasePrivateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n').trim() || '';
 
@@ -19,6 +20,7 @@ function envInverseFlag(name, fallback = true) {
 }
 
 module.exports = {
+  ENABLE_INSTAGRAM,
   appName: 'CHANTER Auto Poster',
   port,
   rootDir,

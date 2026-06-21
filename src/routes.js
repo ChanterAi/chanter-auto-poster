@@ -51,7 +51,9 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const posts = await storage.getPosts(userId);
   const tiktokAuthStatus = await tiktok.getTikTokAuthStatus();
-  const instagramStatus = await instagram.getInstagramAuthStatus();
+  const instagramStatus = config.ENABLE_INSTAGRAM
+    ? await instagram.getInstagramAuthStatus()
+    : null;
   const creatorInfo = tiktokAuthStatus.connected ? await getCreatorInfoSafe() : null;
 
   res.render('index', {
@@ -63,6 +65,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     notice: req.query.notice || '',
     tiktokConfigured: tiktokAuthStatus.connected,
     tiktokAuthStatus,
+    enableInstagram: config.ENABLE_INSTAGRAM,
     instagramStatus,
     creatorInfo,
     helpers: viewHelpers
@@ -116,7 +119,9 @@ router.get('/health', asyncRoute(async (req, res) => {
     appTimeZone: config.appTimeZone,
     tiktokConfigured: await tiktok.isConfigured(),
     tiktokAuth: await tiktok.getTikTokAuthStatus(),
-    instagram: await instagram.getInstagramAuthStatus(),
+    instagram: config.ENABLE_INSTAGRAM
+      ? await instagram.getInstagramAuthStatus()
+      : { enabled: false, connected: false },
     counts: await storage.getCounts(userId)
   });
 }));
@@ -305,12 +310,11 @@ router.post('/posts/:id', asyncRoute(async (req, res) => {
   const yourBrand         = contentDisclosure && req.body.yourBrand      === '1';
   const brandedContent    = contentDisclosure && req.body.brandedContent === '1';
 
-  await storage.updatePost(userId, req.params.id, {
+  const postPatch = {
     caption:            String(req.body.caption            || '').trim(),
     hashtags:           String(req.body.hashtags           || '').trim(),
     publicMediaUrl,
     publicImageUrl:     publicMediaUrl,
-    instagramMediaUrl:  String(req.body.instagramMediaUrl  || '').trim(),
     privacyLevel:       String(req.body.privacyLevel       || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
     scheduledAt,
     // TikTok Direct Post API — interaction ability
@@ -321,7 +325,13 @@ router.post('/posts/:id', asyncRoute(async (req, res) => {
     contentDisclosure,
     yourBrand,
     brandedContent
-  });
+  };
+
+  if (config.ENABLE_INSTAGRAM) {
+    postPatch.instagramMediaUrl = String(req.body.instagramMediaUrl || '').trim();
+  }
+
+  await storage.updatePost(userId, req.params.id, postPatch);
 
   redirectWithNotice(res, 'Saved.');
 }));
