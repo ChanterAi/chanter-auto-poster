@@ -11,8 +11,8 @@ function requestSignal(timeoutMs = config.tiktok.requestTimeoutMs) {
   return AbortSignal.timeout(Math.max(1, Number(timeoutMs) || 30_000));
 }
 
-async function isConfigured() {
-  return (await getTikTokAuthStatus()).connected;
+async function isConfigured(accountId, userId) {
+  return (await getTikTokAuthStatus(accountId, userId)).connected;
 }
 
 function buildTikTokAuthUrl(state) {
@@ -47,19 +47,23 @@ async function exchangeCodeForToken(code) {
   return normalizeTokenResponse(body);
 }
 
-async function getTikTokAuthStatus() {
-  const auth = await storage.getTikTokAuth();
+async function getTikTokAuthStatus(accountId, userId) {
+  const auth = await storage.getTikTokAccount(userId, accountId);
   return {
-    connected: Boolean(auth.connected && auth.access_token),
-    open_id: auth.open_id || '',
-    expires_at: auth.expires_at || null,
-    scope: auth.scope || ''
+    connected: Boolean(auth && auth.connected && auth.access_token),
+    accountId: auth ? auth.accountId : String(accountId || ''),
+    open_id: auth ? auth.open_id || '' : '',
+    username: auth ? auth.username || '' : '',
+    displayName: auth ? auth.displayName || '' : '',
+    avatarUrl: auth ? auth.avatarUrl || '' : '',
+    expires_at: auth ? auth.expires_at || null : null,
+    scope: auth ? auth.scope || '' : ''
   };
 }
 
-async function refreshTikTokToken() {
-  const auth = await storage.getTikTokAuth();
-  if (!auth.connected || !auth.refresh_token) {
+async function refreshTikTokToken(accountId, userId) {
+  const auth = await storage.getTikTokAccount(userId, accountId);
+  if (!auth || !auth.connected || !auth.refresh_token) {
     return null;
   }
 
@@ -70,14 +74,23 @@ async function refreshTikTokToken() {
     refresh_token: auth.refresh_token
   });
 
-  return storage.saveTikTokAuth(normalizeTokenResponse(body, auth));
+  return storage.saveTikTokAccount(userId, normalizeTokenResponse(body, auth));
 }
 
 async function publishPhotoPost(post) {
+  const accountId = String((post && post.accountId) || '').trim();
+  if (!accountId || accountId === 'legacy') {
+    return {
+      ok: false,
+      mode: 'api',
+      reason: 'TikTok account is unassigned for this job; publishing was blocked.'
+    };
+  }
+
   let auth;
 
   try {
-    auth = await getActiveTikTokAuth();
+    auth = await getActiveTikTokAuth(accountId, post.userId);
   } catch (error) {
     return {
       ok: false,
@@ -91,7 +104,15 @@ async function publishPhotoPost(post) {
     return {
       ok: false,
       mode: 'manual',
-      reason: 'TikTok not connected'
+      reason: `TikTok account ${accountId} is not connected; publishing was blocked.`
+    };
+  }
+
+  if (post.tiktokOpenId && auth.open_id !== post.tiktokOpenId) {
+    return {
+      ok: false,
+      mode: 'api',
+      reason: 'TikTok account identity does not match this job; publishing was blocked.'
     };
   }
 
@@ -228,8 +249,8 @@ async function getVideoSource(post) {
   }
 }
 
-async function queryCreatorInfo() {
-  const auth = await getActiveTikTokAuth();
+async function queryCreatorInfo(accountId, userId) {
+  const auth = await getActiveTikTokAuth(accountId, userId);
   if (!auth || !auth.access_token) {
     throw new Error('TikTok not connected');
   }
@@ -518,11 +539,12 @@ function buildCaption(post) {
     .join('\n\n');
 }
 
-async function getActiveTikTokAuth() {
-  const auth = await storage.getTikTokAuth();
+async function getActiveTikTokAuth(accountId, userId) {
+  const auth = await storage.getTikTokAccount(userId, accountId);
+  if (!auth) return null;
   if (!auth.connected || !auth.access_token) return null;
   if (!shouldRefresh(auth)) return auth;
-  return refreshTikTokToken();
+  return refreshTikTokToken(accountId, userId);
 }
 
 function shouldRefresh(auth) {

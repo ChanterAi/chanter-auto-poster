@@ -52,7 +52,7 @@ function normalizeStatus(value, scheduledAt) {
   return STATUS_ALIASES[raw] || raw;
 }
 
-function normalizeJob(job, fallbackAccountId) {
+function normalizeJob(job) {
   const scheduledAt = firstValue(
     job.scheduledAt,
     job.scheduledTimeUTC,
@@ -75,8 +75,7 @@ function normalizeJob(job, fallbackAccountId) {
     job.tiktokAccountId,
     job.tiktokOpenId,
     job.account?.id,
-    fallbackAccountId,
-    'unassigned'
+    'legacy'
   ));
   const lastResult = firstValue(job.lastResult, job.result, job.publishResult);
   const lastError = asText(firstValue(
@@ -124,11 +123,12 @@ function normalizeJob(job, fallbackAccountId) {
 
 function accountLabel(account) {
   if (!account) return 'Unassigned / legacy';
+  if (account.id === 'legacy' || account.accountId === 'legacy') return 'Legacy / unassigned';
   if (account.username) return `@${account.username}`;
   return account.displayName || account.id || 'TikTok account';
 }
 
-function AccountCard({ account, jobCount }) {
+function AccountCard({ account, jobCount, active }) {
   return (
     <article className="account-card">
       <div className="account-avatar" aria-hidden={!account.avatarUrl}>
@@ -137,6 +137,7 @@ function AccountCard({ account, jobCount }) {
       <div className="account-copy">
         <div className="account-title-row">
           <strong>{accountLabel(account)}</strong>
+          {active && <span className="active-account-badge">Active</span>}
           <span className={`connection-badge ${account.connected ? 'connected' : ''}`}>
             {account.connected ? 'Connected' : 'Unavailable'}
           </span>
@@ -253,7 +254,7 @@ function JobCard({ job, account }) {
 }
 
 export default function AutoPosterDashboard() {
-  const [data, setData] = useState({ accounts: [], jobs: [], appTimeZone: '' });
+  const [data, setData] = useState({ accounts: [], jobs: [], appTimeZone: '', selectedAccountId: '' });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -277,7 +278,8 @@ export default function AutoPosterDashboard() {
       .then((payload) => setData({
         accounts: Array.isArray(payload.accounts) ? payload.accounts : [],
         jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
-        appTimeZone: payload.appTimeZone || ''
+        appTimeZone: payload.appTimeZone || '',
+        selectedAccountId: payload.selectedAccountId || ''
       }))
       .catch((requestError) => {
         if (requestError.name !== 'AbortError') setError(requestError.message);
@@ -290,9 +292,8 @@ export default function AutoPosterDashboard() {
   }, [reloadKey]);
 
   const jobs = useMemo(() => {
-    const fallbackAccountId = data.accounts[0]?.id || '';
     return data.jobs
-      .map((job) => normalizeJob(job, fallbackAccountId))
+      .map((job) => normalizeJob(job))
       .sort((a, b) => {
         const aTime = parseDate(a.scheduledAt)?.getTime() || Number.MAX_SAFE_INTEGER;
         const bTime = parseDate(b.scheduledAt)?.getTime() || Number.MAX_SAFE_INTEGER;
@@ -356,6 +357,7 @@ export default function AutoPosterDashboard() {
               <AccountCard
                 account={account}
                 jobCount={jobs.filter((job) => job.accountId === String(account.id)).length}
+                active={String(account.id) === data.selectedAccountId}
                 key={account.id}
               />
             ))}

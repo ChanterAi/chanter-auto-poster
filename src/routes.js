@@ -10,6 +10,7 @@ const instagram = require('./instagram');
 const { requireUser, resolveUserId } = require('./auth');
 
 const router = express.Router();
+const ACTIVE_TIKTOK_ACCOUNT_COOKIE = 'autoposter_tiktok_account_id';
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -49,22 +50,28 @@ function asyncRoute(handler) {
 
 const renderAutoPoster = asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  const posts = await storage.getPosts(userId);
-  const tiktokAuthStatus = await tiktok.getTikTokAuthStatus();
+  const { accounts, activeAccount } = await resolveTikTokAccountContext(req, res);
+  const activeAccountId = activeAccount ? activeAccount.accountId : '';
+  const posts = activeAccountId ? await storage.getPosts(userId, activeAccountId) : [];
+  const tiktokAuthStatus = await tiktok.getTikTokAuthStatus(activeAccountId, userId);
   const instagramStatus = config.ENABLE_INSTAGRAM
     ? await instagram.getInstagramAuthStatus()
     : null;
-  const creatorInfo = tiktokAuthStatus.connected ? await getCreatorInfoSafe() : null;
+  const creatorInfo = tiktokAuthStatus.connected
+    ? (await getCreatorInfoSafe(activeAccountId, userId)) || creatorInfoFromAccount(activeAccount)
+    : creatorInfoFromAccount(activeAccount);
 
   res.render('index', {
     appName: config.appName,
     posts,
     todayPost: getTodayPost(posts),
     settings: await storage.getSettings(),
-    counts: await storage.getCounts(userId),
+    counts: activeAccountId ? await storage.getCounts(userId, activeAccountId) : emptyPostCounts(),
     notice: req.query.notice || '',
     tiktokConfigured: tiktokAuthStatus.connected,
     tiktokAuthStatus,
+    tiktokAccounts: accounts.map(publicTikTokAccount),
+    activeTikTokAccount: activeAccount ? publicTikTokAccount(activeAccount) : null,
     enableInstagram: config.ENABLE_INSTAGRAM,
     instagramStatus,
     creatorInfo,
@@ -81,28 +88,18 @@ router.get('/private/autoposter/dashboard', requireUser, (req, res) => {
 
 router.get('/api/private/autoposter/dashboard', requireUser, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  const [jobs, tiktokAuthStatus] = await Promise.all([
+  const [jobs, accountContext] = await Promise.all([
     storage.getDashboardJobs(userId),
-    tiktok.getTikTokAuthStatus()
+    resolveTikTokAccountContext(req, res)
   ]);
-  const creatorInfo = tiktokAuthStatus.connected ? await getCreatorInfoSafe() : null;
-  const accounts = [];
-
-  if (tiktokAuthStatus.connected || tiktokAuthStatus.open_id || creatorInfo) {
-    accounts.push({
-      id: tiktokAuthStatus.open_id || (creatorInfo && creatorInfo.creator_username) || 'tiktok',
-      platform: 'tiktok',
-      connected: Boolean(tiktokAuthStatus.connected),
-      username: (creatorInfo && creatorInfo.creator_username) || '',
-      displayName: (creatorInfo && creatorInfo.creator_nickname) || '',
-      avatarUrl: (creatorInfo && creatorInfo.creator_avatar_url) || ''
-    });
-  }
+  const { accounts, activeAccount } = accountContext;
+  const selectedAccountId = activeAccount ? activeAccount.accountId : '';
 
   res.set('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    accounts,
+    accounts: accounts.map(publicTikTokAccount),
+    selectedAccountId,
     jobs,
     appTimeZone: config.appTimeZone
   });
@@ -110,6 +107,10 @@ router.get('/api/private/autoposter/dashboard', requireUser, asyncRoute(async (r
 
 router.get('/health', asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
+  const accounts = await storage.getTikTokAccounts(userId);
+  const selectedId = parseCookies(req.headers.cookie)[ACTIVE_TIKTOK_ACCOUNT_COOKIE] || '';
+  const activeAccount = accounts.find((account) => account.accountId === selectedId) || accounts[0] || null;
+  const activeAccountId = activeAccount ? activeAccount.accountId : '';
   res.json({
     ok: true,
     app: config.appName,
@@ -117,12 +118,13 @@ router.get('/health', asyncRoute(async (req, res) => {
     scheduler: scheduler.getSchedulerState(),
     cronTrigger: Boolean(config.cronSecret),
     appTimeZone: config.appTimeZone,
-    tiktokConfigured: await tiktok.isConfigured(),
-    tiktokAuth: await tiktok.getTikTokAuthStatus(),
+    tiktokConfigured: await tiktok.isConfigured(activeAccountId, userId),
+    tiktokAuth: await tiktok.getTikTokAuthStatus(activeAccountId, userId),
+    tiktokAccounts: accounts.map(publicTikTokAccount),
     instagram: config.ENABLE_INSTAGRAM
       ? await instagram.getInstagramAuthStatus()
       : { enabled: false, connected: false },
-    counts: await storage.getCounts(userId)
+    counts: activeAccountId ? await storage.getCounts(userId, activeAccountId) : emptyPostCounts()
   });
 }));
 
@@ -155,12 +157,27 @@ router.get('/api/debug/jobs', asyncRoute(async (req, res) => {
   });
 }));
 
+router.post('/private/autoposter/account', requireUser, asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const accountId = String(req.body.accountId || '').trim();
+  const account = await storage.getTikTokAccount(userId, accountId);
+  if (!account) {
+    redirectWithNotice(res, 'TikTok account not found.');
+    return;
+  }
+  setActiveTikTokAccountCookie(res, account.accountId);
+  redirectWithNotice(res, `Active TikTok account changed to ${accountLabel(account)}.`);
+}));
+
 router.get('/connect/tiktok', (req, res) => {
   if (!config.tiktok.clientKey || !config.tiktok.clientSecret || !config.tiktok.redirectUri) {
     redirectWithNotice(res, 'Add TikTok client key, secret, and redirect URI to .env first.');
     return;
   }
   const state = randomUUID();
+  // Clear only this browser's selected-account state. Existing account
+  // records, tokens, jobs, and history remain untouched in Firestore.
+  res.clearCookie(ACTIVE_TIKTOK_ACCOUNT_COOKIE);
   res.cookie('tiktok_oauth_state', state, { httpOnly: true, sameSite: 'lax', maxAge: 10 * 60 * 1000 });
   res.redirect(tiktok.buildTikTokAuthUrl(state));
 });
@@ -177,17 +194,31 @@ router.get('/auth/tiktok/callback', asyncRoute(async (req, res) => {
     return;
   }
   try {
+    const userId = resolveUserId(req);
     const auth = await tiktok.exchangeCodeForToken(String(req.query.code));
-    await storage.saveTikTokAuth(auth);
-    redirectWithNotice(res, 'TikTok connected.');
+    let account = await storage.saveTikTokAccount(userId, auth);
+    try {
+      const profile = await tiktok.queryCreatorInfo(account.accountId, userId);
+      account = await storage.updateTikTokAccountProfile(userId, account.accountId, profile) || account;
+    } catch (profileError) {
+      console.warn('[routes] TikTok profile unavailable after OAuth', profileError.message);
+    }
+    setActiveTikTokAccountCookie(res, account.accountId);
+    redirectWithNotice(res, `TikTok account ${accountLabel(account)} connected and selected.`);
   } catch (error) {
     redirectWithNotice(res, `TikTok connection failed: ${error.message}`);
   }
 }));
 
 router.get('/disconnect/tiktok', asyncRoute(async (req, res) => {
-  await storage.clearTikTokAuth();
-  redirectWithNotice(res, 'TikTok disconnected. Manual Mode restored.');
+  const userId = resolveUserId(req);
+  const { activeAccount } = await resolveTikTokAccountContext(req, res);
+  if (!activeAccount) {
+    redirectWithNotice(res, 'No TikTok account is selected.');
+    return;
+  }
+  await storage.disconnectTikTokAccount(userId, activeAccount.accountId);
+  redirectWithNotice(res, `${accountLabel(activeAccount)} disconnected. Its jobs and history were preserved.`);
 }));
 
 router.get('/auth/instagram/start', (req, res) => {
@@ -253,8 +284,9 @@ router.post('/api/instagram/publish', express.json({ limit: '1mb' }), asyncRoute
   }
 }));
 
-router.post('/upload', upload.array('images'), asyncRoute(async (req, res) => {
+router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
+  const account = req.activeTikTokAccount;
   const files = req.files || [];
   const publicMediaUrl = String(req.body.publicMediaUrl || req.body.publicImageUrl || '').trim();
   if (publicMediaUrl && !isPublicHttpsUrl(publicMediaUrl)) {
@@ -269,9 +301,12 @@ router.post('/upload', upload.array('images'), asyncRoute(async (req, res) => {
   const created = await storage.addUploadedPosts(userId, files, {
     caption: req.body.caption,
     hashtags: req.body.hashtags,
-    publicMediaUrl
+    publicMediaUrl,
+    accountId: account.accountId,
+    tiktokOpenId: account.open_id,
+    username: account.username
   });
-  const scheduledCount = await storage.autoSchedulePosts(userId, created.map((p) => p.id));
+  const scheduledCount = await storage.autoSchedulePosts(userId, created.map((p) => p.id), account.accountId);
   const usedFallback = created.some((post) => post.storageFallback);
   const sourceNotice = usedFallback ? ' Cloudinary upload failed, so the submitted public URL was used.' : '';
   redirectWithNotice(res, `Created ${created.length}. Scheduled ${scheduledCount}.${sourceNotice}`);
@@ -284,14 +319,14 @@ router.post('/settings', asyncRoute(async (req, res) => {
   redirectWithNotice(res, `Schedule set to ${dailyPostTime}.`);
 }));
 
-router.post('/schedule', asyncRoute(async (req, res) => {
+router.post('/schedule', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  const count = await storage.reschedulePendingQueue(userId);
+  const count = await storage.reschedulePendingQueue(userId, req.activeTikTokAccount.accountId);
   redirectWithNotice(res, `Scheduled ${count}.`);
 }));
 
 // ── Updated post save — now captures interaction settings & content disclosure ──
-router.post('/posts/:id', asyncRoute(async (req, res) => {
+router.post('/posts/:id', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const scheduledAt = parseDateTimeLocal(req.body.scheduledAt, req.body.timezoneOffsetMinutes);
   const publicMediaUrl = String(req.body.publicMediaUrl || req.body.publicImageUrl || '').trim();
@@ -331,20 +366,20 @@ router.post('/posts/:id', asyncRoute(async (req, res) => {
     postPatch.instagramMediaUrl = String(req.body.instagramMediaUrl || '').trim();
   }
 
-  await storage.updatePost(userId, req.params.id, postPatch);
+  await storage.updatePost(userId, req.params.id, postPatch, req.activeTikTokAccount.accountId);
 
   redirectWithNotice(res, 'Saved.');
 }));
 
-router.post('/posts/:id/move', asyncRoute(async (req, res) => {
+router.post('/posts/:id/move', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  const moved = await storage.movePost(userId, req.params.id, req.body.direction);
+  const moved = await storage.movePost(userId, req.params.id, req.body.direction, req.activeTikTokAccount.accountId);
   redirectWithNotice(res, moved ? 'Moved.' : 'Could not move item.');
 }));
 
-router.post('/posts/:id/prepare', asyncRoute(async (req, res) => {
+router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  const post = await storage.getPost(userId, req.params.id);
+  const post = await storage.getPost(userId, req.params.id, req.activeTikTokAccount.accountId);
   if (!post) { redirectWithNotice(res, 'Post not found.'); return; }
 
   const forcePostNow = String(req.body.force || '') === '1';
@@ -365,19 +400,19 @@ router.post('/posts/:id/prepare', asyncRoute(async (req, res) => {
   redirectWithNotice(res, `TikTok attempt failed: ${result.reason || 'Unknown error'}`);
 }));
 
-router.post('/posts/:id/posted', asyncRoute(async (req, res) => {
+router.post('/posts/:id/posted', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const now = new Date().toISOString();
   await storage.updatePost(userId, req.params.id, {
     status: 'posted', postedAt: now, readyAt: null,
     lastResult: { ok: true, mode: 'manual', reason: 'Marked posted manually', completedAt: now }
-  });
+  }, req.activeTikTokAccount.accountId);
   redirectWithNotice(res, 'Marked posted.');
 }));
 
-router.post('/posts/:id/pending', asyncRoute(async (req, res) => {
+router.post('/posts/:id/pending', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  const post = await storage.getPost(userId, req.params.id);
+  const post = await storage.getPost(userId, req.params.id, req.activeTikTokAccount.accountId);
   if (!post) { redirectWithNotice(res, 'Post not found.'); return; }
   await storage.updatePost(userId, req.params.id, {
     status: post.scheduledAt ? 'scheduled' : 'pending',
@@ -385,20 +420,91 @@ router.post('/posts/:id/pending', asyncRoute(async (req, res) => {
     readyAt: null,
     errorMessage: null,
     lastResult: null
-  });
+  }, req.activeTikTokAccount.accountId);
   redirectWithNotice(res, post.scheduledAt ? 'Back to schedule.' : 'Back to pending.');
 }));
 
-router.post('/posts/:id/delete', asyncRoute(async (req, res) => {
+router.post('/posts/:id/delete', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  await storage.deletePost(userId, req.params.id);
+  await storage.deletePost(userId, req.params.id, req.activeTikTokAccount.accountId);
   redirectWithNotice(res, 'Deleted.');
 }));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+function requireConnectedTikTokAccount(req, res, next) {
+  resolveTikTokAccountContext(req, res)
+    .then(({ activeAccount }) => {
+      if (!activeAccount || !activeAccount.connected) {
+        redirectWithNotice(res, 'Select and connect a TikTok account before changing its queue.');
+        return;
+      }
+      req.activeTikTokAccount = activeAccount;
+      next();
+    })
+    .catch(next);
+}
+
+async function resolveTikTokAccountContext(req, res) {
+  const userId = resolveUserId(req);
+  const accounts = await storage.getTikTokAccounts(userId);
+  const selectedId = parseCookies(req.headers.cookie)[ACTIVE_TIKTOK_ACCOUNT_COOKIE] || '';
+  const activeAccount = accounts.find((account) => account.accountId === selectedId)
+    || accounts.find((account) => account.connected)
+    || accounts[0]
+    || null;
+
+  if (activeAccount && activeAccount.accountId !== selectedId) {
+    setActiveTikTokAccountCookie(res, activeAccount.accountId);
+  }
+  return { accounts, activeAccount };
+}
+
+function setActiveTikTokAccountCookie(res, accountId) {
+  res.cookie(ACTIVE_TIKTOK_ACCOUNT_COOKIE, accountId, {
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 365 * 24 * 60 * 60 * 1000
+  });
+}
+
+function publicTikTokAccount(account) {
+  return {
+    id: account.accountId,
+    accountId: account.accountId,
+    open_id: account.open_id,
+    tiktokOpenId: account.open_id,
+    platform: 'tiktok',
+    username: account.username || '',
+    displayName: account.displayName || '',
+    avatarUrl: account.avatarUrl || '',
+    connected: Boolean(account.connected)
+  };
+}
+
+function creatorInfoFromAccount(account) {
+  if (!account) return null;
+  return {
+    creator_username: account.username || '',
+    creator_nickname: account.displayName || '',
+    creator_avatar_url: account.avatarUrl || '',
+    privacy_level_options: []
+  };
+}
+
+function accountLabel(account) {
+  if (!account) return 'TikTok account';
+  if (account.username) return `@${account.username}`;
+  if (account.displayName) return account.displayName;
+  return `TikTok ${String(account.accountId || '').slice(0, 8)}`;
+}
+
+function emptyPostCounts() {
+  return { total: 0, pending: 0, scheduled: 0, processing: 0, ready: 0, posted: 0, failed: 0 };
+}
+
 function redirectWithNotice(res, notice) {
-  res.redirect(`/?notice=${encodeURIComponent(notice)}`);
+  res.redirect(`/private/autoposter?notice=${encodeURIComponent(notice)}`);
 }
 
 async function runCronTick(req, res) {
@@ -424,8 +530,8 @@ function firstNonEmptyLine(value) {
   return String(value || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
 }
 
-async function getCreatorInfoSafe() {
-  try { return await tiktok.queryCreatorInfo(); }
+async function getCreatorInfoSafe(accountId, userId) {
+  try { return await tiktok.queryCreatorInfo(accountId, userId); }
   catch (error) { console.warn('[routes] TikTok creator info unavailable', error.message); return null; }
 }
 

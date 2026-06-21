@@ -155,6 +155,7 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   text-transform: uppercase;
 }
 .connection-badge.connected { background: #ecfdf3; color: #027a48; }
+.active-account-badge { border-radius: 999px; background: #eff8ff; color: #175cd3; padding: 4px 7px; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
 
 .metric-grid { display: grid; grid-template-columns: repeat(5, minmax(110px, 1fr)); gap: 10px; margin-bottom: 18px; }
 .metric-card {

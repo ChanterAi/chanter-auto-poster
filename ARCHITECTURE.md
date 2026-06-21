@@ -35,6 +35,8 @@ at most once.
 |---|---|---|
 | `userId` | string | Owner. Placeholder value today (see `src/auth.js`); already wired through every query and rule. |
 | `platform` | string | `"tiktok"` — the only platform the automatic scheduler publishes to today. Instagram is a manual/secondary action tracked via `lastInstagramResult`. |
+| `accountId`, `tiktokOpenId` | string | Stable TikTok `open_id` owning this job. Jobs without either field are normalized as `legacy` and cannot publish automatically. |
+| `username` | string | TikTok username captured with the job for display; it is not used as an identity key. |
 | `caption`, `hashtags` | string | The post's text content. |
 | `mediaType`, `mediaPath`, `videoPath`, `imagePath`, `fileName`, `originalName`, `mimeType` | string | Local media reference (kept flat, not nested under a `media` object — see note below). |
 | `publicImageUrl`, `instagramMediaUrl` | string | Public HTTPS URLs needed for TikTok's `PULL_FROM_URL` photo flow and Instagram. |
@@ -68,8 +70,20 @@ at most once.
   already say throughout `index.ejs`. Functionally identical to the
   spec's "published".
 
+### `tiktokAccounts/{encodedOpenId}`
+
+One document per TikTok account. `accountId` and `open_id` contain TikTok's
+stable OAuth `open_id`; the record also stores that account's tokens, profile
+labels, connection state, owner `userId`, and lifecycle timestamps. Workers
+resolve credentials from each job's `accountId`, never from browser selection.
+
 ### `config/{settings|tiktokAuth|instagramAuth}`
 
+`config/tiktokAuth` remains only as a backward-compatible source for lazy
+migration into `tiktokAccounts`; new OAuth connections do not overwrite it.
+Instagram remains disabled and retains its existing singleton document.
+
+<!-- Historical single-account description retained for migration context.
 Three singleton documents holding what used to be `data/settings.json`,
 `data/tiktok_auth.json`, and `data/instagram_auth.json`. These aren't
 named in the original spec (which is scoped to the posts collection), but
@@ -79,6 +93,7 @@ after the very first restart, which defeats the point of fixing the
 scheduler. They remain single shared documents — there's still one TikTok
 account and one Instagram account for the whole app, same as before.
 Per-user social accounts would be a separate, bigger feature.
+-->
 
 ## Atomic claim — preventing double-publish
 

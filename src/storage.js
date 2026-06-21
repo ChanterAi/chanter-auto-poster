@@ -3,7 +3,14 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { DateTime } = require('luxon');
 const config = require('./config');
-const { postsCollection, configDoc, getFirestore, Timestamp, FieldValue } = require('./firestore');
+const {
+  postsCollection,
+  tiktokAccountsCollection,
+  configDoc,
+  getFirestore,
+  Timestamp,
+  FieldValue
+} = require('./firestore');
 const { uploadMediaFile, destroyMediaAsset, checkCloudinaryHealth } = require('./cloudinary');
 const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore } = require('./postsMapper');
 
@@ -72,6 +79,138 @@ async function checkMediaStorageHealth({ writeTest = false } = {}) {
   return checkCloudinaryHealth({ writeTest });
 }
 
+// TikTok accounts
+
+function tiktokAccountDocId(accountId) {
+  return encodeURIComponent(String(accountId || '').trim());
+}
+
+function tiktokAccountFromDoc(doc) {
+  const data = doc.data() || {};
+  const accountId = String(data.accountId || data.open_id || '').trim();
+  return {
+    accountId,
+    id: accountId,
+    userId: data.userId || DEFAULT_USER_ID,
+    platform: 'tiktok',
+    open_id: data.open_id || accountId,
+    tiktokOpenId: data.open_id || accountId,
+    username: data.username || '',
+    displayName: data.displayName || '',
+    avatarUrl: data.avatarUrl || '',
+    connected: Boolean(data.connected && data.access_token),
+    access_token: data.access_token || '',
+    refresh_token: data.refresh_token || '',
+    expires_at: data.expires_at || null,
+    scope: data.scope || '',
+    createdAt: data.createdAt || null,
+    updatedAt: data.updatedAt || null,
+    connectedAt: data.connectedAt || null
+  };
+}
+
+function timestampMillis(value) {
+  if (value && typeof value.toMillis === 'function') return value.toMillis();
+  if (value && typeof value.toDate === 'function') return value.toDate().getTime();
+  const parsed = new Date(value || 0).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function saveTikTokAccount(userId, auth, profile = {}) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const accountId = String(auth.open_id || auth.accountId || '').trim();
+  if (!accountId) throw new Error('TikTok OAuth did not return an open_id');
+
+  const ref = tiktokAccountsCollection().doc(tiktokAccountDocId(accountId));
+  const snap = await ref.get();
+  if (snap.exists && (snap.data().userId || DEFAULT_USER_ID) !== ownerId) {
+    throw new Error('TikTok account is already assigned to another app user');
+  }
+
+  const previous = snap.exists ? snap.data() : {};
+  const now = Timestamp.now();
+  const data = {
+    userId: ownerId,
+    platform: 'tiktok',
+    accountId,
+    open_id: accountId,
+    username: profile.username || profile.creator_username || previous.username || '',
+    displayName: profile.displayName || profile.creator_nickname || previous.displayName || '',
+    avatarUrl: profile.avatarUrl || profile.creator_avatar_url || previous.avatarUrl || '',
+    connected: Boolean(auth.access_token || previous.access_token),
+    access_token: auth.access_token || previous.access_token || '',
+    refresh_token: auth.refresh_token || previous.refresh_token || '',
+    expires_at: auth.expires_at || previous.expires_at || null,
+    scope: auth.scope || previous.scope || '',
+    createdAt: previous.createdAt || now,
+    connectedAt: now,
+    updatedAt: now
+  };
+  await ref.set(data, { merge: true });
+  return tiktokAccountFromDoc({ id: ref.id, data: () => data });
+}
+
+async function updateTikTokAccountProfile(userId, accountId, profile = {}) {
+  const account = await getTikTokAccount(userId, accountId);
+  if (!account) return null;
+  const patch = {
+    username: profile.username || profile.creator_username || account.username || '',
+    displayName: profile.displayName || profile.creator_nickname || account.displayName || '',
+    avatarUrl: profile.avatarUrl || profile.creator_avatar_url || account.avatarUrl || '',
+    updatedAt: Timestamp.now()
+  };
+  await tiktokAccountsCollection().doc(tiktokAccountDocId(accountId)).set(patch, { merge: true });
+  return { ...account, ...patch };
+}
+
+async function getTikTokAccounts(userId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const snapshot = await tiktokAccountsCollection().where('userId', '==', ownerId).get();
+  let accounts = snapshot.docs.map(tiktokAccountFromDoc);
+
+  const legacy = await getTikTokAuth();
+  if (
+    legacy.connected && legacy.access_token && legacy.open_id &&
+    !accounts.some((account) => account.accountId === legacy.open_id)
+  ) {
+    accounts.push(await saveTikTokAccount(ownerId, legacy));
+  }
+
+  return accounts.sort((a, b) => {
+    if (a.connected !== b.connected) return a.connected ? -1 : 1;
+    return timestampMillis(b.updatedAt) - timestampMillis(a.updatedAt);
+  });
+}
+
+async function getTikTokAccount(userId, accountId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const normalizedId = String(accountId || '').trim();
+  if (!normalizedId || normalizedId === 'legacy') return null;
+  const snap = await tiktokAccountsCollection().doc(tiktokAccountDocId(normalizedId)).get();
+  if (snap.exists && (snap.data().userId || DEFAULT_USER_ID) === ownerId) {
+    return tiktokAccountFromDoc(snap);
+  }
+
+  const legacy = await getTikTokAuth();
+  if (legacy.open_id === normalizedId && legacy.connected && legacy.access_token) {
+    return saveTikTokAccount(ownerId, legacy);
+  }
+  return null;
+}
+
+async function disconnectTikTokAccount(userId, accountId) {
+  const account = await getTikTokAccount(userId, accountId);
+  if (!account) return false;
+  await tiktokAccountsCollection().doc(tiktokAccountDocId(accountId)).set({
+    connected: false,
+    access_token: '',
+    refresh_token: '',
+    expires_at: null,
+    updatedAt: Timestamp.now()
+  }, { merge: true });
+  return true;
+}
+
 // ── Posts ────────────────────────────────────────────────────────────────
 
 function comparePosts(a, b) {
@@ -80,10 +219,14 @@ function comparePosts(a, b) {
   return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
 }
 
-async function getPosts(userId) {
+async function getPosts(userId, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
   const snapshot = await postsCollection().where('userId', '==', ownerId).get();
-  return snapshot.docs.map(postFromDoc).sort(comparePosts);
+  const posts = snapshot.docs.map(postFromDoc);
+  const normalizedAccountId = String(accountId || '').trim();
+  return posts
+    .filter((post) => !normalizedAccountId || post.accountId === normalizedAccountId)
+    .sort(comparePosts);
 }
 
 async function getDashboardJobs(userId) {
@@ -98,13 +241,9 @@ async function getDashboardJobs(userId) {
     return {
       ...post,
       title: data.title || data.postTitle || data.name || data.originalName || data.fileName || '',
-      accountId:
-        data.accountId ||
-        data.tiktokAccountId ||
-        data.tiktokOpenId ||
-        data.open_id ||
-        (data.account && (data.account.id || data.account.open_id)) ||
-        '',
+      accountId: post.accountId,
+      tiktokOpenId: post.tiktokOpenId,
+      username: post.username,
       thumbnailUrl:
         data.thumbnailUrl ||
         data.thumbnail ||
@@ -122,13 +261,15 @@ async function getDashboardJobs(userId) {
   }).sort(comparePosts);
 }
 
-async function getPost(userId, id) {
+async function getPost(userId, id, accountId) {
   if (!id) return null;
   const ownerId = userId || DEFAULT_USER_ID;
   const snap = await postsCollection().doc(id).get();
   if (!snap.exists) return null;
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
-  return postFromDoc(snap);
+  const post = postFromDoc(snap);
+  if (accountId && post.accountId !== accountId) return null;
+  return post;
 }
 
 async function getRecentJobs(limit = 50) {
@@ -140,12 +281,9 @@ async function getRecentJobs(limit = 50) {
   return snapshot.docs.map(postFromDoc);
 }
 
-async function getMaxOrder(userId) {
-  const snapshot = await postsCollection()
-    .where('userId', '==', userId)
-    .select('order')
-    .get();
-  return snapshot.docs.reduce((max, doc) => Math.max(max, Number(doc.data().order || 0)), 0);
+async function getMaxOrder(userId, accountId) {
+  const posts = await getPosts(userId, accountId);
+  return posts.reduce((max, post) => Math.max(max, Number(post.order || 0)), 0);
 }
 
 function getUploadMediaType(file) {
@@ -225,6 +363,14 @@ function getPublicMediaMimeType(mediaType, mediaUrl) {
 
 async function addUploadedPosts(userId, files, defaults = {}) {
   const ownerId = userId || DEFAULT_USER_ID;
+  const accountId = String(defaults.accountId || defaults.tiktokOpenId || '').trim();
+  const tiktokOpenId = String(defaults.tiktokOpenId || accountId).trim();
+  const username = String(defaults.username || defaults.displayName || accountId).trim();
+  if (!accountId || accountId === 'legacy') {
+    const error = new Error('Select a connected TikTok account before creating scheduled posts');
+    error.status = 400;
+    throw error;
+  }
   const uploadFiles = Array.isArray(files) ? files : [];
   const fallbackUrl = String(defaults.publicMediaUrl || defaults.publicImageUrl || '').trim();
   if (fallbackUrl && !isPublicHttpsUrl(fallbackUrl)) {
@@ -239,7 +385,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     throw error;
   }
 
-  let order = (await getMaxOrder(ownerId)) + 1;
+  let order = (await getMaxOrder(ownerId, accountId)) + 1;
   const now = Timestamp.now();
   const db = getFirestore();
   const batch = db.batch();
@@ -281,6 +427,9 @@ async function addUploadedPosts(userId, files, defaults = {}) {
       const data = {
         userId: ownerId,
         platform: 'tiktok',
+        accountId,
+        tiktokOpenId,
+        username,
         originalName: file ? file.originalname : fileName,
         fileName,
         mimeType: (file && file.mimetype) || getPublicMediaMimeType(mediaType, publicMediaUrl),
@@ -338,12 +487,13 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   }
 }
 
-async function updatePost(userId, id, patch) {
+async function updatePost(userId, id, patch, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
   const ref = postsCollection().doc(id);
   const snap = await ref.get();
   if (!snap.exists) return null;
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  if (accountId && postFromDoc(snap).accountId !== accountId) return null;
 
   const firestorePatch = mapPatchToFirestore(patch);
   if ('scheduledAt' in firestorePatch && !['processing', 'posted'].includes(snap.data().status)) {
@@ -354,12 +504,13 @@ async function updatePost(userId, id, patch) {
   return postFromDoc(updated);
 }
 
-async function deletePost(userId, id) {
+async function deletePost(userId, id, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
   const ref = postsCollection().doc(id);
   const snap = await ref.get();
   if (!snap.exists) return false;
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return false;
+  if (accountId && postFromDoc(snap).accountId !== accountId) return false;
 
   const data = snap.data();
   const fileName = data.fileName;
@@ -383,9 +534,9 @@ async function deletePost(userId, id) {
   return true;
 }
 
-async function movePost(userId, id, direction) {
+async function movePost(userId, id, direction, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
-  const posts = await getPosts(ownerId);
+  const posts = await getPosts(ownerId, accountId);
   const index = posts.findIndex((post) => post.id === id);
   const targetIndex = direction === 'up' ? index - 1 : index + 1;
 
@@ -402,10 +553,10 @@ async function movePost(userId, id, direction) {
   return true;
 }
 
-async function autoSchedulePosts(userId, postIds) {
+async function autoSchedulePosts(userId, postIds, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
   const idSet = new Set(postIds);
-  const posts = await getPosts(ownerId);
+  const posts = await getPosts(ownerId, accountId);
   const settings = await getSettings();
   let nextDate = getNextAvailableDate(posts, settings.dailyPostTime, idSet);
 
@@ -428,9 +579,9 @@ async function autoSchedulePosts(userId, postIds) {
   return count;
 }
 
-async function reschedulePendingQueue(userId) {
+async function reschedulePendingQueue(userId, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
-  const posts = await getPosts(ownerId);
+  const posts = await getPosts(ownerId, accountId);
   const settings = await getSettings();
   let nextDate = tomorrowAtTime(settings.dailyPostTime);
 
@@ -503,8 +654,8 @@ function getScheduleTimeZone() {
   return DateTime.now().setZone(zone).isValid ? zone : 'UTC';
 }
 
-async function getCounts(userId) {
-  const posts = await getPosts(userId);
+async function getCounts(userId, accountId) {
+  const posts = await getPosts(userId, accountId);
   return posts.reduce(
     (counts, post) => {
       counts.total += 1;
@@ -588,6 +739,11 @@ module.exports = {
   getRecentJobs,
   getSettings,
   saveSettings,
+  getTikTokAccounts,
+  getTikTokAccount,
+  saveTikTokAccount,
+  updateTikTokAccountProfile,
+  disconnectTikTokAccount,
   getTikTokAuth,
   saveTikTokAuth,
   clearTikTokAuth,

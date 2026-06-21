@@ -26,6 +26,13 @@ service cloud.firestore {
       allow delete: if isOwner(resource.data.userId);
     }
 
+    match /tiktokAccounts/{accountId} {
+      // Account records contain OAuth tokens and are server-only. The Admin
+      // SDK bypasses these rules; clients receive sanitized account metadata
+      // from the private dashboard endpoint instead.
+      allow read, write: if false;
+    }
+
     // Shared app configuration: TikTok/Instagram tokens and the daily
     // posting schedule. Only the trusted backend should ever read or
     // write this, so it's locked down completely rather than scoped to a

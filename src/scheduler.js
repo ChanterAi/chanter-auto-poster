@@ -224,7 +224,15 @@ async function processPost(id, {
   console.log(`[POST_START] id=${id}`);
   let result;
   try {
-    result = await publishPhotoPost(claimed);
+    if (!claimed.accountId || claimed.accountId === 'legacy' || claimed.accountAssignment === 'legacy') {
+      result = {
+        ok: false,
+        mode: 'api',
+        reason: 'TikTok account is unassigned for this job; publishing was blocked.'
+      };
+    } else {
+      result = await publishPhotoPost(claimed);
+    }
   } catch (error) {
     result = {
       ok: false,

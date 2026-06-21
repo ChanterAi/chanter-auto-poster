@@ -20,6 +20,10 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
   const serverTimestamp = timestamp(fixedNow);
   const records = new Map([['due-job', {
     userId: 'owner',
+    platform: 'tiktok',
+    accountId: 'account-b',
+    tiktokOpenId: 'account-b',
+    username: 'account_b',
     originalName: 'scheduled.mp4',
     mediaType: 'video',
     mediaUrl: 'https://res.cloudinary.com/test/video/upload/scheduled.mp4',
@@ -28,9 +32,21 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
     createdAt: timestamp('2026-06-20T10:00:00.000Z'),
     updatedAt: timestamp('2026-06-20T10:00:00.000Z'),
     claimAttempts: 0
+  }], ['legacy-job', {
+    userId: 'owner',
+    platform: 'tiktok',
+    originalName: 'legacy.jpg',
+    mediaType: 'photo',
+    mediaUrl: 'https://cdn.example.com/legacy.jpg',
+    status: 'scheduled',
+    scheduledAt: timestamp('2026-06-20T11:58:00.000Z'),
+    createdAt: timestamp('2026-06-20T09:00:00.000Z'),
+    updatedAt: timestamp('2026-06-20T09:00:00.000Z'),
+    claimAttempts: 0
   }]]);
   const queries = [];
   const logs = [];
+  const publishedJobs = [];
 
   const document = (id) => ({
     id,
@@ -100,11 +116,14 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
     filename: tiktokPath,
     loaded: true,
     exports: {
-      publishPhotoPost: async () => ({
-        ok: true,
-        mode: 'api',
-        response: { data: { publish_id: 'publish-123', status: 'PROCESSING_UPLOAD' } }
-      })
+      publishPhotoPost: async (job) => {
+        publishedJobs.push(job);
+        return {
+          ok: true,
+          mode: 'api',
+          response: { data: { publish_id: 'publish-123', status: 'PROCESSING_UPLOAD' } }
+        };
+      }
     }
   };
 
@@ -123,15 +142,23 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
   assert.deepEqual(result, {
     ok: true,
     now: fixedNow.toISOString(),
-    checked: 1,
-    due: 1,
+    checked: 2,
+    due: 2,
     posted: 1,
-    failed: 0,
-    errors: []
+    failed: 1,
+    errors: [{
+      id: 'legacy-job',
+      error: 'TikTok account is unassigned for this job; publishing was blocked.'
+    }]
   });
   assert.equal(records.get('due-job').status, 'posted');
   assert.equal(records.get('due-job').lockedBy, null);
   assert.equal(records.get('due-job').claimAttempts, 1);
+  assert.equal(records.get('legacy-job').status, 'failed');
+  assert.match(records.get('legacy-job').errorMessage, /unassigned/i);
+  assert.equal(publishedJobs.length, 1);
+  assert.equal(publishedJobs[0].accountId, 'account-b');
+  assert.equal(publishedJobs[0].tiktokOpenId, 'account-b');
   assert.ok(queries.some((query) =>
     query.filters.some((filter) => filter.field === 'status' && filter.value === 'scheduled') &&
     query.filters.some((filter) => filter.field === 'scheduledAt' && filter.operator === '<=') &&

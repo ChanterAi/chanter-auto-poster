@@ -32,11 +32,17 @@ function toIsoOrNull(value) {
 function postFromDoc(doc) {
   const data = doc.data() || {};
   const id = doc.id;
+  const accountId = data.accountId || data.tiktokAccountId || data.tiktokOpenId || data.open_id || '';
+  const tiktokOpenId = data.tiktokOpenId || data.open_id || (accountId !== 'legacy' ? accountId : '');
 
   return {
     id,
     userId: data.userId || DEFAULT_USER_ID,
     platform: data.platform || 'tiktok',
+    accountId: accountId || 'legacy',
+    tiktokOpenId,
+    username: data.username || data.tiktokUsername || '',
+    accountAssignment: accountId ? 'assigned' : 'legacy',
     originalName: data.originalName || '',
     fileName: data.fileName || '',
     mimeType: data.mimeType || '',

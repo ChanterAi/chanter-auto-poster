@@ -45,7 +45,10 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
   };
 
   const postsCollection = {
-    where: () => ({ select: () => ({ get: async () => ({ docs: [] }) }) }),
+    where: () => ({
+      get: async () => ({ docs: [] }),
+      select: () => ({ get: async () => ({ docs: [] }) })
+    }),
     doc: (id) => ({ id })
   };
   require.cache[firestorePath] = {
@@ -67,6 +70,7 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
   };
 
   const storage = require('../src/storage');
+  const accountDefaults = { accountId: 'account-a', tiktokOpenId: 'account-a', username: 'account_a' };
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-cloudinary-test-'));
   t.after(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -87,14 +91,14 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
     filename: 'small.jpg',
     originalname: 'small.jpg',
     mimetype: 'image/jpeg'
-  }]);
+  }], accountDefaults);
   const [videoPost] = await storage.addUploadedPosts('owner', [{
     path: videoPath,
     size: fs.statSync(videoPath).size,
     filename: 'small.mp4',
     originalname: 'small.mp4',
     mimetype: 'video/mp4'
-  }]);
+  }], accountDefaults);
 
   assert.equal(uploadCalls.length, 2);
   assert.equal(imagePost.mediaSource, 'cloudinary');
@@ -103,6 +107,9 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
   assert.equal(imagePost.cloudinaryPublicId, 'uploads/image');
   assert.equal(imagePost.mediaStoragePath, '');
   assert.equal(imagePost.status, 'pending');
+  assert.equal(imagePost.accountId, 'account-a');
+  assert.equal(imagePost.tiktokOpenId, 'account-a');
+  assert.equal(imagePost.username, 'account_a');
   assert.equal(imagePost.scheduledAt, null);
   assert.equal(committed[0].data.scheduledAt, null);
   assert.equal('scheduledTimeUTC' in committed[0].data, false);
@@ -128,13 +135,14 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
     filename: 'fallback.jpg',
     originalname: 'fallback.jpg',
     mimetype: 'image/jpeg'
-  }], { publicMediaUrl: 'https://cdn.example.com/fallback.jpg' });
+  }], { ...accountDefaults, publicMediaUrl: 'https://cdn.example.com/fallback.jpg' });
   assert.equal(fallbackPost.mediaSource, 'public_url');
   assert.equal(fallbackPost.storageFallback, true);
   assert.equal(fallbackPost.mediaUrl, 'https://cdn.example.com/fallback.jpg');
 
   const callsBeforeUrlOnly = uploadCalls.length;
   const [urlOnlyPost] = await storage.addUploadedPosts('owner', [], {
+    ...accountDefaults,
     publicMediaUrl: 'https://cdn.example.com/public-only.jpg'
   });
   assert.equal(uploadCalls.length, callsBeforeUrlOnly);
