@@ -19,4 +19,12 @@ function resolveUserId(req) {
   return (req && req.userId) || config.defaultUserId;
 }
 
-module.exports = { attachUser, resolveUserId, DEFAULT_USER_ID: config.defaultUserId };
+function requireUser(req, res, next) {
+  if (!req.userId) {
+    res.status(401).json({ ok: false, reason: 'Authentication required' });
+    return;
+  }
+  next();
+}
+
+module.exports = { attachUser, requireUser, resolveUserId, DEFAULT_USER_ID: config.defaultUserId };

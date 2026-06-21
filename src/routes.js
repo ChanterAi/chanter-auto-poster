@@ -7,7 +7,7 @@ const storage = require('./storage');
 const scheduler = require('./scheduler');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
-const { resolveUserId } = require('./auth');
+const { requireUser, resolveUserId } = require('./auth');
 
 const router = express.Router();
 
@@ -47,7 +47,7 @@ function asyncRoute(handler) {
   };
 }
 
-router.get('/', asyncRoute(async (req, res) => {
+const renderAutoPoster = asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const posts = await storage.getPosts(userId);
   const tiktokAuthStatus = await tiktok.getTikTokAuthStatus();
@@ -66,6 +66,42 @@ router.get('/', asyncRoute(async (req, res) => {
     instagramStatus,
     creatorInfo,
     helpers: viewHelpers
+  });
+});
+
+router.get('/', renderAutoPoster);
+router.get('/private/autoposter', requireUser, renderAutoPoster);
+
+router.get('/private/autoposter/dashboard', requireUser, (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'autoposter-dashboard', 'dashboard.html'));
+});
+
+router.get('/api/private/autoposter/dashboard', requireUser, asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const [jobs, tiktokAuthStatus] = await Promise.all([
+    storage.getDashboardJobs(userId),
+    tiktok.getTikTokAuthStatus()
+  ]);
+  const creatorInfo = tiktokAuthStatus.connected ? await getCreatorInfoSafe() : null;
+  const accounts = [];
+
+  if (tiktokAuthStatus.connected || tiktokAuthStatus.open_id || creatorInfo) {
+    accounts.push({
+      id: tiktokAuthStatus.open_id || (creatorInfo && creatorInfo.creator_username) || 'tiktok',
+      platform: 'tiktok',
+      connected: Boolean(tiktokAuthStatus.connected),
+      username: (creatorInfo && creatorInfo.creator_username) || '',
+      displayName: (creatorInfo && creatorInfo.creator_nickname) || '',
+      avatarUrl: (creatorInfo && creatorInfo.creator_avatar_url) || ''
+    });
+  }
+
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    accounts,
+    jobs,
+    appTimeZone: config.appTimeZone
   });
 }));
 

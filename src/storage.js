@@ -86,6 +86,42 @@ async function getPosts(userId) {
   return snapshot.docs.map(postFromDoc).sort(comparePosts);
 }
 
+async function getDashboardJobs(userId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const snapshot = await postsCollection().where('userId', '==', ownerId).get();
+
+  return snapshot.docs.map((doc) => {
+    const data = doc.data() || {};
+    const post = postFromDoc(doc);
+    const lastResult = data.lastResult || null;
+
+    return {
+      ...post,
+      title: data.title || data.postTitle || data.name || data.originalName || data.fileName || '',
+      accountId:
+        data.accountId ||
+        data.tiktokAccountId ||
+        data.tiktokOpenId ||
+        data.open_id ||
+        (data.account && (data.account.id || data.account.open_id)) ||
+        '',
+      thumbnailUrl:
+        data.thumbnailUrl ||
+        data.thumbnail ||
+        data.coverUrl ||
+        data.imagePath ||
+        data.publicImageUrl ||
+        '',
+      lastError:
+        data.lastError ||
+        data.error ||
+        (lastResult && (lastResult.reason || lastResult.error || lastResult.message)) ||
+        '',
+      logs: data.logs || data.events || data.history || []
+    };
+  }).sort(comparePosts);
+}
+
 async function getPost(userId, id) {
   if (!id) return null;
   const ownerId = userId || DEFAULT_USER_ID;
@@ -547,6 +583,7 @@ module.exports = {
   ensureStorage,
   checkMediaStorageHealth,
   getPosts,
+  getDashboardJobs,
   getPost,
   getRecentJobs,
   getSettings,
