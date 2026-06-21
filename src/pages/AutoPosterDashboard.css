@@ -237,6 +237,39 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   padding: 8px 30px 8px 10px;
 }
 
+.job-groups { display: grid; gap: 28px; }
+.account-job-group {
+  border: 1px solid #dfe3e8;
+  border-radius: 16px;
+  background: #f8fafc;
+  padding: 16px;
+}
+.account-group-header {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin-bottom: 16px;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  background: #fff;
+  padding: 15px 16px;
+}
+.account-group-copy { min-width: 0; flex: 1; }
+.account-group-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.account-group-copy h3 { margin: 0; color: #101828; font-size: 16px; letter-spacing: -.01em; }
+.account-group-copy p { margin: 4px 0 0; color: #667085; font-size: 12px; line-height: 1.45; }
+.group-job-count {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #f2f4f7;
+  color: #344054;
+  padding: 6px 9px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.legacy-group-header { border-color: #fedf89; background: #fffcf5; }
+.legacy-group-header .account-avatar { background: #b54708; }
+
 .job-list { display: grid; gap: 16px; }
 .job-card {
   display: grid;
@@ -264,6 +297,36 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   font-weight: 700;
 }
 .job-content { min-width: 0; padding: 20px 22px; }
+.job-account-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 100%;
+  margin-bottom: 13px;
+  border: 1px solid #d0d5dd;
+  border-radius: 10px;
+  background: #f9fafb;
+  padding: 6px 9px 6px 6px;
+}
+.job-account-badge.unassigned { border-color: #fedf89; background: #fffaeb; }
+.job-account-avatar {
+  display: grid;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #111827;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+}
+.job-account-badge.unassigned .job-account-avatar { background: #b54708; }
+.job-account-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.job-account-badge > span { display: grid; min-width: 0; gap: 1px; }
+.job-account-badge small { color: #667085; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.job-account-badge strong { overflow: hidden; color: #101828; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .job-heading { align-items: flex-start; }
 .job-heading h2 { margin: 4px 0 0; color: #101828; font-size: 19px; line-height: 1.35; letter-spacing: -.015em; }
 .account-kicker { color: #667085; font-size: 10px; font-weight: 750; letter-spacing: .025em; }
@@ -360,6 +423,9 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   .header-actions { justify-content: space-between; }
   .timezone-label { white-space: normal; }
   .jobs-section, .accounts-section { padding: 16px; }
+  .account-job-group { padding: 12px; }
+  .account-group-header { align-items: flex-start; flex-wrap: wrap; padding: 13px; }
+  .group-job-count { margin-left: 55px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .account-filter select { width: 100%; }
   .job-card { grid-template-columns: 1fr; }
@@ -376,6 +442,7 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   .status-filters button { justify-content: space-between; }
   .job-heading { gap: 10px; }
   .job-heading h2 { font-size: 16px; }
+  .group-job-count { margin-left: 0; }
   .job-metadata { grid-template-columns: 1fr; }
   .job-actions { display: grid; grid-template-columns: repeat(2, 1fr); }
   .metric-card { padding: 11px 12px; }

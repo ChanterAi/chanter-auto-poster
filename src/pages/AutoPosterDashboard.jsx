@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import './AutoPosterDashboard.css';
+import {
+  assignDashboardJobs,
+  groupDashboardJobs,
+  normalizeDashboardAccounts,
+  UNASSIGNED_ACCOUNT_ID
+} from './dashboard-accounting.mjs';
 
 const STATUS_FILTERS = ['all', 'scheduled', 'processing', 'posted', 'failed'];
 const STATUS_ALIASES = {
@@ -70,13 +76,6 @@ function normalizeJob(job) {
     job.media?.url
   ));
   const mediaType = asText(firstValue(job.mediaType, job.media?.type, job.mimeType)).toLowerCase();
-  const accountId = asText(firstValue(
-    job.accountId,
-    job.tiktokAccountId,
-    job.tiktokOpenId,
-    job.account?.id,
-    'legacy'
-  ));
   const lastResult = firstValue(job.lastResult, job.result, job.publishResult);
   const lastError = asText(firstValue(
     job.lastError,
@@ -89,7 +88,6 @@ function normalizeJob(job) {
   return {
     ...job,
     id: asText(firstValue(job.id, job.jobId, job.postId)),
-    accountId,
     title: asText(firstValue(
       job.title,
       job.postTitle,
@@ -122,18 +120,23 @@ function normalizeJob(job) {
 }
 
 function accountLabel(account) {
-  if (!account) return 'Unassigned / legacy';
-  if (account.id === 'legacy' || account.accountId === 'legacy') return 'Legacy / unassigned';
+  if (!account) return 'Legacy / Unassigned';
   if (account.username) return `@${account.username}`;
   return account.displayName || account.id || 'TikTok account';
+}
+
+function AccountAvatar({ account, className = 'account-avatar' }) {
+  return (
+    <div className={className} aria-hidden="true">
+      {account?.avatarUrl ? <img src={account.avatarUrl} alt="" /> : account ? 'TT' : '?'}
+    </div>
+  );
 }
 
 function AccountCard({ account, jobCount, active }) {
   return (
     <article className="account-card">
-      <div className="account-avatar" aria-hidden={!account.avatarUrl}>
-        {account.avatarUrl ? <img src={account.avatarUrl} alt="" /> : 'TT'}
-      </div>
+      <AccountAvatar account={account} />
       <div className="account-copy">
         <div className="account-title-row">
           <strong>{accountLabel(account)}</strong>
@@ -142,9 +145,52 @@ function AccountCard({ account, jobCount, active }) {
             {account.connected ? 'Connected' : 'Unavailable'}
           </span>
         </div>
-        <span>{account.displayName || 'TikTok'} · {jobCount} {jobCount === 1 ? 'job' : 'jobs'}</span>
+        <span>{account.displayName || 'Display name unavailable'} / {jobCount} {jobCount === 1 ? 'job' : 'jobs'}</span>
       </div>
     </article>
+  );
+}
+
+function JobAccountBadge({ account }) {
+  return (
+    <div className={`job-account-badge${account ? '' : ' unassigned'}`}>
+      <AccountAvatar account={account} className="job-account-avatar" />
+      <span>
+        <small>TikTok</small>
+        <strong>{account ? accountLabel(account) : 'Legacy / Unassigned'}</strong>
+      </span>
+    </div>
+  );
+}
+
+function AccountGroupHeader({ account, jobCount }) {
+  if (!account) {
+    return (
+      <header className="account-group-header legacy-group-header">
+        <AccountAvatar account={null} />
+        <div className="account-group-copy">
+          <h3>Legacy / Unassigned jobs</h3>
+          <p>These older jobs were created before account isolation and cannot be safely assigned.</p>
+        </div>
+        <span className="group-job-count">{jobCount} {jobCount === 1 ? 'job' : 'jobs'}</span>
+      </header>
+    );
+  }
+
+  return (
+    <header className="account-group-header">
+      <AccountAvatar account={account} />
+      <div className="account-group-copy">
+        <div className="account-group-title">
+          <h3>{account.username ? `@${account.username}` : 'Username unavailable'}</h3>
+          <span className={`connection-badge ${account.connected ? 'connected' : ''}`}>
+            {account.connected ? 'Connected' : 'Unavailable'}
+          </span>
+        </div>
+        <p>{account.displayName || 'Display name unavailable'}</p>
+      </div>
+      <span className="group-job-count">{jobCount} {jobCount === 1 ? 'job' : 'jobs'}</span>
+    </header>
   );
 }
 
@@ -203,9 +249,10 @@ function JobCard({ job, account }) {
       <div className="media-cell"><MediaPreview job={job} /></div>
 
       <div className="job-content">
+        <JobAccountBadge account={account} />
         <div className="job-heading">
           <div>
-            <span className="account-kicker">{accountLabel(account)} · Job {job.id.slice(0, 8)}</span>
+            <span className="account-kicker">Job {job.id.slice(0, 8)}</span>
             <h2>{job.title}</h2>
           </div>
           <span className={`status-badge status-${job.status}`}>{job.status}</span>
@@ -291,36 +338,39 @@ export default function AutoPosterDashboard() {
     return () => controller.abort();
   }, [reloadKey]);
 
+  const accounts = useMemo(() => normalizeDashboardAccounts(data.accounts), [data.accounts]);
+
   const jobs = useMemo(() => {
-    return data.jobs
+    return assignDashboardJobs(data.jobs, accounts)
       .map((job) => normalizeJob(job))
       .sort((a, b) => {
         const aTime = parseDate(a.scheduledAt)?.getTime() || Number.MAX_SAFE_INTEGER;
         const bTime = parseDate(b.scheduledAt)?.getTime() || Number.MAX_SAFE_INTEGER;
         return aTime - bTime;
       });
-  }, [data.accounts, data.jobs]);
+  }, [accounts, data.jobs]);
 
   const accountMap = useMemo(() => {
-    const map = new Map(data.accounts.map((account) => [String(account.id), account]));
-    jobs.forEach((job) => {
-      if (!map.has(job.accountId)) {
-        map.set(job.accountId, { id: job.accountId, platform: 'tiktok', connected: false });
-      }
-    });
-    return map;
-  }, [data.accounts, jobs]);
+    return new Map(accounts.map((account) => [account.id, account]));
+  }, [accounts]);
 
-  const visibleJobs = jobs.filter((job) => {
-    const matchesStatus = statusFilter === 'all' || job.status === statusFilter;
-    const matchesAccount = accountFilter === 'all' || job.accountId === accountFilter;
-    return matchesStatus && matchesAccount;
-  });
+  const accountScopedJobs = jobs.filter((job) => (
+    accountFilter === 'all' || job.accountId === accountFilter
+  ));
 
-  const counts = jobs.reduce((result, job) => {
+  const visibleJobs = accountScopedJobs.filter((job) => (
+    statusFilter === 'all' || job.status === statusFilter
+  ));
+
+  const counts = accountScopedJobs.reduce((result, job) => {
     result[job.status] = (result[job.status] || 0) + 1;
     return result;
-  }, { all: jobs.length });
+  }, { all: accountScopedJobs.length });
+
+  const jobGroups = accountFilter === 'all'
+    ? groupDashboardJobs(visibleJobs, accounts)
+    : [];
+  const hasUnassignedJobs = jobs.some((job) => job.accountId === UNASSIGNED_ACCOUNT_ID);
 
   return (
     <main className="control-room">
@@ -337,7 +387,7 @@ export default function AutoPosterDashboard() {
 
       <header className="page-header">
         <div>
-          <a className="back-link" href="/private/autoposter">← Back to AutoPoster</a>
+          <a className="back-link" href="/private/autoposter">&larr; Back to AutoPoster</a>
           <p className="eyebrow">Internal operations</p>
           <h1>AutoPoster Control Room</h1>
           <p>Monitor TikTok schedules, posting progress, and failures from one read-only view.</p>
@@ -345,22 +395,22 @@ export default function AutoPosterDashboard() {
         <div className="header-actions">
           <span className="timezone-label">Times shown in {Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
           <button type="button" onClick={() => setReloadKey((key) => key + 1)} disabled={loading}>
-            {loading ? 'Refreshing…' : 'Refresh data'}
+            {loading ? 'Refreshing...' : 'Refresh data'}
           </button>
         </div>
       </header>
 
-      {data.accounts.length > 0 && (
+      {accounts.length > 0 && (
         <section className="accounts-section" aria-labelledby="accounts-heading">
           <div className="section-heading">
             <div><p className="eyebrow">Connections</p><h2 id="accounts-heading">TikTok accounts</h2></div>
           </div>
           <div className="account-grid">
-            {data.accounts.map((account) => (
+            {accounts.map((account) => (
               <AccountCard
                 account={account}
-                jobCount={jobs.filter((job) => job.accountId === String(account.id)).length}
-                active={String(account.id) === data.selectedAccountId}
+                jobCount={jobs.filter((job) => job.accountId === account.id).length}
+                active={account.id === data.selectedAccountId}
                 key={account.id}
               />
             ))}
@@ -390,7 +440,7 @@ export default function AutoPosterDashboard() {
             <p className="eyebrow">Firestore jobs</p>
             <h2 id="jobs-heading">Scheduled posts</h2>
           </div>
-          <span className="result-count">{visibleJobs.length} of {jobs.length}</span>
+          <span className="result-count">{visibleJobs.length} of {accountScopedJobs.length}</span>
         </div>
 
         <div className="toolbar">
@@ -411,9 +461,10 @@ export default function AutoPosterDashboard() {
             <span>Account</span>
             <select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
               <option value="all">All accounts</option>
-              {[...accountMap.values()].map((account) => (
-                <option value={String(account.id)} key={account.id}>{accountLabel(account)}</option>
+              {accounts.map((account) => (
+                <option value={account.id} key={account.id}>{accountLabel(account)}</option>
               ))}
+              {hasUnassignedJobs && <option value={UNASSIGNED_ACCOUNT_ID}>Legacy / Unassigned jobs</option>}
             </select>
           </label>
         </div>
@@ -426,7 +477,7 @@ export default function AutoPosterDashboard() {
           </div>
         )}
 
-        {loading && !error && <div className="state-card">Loading Firestore jobs…</div>}
+        {loading && !error && <div className="state-card">Loading Firestore jobs...</div>}
 
         {!loading && !error && visibleJobs.length === 0 && (
           <div className="state-card">
@@ -436,11 +487,39 @@ export default function AutoPosterDashboard() {
         )}
 
         {!loading && !error && visibleJobs.length > 0 && (
-          <div className="job-list">
-            {visibleJobs.map((job) => (
-              <JobCard job={job} account={accountMap.get(job.accountId)} key={job.id} />
-            ))}
-          </div>
+          accountFilter === 'all' ? (
+            <div className="job-groups">
+              {jobGroups.map((group) => {
+                const groupId = group.account?.id || UNASSIGNED_ACCOUNT_ID;
+                return (
+                  <section className="account-job-group" aria-labelledby={`account-group-${groupId}`} key={groupId}>
+                    <div id={`account-group-${groupId}`}>
+                      <AccountGroupHeader account={group.account} jobCount={group.jobs.length} />
+                    </div>
+                    <div className="job-list">
+                      {group.jobs.map((job, index) => (
+                        <JobCard
+                          job={job}
+                          account={group.account}
+                          key={job.id || `${groupId}-${index}`}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="job-list">
+              {visibleJobs.map((job, index) => (
+                <JobCard
+                  job={job}
+                  account={accountMap.get(job.accountId) || null}
+                  key={job.id || `${job.accountId}-${index}`}
+                />
+              ))}
+            </div>
+          )
         )}
       </section>
     </main>
