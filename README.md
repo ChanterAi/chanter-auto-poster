@@ -67,6 +67,19 @@ CLOUDINARY_CLOUD_NAME=
 CLOUDINARY_API_KEY=
 CLOUDINARY_API_SECRET=
 
+AI_PROVIDER=gemini
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+OPENAI_API_KEY=
+OPENAI_CAPTION_MODEL=gpt-5.5
+OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
+QWEN_API_KEY=
+QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen-vl-max
+AUTO_CAPTION_REQUEST_TIMEOUT_MS=120000
+AUTO_CAPTION_FFMPEG_TIMEOUT_MS=120000
+AUTO_CAPTION_MAX_AUDIO_SECONDS=600
+
 TIKTOK_CLIENT_KEY=
 TIKTOK_CLIENT_SECRET=
 TIKTOK_REDIRECT_URI=http://localhost:3010/auth/tiktok/callback
@@ -95,6 +108,27 @@ CRON_SECRET=use-the-same-long-random-value-on-web-and-cron
 ```
 
 `PUBLIC_BASE_URL` is only a fallback. For testing, paste a per-post `publicImageUrl` such as `https://chanterr.com/media/tiktok-posts/test-image.png` into the queue item.
+
+## Auto Caption Engine
+
+Set at least one of `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `QWEN_API_KEY` on the web service to enable the upload form's Auto Caption toggle. `AI_PROVIDER=gemini` is the default. With the toggle on, selecting an uploaded video calls the protected `POST /api/auto-caption` preflight endpoint before the normal `/upload` form can create or schedule a job.
+
+The backend uses packaged FFmpeg and FFprobe binaries to inspect the video, extract five chronological JPEG frames, and detect an audio stream. When audio and an OpenAI key exist, it creates a compact mono MP3 and sends it to the optional transcription model. Caption generation always receives the five frames, transcript when available, original filename, and video metadata.
+
+Provider attempts start with `AI_PROVIDER`, then continue through configured Gemini, OpenAI, and Qwen adapters without repeating a provider. A quota or API failure automatically advances to the next configured provider. If every provider fails, the server returns deterministic local copy with 8-15 safe hashtags instead of failing the upload workflow. Existing manual caption and hashtag text is preserved as the first choice for this fallback.
+
+Qwen uses its OpenAI-compatible multimodal chat endpoint. Set `QWEN_BASE_URL` to the compatible-mode `/v1` base for the region associated with the API key. Model names are configurable because provider availability varies by account and region.
+
+The response fills the editable Caption and Hashtags fields. Turning Auto Caption off leaves the original manual workflow unchanged. If frame analysis or the AI request fails, existing manual text is preserved; a blank caption must be filled manually before scheduling.
+
+Optional binary overrides are available for environments that manage FFmpeg separately:
+
+```env
+FFMPEG_PATH=/absolute/path/to/ffmpeg
+FFPROBE_PATH=/absolute/path/to/ffprobe
+```
+
+Temporary analysis uploads, extracted frames, and extracted audio are deleted after each request. `GET /health` reports only `autoCaptionConfigured`; API keys remain server-side and are never included in HTML or JSON responses.
 
 ## TikTok Setup
 

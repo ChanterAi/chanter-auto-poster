@@ -4,7 +4,7 @@
   "description": "Local TikTok/Instagram photo+video queue and scheduler for the CHANTER content workflow, backed by Firebase Firestore.",
   "main": "src/server.js",
   "scripts": {
-    "build": "node --check src/server.js && node --check src/routes.js && node --check src/scheduler.js && node --check src/ping-scheduler.js && node --check src/storage.js && node --check src/cloudinary.js && node --check src/tiktok.js && node --check src/instagram.js && node --check src/firestore.js && node --check src/postsMapper.js && node --check src/auth.js && node --check src/config.js && node --check src/pages/dashboard-accounting.mjs && node --check test/cloudinary.test.js && node --check test/dashboard-accounting.test.js && node --check test/firebase-config.test.js && node --check test/storage-upload.test.js && node --check test/posts-mapper.test.js && node --check test/scheduler.test.js && node -e \"const ejs=require('ejs'),fs=require('fs'); for (const file of ['index.ejs','admin-login.ejs']) ejs.compile(fs.readFileSync('src/views/'+file,'utf8'),{filename:'src/views/'+file});\" && vite build",
+    "build": "node --check src/server.js && node --check src/routes.js && node --check src/autoCaption.js && node --check src/autoCaptionProviders.js && node --check src/scheduler.js && node --check src/ping-scheduler.js && node --check src/storage.js && node --check src/cloudinary.js && node --check src/tiktok.js && node --check src/instagram.js && node --check src/firestore.js && node --check src/postsMapper.js && node --check src/auth.js && node --check src/config.js && node --check src/pages/dashboard-accounting.mjs && node --check test/auto-caption.test.js && node --check test/auto-caption-providers.test.js && node --check test/cloudinary.test.js && node --check test/dashboard-accounting.test.js && node --check test/firebase-config.test.js && node --check test/storage-upload.test.js && node --check test/posts-mapper.test.js && node --check test/scheduler.test.js && node -e \"const ejs=require('ejs'),fs=require('fs'); for (const file of ['index.ejs','admin-login.ejs']) ejs.compile(fs.readFileSync('src/views/'+file,'utf8'),{filename:'src/views/'+file});\" && vite build",
     "test": "node --test test/*.test.js",
     "start": "node src/server.js",
     "dev": "nodemon --ignore data --ignore uploads src/server.js",
@@ -19,10 +19,12 @@
     "cloudinary": "^2.7.0",
     "dotenv": "^16.4.7",
     "ejs": "^3.1.10",
-    "express": "^4.21.2",
+    "express": "^4.22.2",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
     "firebase-admin": "^13.10.0",
     "luxon": "^3.7.2",
-    "multer": "^2.1.1",
+    "multer": "^2.2.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },

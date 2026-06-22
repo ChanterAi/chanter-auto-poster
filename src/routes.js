@@ -1,10 +1,12 @@
 const express = require('express');
 const multer = require('multer');
+const fs = require('fs/promises');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const config = require('./config');
 const storage = require('./storage');
 const scheduler = require('./scheduler');
+const autoCaption = require('./autoCaption');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
 const {
@@ -38,6 +40,26 @@ const upload = multer({
     callback(new Error('Only image and video uploads are supported.'));
   },
   limits: { files: 100, fileSize: 250 * 1024 * 1024 }
+});
+
+const autoCaptionUpload = multer({
+  storage: multer.diskStorage({
+    destination: config.uploadsDir,
+    filename: (req, file, callback) => {
+      const extension = path.extname(file.originalname || '').toLowerCase() || defaultExtension(file);
+      callback(null, `caption-${Date.now()}-${randomUUID()}${extension}`);
+    }
+  }),
+  fileFilter: (req, file, callback) => {
+    const mime = String(file.mimetype || '').toLowerCase();
+    const extension = path.extname(file.originalname || '').toLowerCase();
+    if (mime.startsWith('video/') || ['.mp4', '.mov', '.webm'].includes(extension)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Auto Caption requires an MP4, MOV, or WebM video.'));
+  },
+  limits: { files: 1, fileSize: 250 * 1024 * 1024 }
 });
 
 function defaultExtension(file) {
@@ -85,6 +107,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     tiktokAccounts: accounts.map(publicTikTokAccount),
     activeTikTokAccount: activeAccount ? publicTikTokAccount(activeAccount) : null,
     enableInstagram: config.ENABLE_INSTAGRAM,
+    autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
     instagramStatus,
     creatorInfo,
     helpers: viewHelpers
@@ -174,6 +197,7 @@ router.get('/health', (req, res) => {
     uptimeSeconds: Math.round(process.uptime()),
     scheduler: scheduler.getSchedulerState(),
     cronTrigger: Boolean(config.cronSecret),
+    autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
     appTimeZone: config.appTimeZone
   });
 });
@@ -333,6 +357,67 @@ router.post('/api/instagram/publish', requireAdminApi, express.json({ limit: '1m
     redirectWithNotice(res, `Instagram attempt failed: ${error.message}`);
   }
 }));
+
+router.post(
+  '/api/auto-caption',
+  requireAdminApi,
+  autoCaptionUpload.single('video'),
+  asyncRoute(async (req, res) => {
+    const draft = {
+      caption: String(req.body.caption || '').trim(),
+      hashtags: String(req.body.hashtags || '').trim()
+    };
+
+    if (!req.file) {
+      res.status(400).json({
+        ok: false,
+        reason: 'Choose a video before running Auto Caption.',
+        requiresManualCaption: !draft.caption
+      });
+      return;
+    }
+
+    try {
+      const result = await autoCaption.analyzeVideoForCaption(req.file.path, draft, {
+        filename: req.file.originalname
+      });
+      res.json({
+        ok: true,
+        caption: result.caption,
+        hashtags: result.hashtags,
+        generatedCaption: result.generatedCaption,
+        hook: result.hook,
+        hashtagList: result.hashtagList,
+        analysis: {
+          frameCount: 5,
+          transcriptUsed: result.transcriptUsed,
+          transcriptionWarning: result.transcriptionWarning || '',
+          analysisWarning: result.analysisWarning || '',
+          provider: result.provider,
+          fallbackUsed: result.fallbackUsed,
+          metadata: result.metadata
+        }
+      });
+    } catch (error) {
+      console.error('[auto-caption] analysis failed', {
+        code: error.code || 'AUTO_CAPTION_FAILED',
+        message: error.message,
+        fileName: req.file.originalname
+      });
+      res.status(error.code === 'AUTO_CAPTION_NOT_CONFIGURED' ? 503 : 422).json({
+        ok: false,
+        code: error.code || 'AUTO_CAPTION_FAILED',
+        reason: draft.caption
+          ? 'Auto Caption could not analyze this video. Your manual caption was kept.'
+          : 'Auto Caption could not analyze this video. Write a caption before scheduling.',
+        fallback: draft,
+        requiresManualCaption: !draft.caption
+      });
+    } finally {
+      await removeTemporaryUpload(req.file.path);
+    }
+  })
+);
 
 router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
@@ -579,6 +664,17 @@ function emptyPostCounts() {
 
 function redirectWithNotice(res, notice) {
   res.redirect(`/private/autoposter?notice=${encodeURIComponent(notice)}`);
+}
+
+async function removeTemporaryUpload(filePath) {
+  if (!filePath) return;
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('[auto-caption] could not remove temporary upload:', error.message);
+    }
+  }
 }
 
 async function runCronTick(req, res) {

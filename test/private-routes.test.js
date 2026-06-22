@@ -1,6 +1,7 @@
 'use strict';
 
 process.env.ADMIN_PASSWORD = 'test-admin-password-123';
+process.env.OPENAI_API_KEY = 'test-openai-key';
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -11,6 +12,7 @@ const express = require('express');
 const storage = require('../src/storage');
 const tiktok = require('../src/tiktok');
 const instagram = require('../src/instagram');
+const autoCaption = require('../src/autoCaption');
 const { attachUser } = require('../src/auth');
 
 const accounts = [
@@ -57,6 +59,24 @@ tiktok.queryCreatorInfo = async (accountId) => ({
 instagram.getInstagramAuthStatus = async () => {
   throw new Error('Instagram status must not be requested while the feature is disabled');
 };
+let analyzedVideoPath = '';
+autoCaption.analyzeVideoForCaption = async (videoPath, draft) => {
+  analyzedVideoPath = videoPath;
+  assert.equal(draft.caption, 'Manual fallback');
+  return {
+    caption: 'Generated hook\nGenerated caption',
+    hashtags: '#one #two #three #four #five #six #seven #eight',
+    generatedCaption: 'Generated caption',
+    hook: 'Generated hook',
+    hashtagList: ['#one', '#two', '#three', '#four', '#five', '#six', '#seven', '#eight'],
+    metadata: { durationSeconds: 5, width: 1080, height: 1920, hasAudio: true },
+    transcriptUsed: true,
+    transcriptionWarning: '',
+    analysisWarning: '',
+    provider: 'gemini',
+    fallbackUsed: false
+  };
+};
 
 const routes = require('../src/routes');
 
@@ -76,11 +96,12 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
 
-  const [unauthorizedAutoPoster, unauthorizedDashboard, unauthorizedApi, unauthorizedConnect] = await Promise.all([
+  const [unauthorizedAutoPoster, unauthorizedDashboard, unauthorizedApi, unauthorizedConnect, unauthorizedCaption] = await Promise.all([
     fetch(`${baseUrl}/private/autoposter`, { redirect: 'manual' }),
     fetch(`${baseUrl}/private/autoposter/dashboard`, { redirect: 'manual' }),
     fetch(`${baseUrl}/api/private/autoposter/dashboard`),
-    fetch(`${baseUrl}/connect/tiktok`, { redirect: 'manual' })
+    fetch(`${baseUrl}/connect/tiktok`, { redirect: 'manual' }),
+    fetch(`${baseUrl}/api/auto-caption`, { method: 'POST', headers: { Accept: 'application/json' } })
   ]);
   assert.equal(unauthorizedAutoPoster.status, 302);
   assert.match(unauthorizedAutoPoster.headers.get('location'), /^\/admin-login/);
@@ -88,6 +109,8 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(unauthorizedDashboard.headers.get('location'), /^\/admin-login/);
   assert.equal(unauthorizedApi.status, 401);
   assert.deepEqual(await unauthorizedApi.json(), { ok: false, reason: 'Admin authentication required' });
+  assert.equal(unauthorizedCaption.status, 401);
+  assert.deepEqual(await unauthorizedCaption.json(), { ok: false, reason: 'Admin authentication required' });
   assert.equal(unauthorizedConnect.status, 302);
   assert.match(unauthorizedConnect.headers.get('location'), /^\/admin-login/);
 
@@ -130,6 +153,8 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
 
   assert.equal(autoPosterResponse.status, 200);
   assert.match(autoPosterHtml, /Create &amp; Schedule/);
+  assert.match(autoPosterHtml, /data-auto-caption-toggle/);
+  assert.match(autoPosterHtml, /Turn on Auto Caption/);
   assert.match(autoPosterHtml, /href="\/private\/autoposter\/dashboard"/);
   assert.match(autoPosterHtml, /account-a-history\.jpg/);
   assert.doesNotMatch(autoPosterHtml, /account-b-queue\.jpg/);
@@ -153,6 +178,49 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.equal(dashboardData.selectedAccountId, 'account-a');
   assert.deepEqual(dashboardData.accounts.map((account) => account.id), ['account-a', 'account-b']);
   assert.deepEqual(dashboardData.jobs.map((job) => job.accountId).sort(), ['account-a', 'account-b']);
+
+  const captionBody = new FormData();
+  captionBody.append('video', new Blob([Buffer.from('test-video')], { type: 'video/mp4' }), 'sample.mp4');
+  captionBody.append('caption', 'Manual fallback');
+  captionBody.append('hashtags', '#manual');
+  const captionResponse = await fetch(`${baseUrl}/api/auto-caption`, {
+    method: 'POST',
+    headers: { Cookie: adminCookie, Accept: 'application/json' },
+    body: captionBody
+  });
+  const captionResult = await captionResponse.json();
+  assert.equal(captionResponse.status, 200);
+  assert.equal(captionResult.caption, 'Generated hook\nGenerated caption');
+  assert.equal(captionResult.analysis.frameCount, 5);
+  assert.equal(captionResult.analysis.transcriptUsed, true);
+  assert.equal(captionResult.analysis.provider, 'gemini');
+  assert.equal(captionResult.analysis.fallbackUsed, false);
+  assert.ok(analyzedVideoPath);
+  assert.equal(fs.existsSync(analyzedVideoPath), false);
+
+  let failedVideoPath = '';
+  autoCaption.analyzeVideoForCaption = async (videoPath) => {
+    failedVideoPath = videoPath;
+    const error = new Error('Provider unavailable');
+    error.code = 'AI_REQUEST_FAILED';
+    throw error;
+  };
+  const failedCaptionBody = new FormData();
+  failedCaptionBody.append('video', new Blob([Buffer.from('test-video')], { type: 'video/mp4' }), 'failure.mp4');
+  failedCaptionBody.append('caption', 'Keep this manual caption');
+  failedCaptionBody.append('hashtags', '#manual');
+  const failedCaptionResponse = await fetch(`${baseUrl}/api/auto-caption`, {
+    method: 'POST',
+    headers: { Cookie: adminCookie, Accept: 'application/json' },
+    body: failedCaptionBody
+  });
+  const failedCaptionResult = await failedCaptionResponse.json();
+  assert.equal(failedCaptionResponse.status, 422);
+  assert.equal(failedCaptionResult.fallback.caption, 'Keep this manual caption');
+  assert.equal(failedCaptionResult.requiresManualCaption, false);
+  assert.match(failedCaptionResult.reason, /manual caption was kept/i);
+  assert.ok(failedVideoPath);
+  assert.equal(fs.existsSync(failedVideoPath), false);
 
   const switchResponse = await fetch(`${baseUrl}/private/autoposter/account`, {
     method: 'POST',

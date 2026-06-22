@@ -30,6 +30,24 @@ services:
         sync: false
       - key: CLOUDINARY_API_SECRET
         sync: false
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_CAPTION_MODEL
+        value: gpt-5.5
+      - key: OPENAI_TRANSCRIPTION_MODEL
+        value: gpt-4o-mini-transcribe
+      - key: QWEN_API_KEY
+        sync: false
+      - key: QWEN_BASE_URL
+        value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+      - key: QWEN_MODEL
+        value: qwen-vl-max
       - fromGroup: chanter-scheduler-shared
 
   - type: cron

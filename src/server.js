@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const routes = require('./routes');
@@ -51,6 +52,7 @@ app.use((error, req, res, next) => {
 
 async function start() {
   validateAdminConfig();
+  fs.mkdirSync(config.uploadsDir, { recursive: true });
   // Fail fast and loud if Firebase credentials are missing/bad, instead of
   // booting a "healthy-looking" server that 500s on the first real request.
   validateFirebaseConfig();

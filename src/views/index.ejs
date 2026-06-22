@@ -213,6 +213,19 @@
       .upload-zone .field-heading { display: block; margin-bottom: 3px; color: var(--text2); font-size: 11px; }
       .upload-zone .field-note { margin-bottom: 12px; }
       .url-field { margin-top: 2px; }
+      .auto-caption-card {
+        display: grid; gap: 8px; border: 1px solid rgba(37,244,238,.18); border-radius: 12px;
+        background: rgba(37,244,238,.035); padding: 13px 14px;
+      }
+      .auto-caption-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; }
+      .auto-caption-copy { display: grid; gap: 3px; min-width: 0; }
+      .auto-caption-copy strong { color: var(--text2); font-size: 12px; letter-spacing: .02em; }
+      .auto-caption-copy span { color: var(--text3); font-size: 11px; font-weight: 400; line-height: 1.4; }
+      .auto-caption-row input { width: 18px; height: 18px; }
+      .auto-caption-status { min-height: 16px; color: var(--text3); font-size: 11px; line-height: 1.45; }
+      .auto-caption-status[data-tone="working"] { color: var(--accent2); }
+      .auto-caption-status[data-tone="success"] { color: var(--ok); }
+      .auto-caption-status[data-tone="error"] { color: var(--danger); }
       .upload-actions { justify-content: flex-end; margin-top: 20px; }
       .btn-create { min-width: 190px; height: 44px !important; }
       .btn-create::after { content: "\2192"; font-size: 16px; transition: transform .18s; }
@@ -586,6 +599,24 @@
                 <span class="field-note">Choose images or MP4, MOV, and WebM videos. Multiple files are supported.</span>
                 <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple data-media-upload />
               </label>
+              <div class="wide auto-caption-card">
+                <label class="auto-caption-row">
+                  <span class="auto-caption-copy">
+                    <strong>Auto Caption</strong>
+                    <span>Analyze five video frames and optional speech before creating the scheduled job.</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    name="autoCaption"
+                    value="1"
+                    data-auto-caption-toggle
+                    <%= !autoCaptionConfigured ? 'disabled' : '' %>
+                  />
+                </label>
+                <p class="auto-caption-status" data-auto-caption-status aria-live="polite">
+                  <%= autoCaptionConfigured ? 'Turn on Auto Caption, then choose a video.' : 'Auto Caption is unavailable until an AI provider key is configured.' %>
+                </p>
+              </div>
               <label class="wide url-field">
                 Public Media URL
                 <span class="field-note">Optional HTTPS fallback when the asset is already hosted.</span>
@@ -593,11 +624,11 @@
               </label>
               <label>
                 Caption
-                <textarea name="caption" placeholder="Write a caption…"></textarea>
+                <textarea name="caption" placeholder="Write a caption…" data-caption-input></textarea>
               </label>
               <label>
                 Hashtags
-                <textarea name="hashtags" placeholder="#chanter #viral"></textarea>
+                <textarea name="hashtags" placeholder="#chanter #viral" data-hashtags-input></textarea>
               </label>
             </div>
             <div class="actions upload-actions"><button type="submit" class="btn btn-primary btn-create" <%= !tiktokConfigured ? 'disabled' : '' %>>Create &amp; Schedule</button></div>
@@ -955,7 +986,18 @@
       document.querySelectorAll('[data-upload-form]').forEach(form => {
         const input = form.querySelector('[data-media-upload]');
         const publicUrlInput = form.querySelector('[data-public-media-url]');
+        const autoCaptionToggle = form.querySelector('[data-auto-caption-toggle]');
+        const autoCaptionStatus = form.querySelector('[data-auto-caption-status]');
+        const captionInput = form.querySelector('[data-caption-input]');
+        const hashtagsInput = form.querySelector('[data-hashtags-input]');
+        const submitButton = form.querySelector('[type="submit"]');
         if (!input || !publicUrlInput) return;
+        const submitInitiallyDisabled = Boolean(submitButton && submitButton.disabled);
+        let analysisToken = 0;
+        let analyzedKey = '';
+        let failedKey = '';
+        let pendingAnalysis = null;
+
         const validate = () => {
           const files = Array.from(input.files || []);
           const publicUrl = publicUrlInput.value.trim();
@@ -968,13 +1010,145 @@
           publicUrlInput.setCustomValidity(urlMsg);
           return !msg && !urlMsg;
         };
-        input.addEventListener('change', validate);
+
+        const selectedVideos = () => Array.from(input.files || []).filter(file => getFileKind(file) === 'video');
+        const videoKey = file => file ? [file.name, file.size, file.lastModified].join(':') : '';
+        const setAutoCaptionStatus = (message, tone = '') => {
+          if (!autoCaptionStatus) return;
+          autoCaptionStatus.textContent = message;
+          autoCaptionStatus.dataset.tone = tone;
+        };
+        const setAnalyzing = (analyzing, token) => {
+          if (token !== analysisToken) return;
+          if (submitButton) submitButton.disabled = submitInitiallyDisabled || analyzing;
+          if (autoCaptionToggle) autoCaptionToggle.disabled = analyzing;
+        };
+
+        const analyzeSelectedVideo = async () => {
+          if (!autoCaptionToggle || !autoCaptionToggle.checked) return { ok: true, skipped: true };
+          const videos = selectedVideos();
+          const video = videos[0];
+          if (!video) {
+            setAutoCaptionStatus('Auto Caption runs on uploaded videos. Manual caption mode is still available.', '');
+            return { ok: true, skipped: true };
+          }
+
+          const key = videoKey(video);
+          if (analyzedKey === key) return { ok: true, cached: true };
+          if (pendingAnalysis && pendingAnalysis.key === key) return pendingAnalysis.promise;
+
+          const token = ++analysisToken;
+          analyzedKey = '';
+          failedKey = '';
+          setAnalyzing(true, token);
+          setAutoCaptionStatus('Analyzing five frames and checking the audio track…', 'working');
+
+          const promise = (async () => {
+            try {
+              const body = new FormData();
+              body.append('video', video, video.name);
+              body.append('caption', captionInput ? captionInput.value : '');
+              body.append('hashtags', hashtagsInput ? hashtagsInput.value : '');
+              const response = await fetch('/api/auto-caption', {
+                method: 'POST',
+                headers: { Accept: 'application/json' },
+                body
+              });
+              const payload = await response.json().catch(() => ({}));
+              if (!response.ok || !payload.ok) {
+                throw new Error(payload.reason || 'Auto Caption analysis failed.');
+              }
+              if (token !== analysisToken || !autoCaptionToggle.checked) return { ok: false, stale: true };
+
+              if (captionInput) {
+                captionInput.value = payload.caption || '';
+                captionInput.setCustomValidity('');
+              }
+              if (hashtagsInput) hashtagsInput.value = payload.hashtags || '';
+              analyzedKey = key;
+              const audioNote = payload.analysis && payload.analysis.transcriptUsed
+                ? 'frames and transcript'
+                : 'video frames';
+              const batchNote = videos.length > 1 ? ' The copy applies to every selected file.' : '';
+              setAutoCaptionStatus(`Caption generated from ${audioNote}. Edit it before scheduling.${batchNote}`, 'success');
+              return { ok: true };
+            } catch (error) {
+              if (token !== analysisToken) return { ok: false, stale: true };
+              failedKey = key;
+              setAutoCaptionStatus(error.message || 'Auto Caption failed. Keep or write a manual caption.', 'error');
+              return { ok: false, error };
+            } finally {
+              if (token === analysisToken) {
+                pendingAnalysis = null;
+                setAnalyzing(false, token);
+              }
+            }
+          })();
+
+          pendingAnalysis = { key, promise };
+          return promise;
+        };
+
+        input.addEventListener('change', () => {
+          validate();
+          analysisToken += 1;
+          analyzedKey = '';
+          failedKey = '';
+          pendingAnalysis = null;
+          if (autoCaptionToggle && autoCaptionToggle.checked) analyzeSelectedVideo();
+        });
         publicUrlInput.addEventListener('input', validate);
-        form.addEventListener('submit', e => {
+        if (captionInput) {
+          captionInput.addEventListener('input', () => captionInput.setCustomValidity(''));
+        }
+        if (autoCaptionToggle) {
+          autoCaptionToggle.addEventListener('change', () => {
+            analysisToken += 1;
+            pendingAnalysis = null;
+            if (autoCaptionToggle.checked) {
+              analyzedKey = '';
+              failedKey = '';
+              analyzeSelectedVideo();
+            } else {
+              setAnalyzing(false, analysisToken);
+              setAutoCaptionStatus('Auto Caption is off. Your current caption will be used unchanged.', '');
+            }
+          });
+        }
+
+        form.addEventListener('submit', async e => {
           if (!validate()) {
             e.preventDefault();
             if (input.validationMessage) input.reportValidity();
             else publicUrlInput.reportValidity();
+            return;
+          }
+
+          if (!autoCaptionToggle || !autoCaptionToggle.checked) return;
+          const video = selectedVideos()[0];
+          if (!video) return;
+          const key = videoKey(video);
+          if (analyzedKey === key) return;
+
+          if (failedKey === key) {
+            if (captionInput && captionInput.value.trim()) return;
+            e.preventDefault();
+            if (captionInput) {
+              captionInput.setCustomValidity('Auto Caption failed. Write a caption before scheduling.');
+              captionInput.reportValidity();
+              captionInput.focus();
+            }
+            return;
+          }
+
+          e.preventDefault();
+          const result = await analyzeSelectedVideo();
+          if (result.ok || (captionInput && captionInput.value.trim())) {
+            form.requestSubmit(submitButton || undefined);
+          } else if (captionInput) {
+            captionInput.setCustomValidity('Auto Caption failed. Write a caption before scheduling.');
+            captionInput.reportValidity();
+            captionInput.focus();
           }
         });
       });

@@ -6,6 +6,10 @@ const port = Number(process.env.PORT || 3000);
 const ENABLE_INSTAGRAM = false;
 const metaGraphVersion = process.env.META_GRAPH_VERSION || process.env.INSTAGRAM_GRAPH_VERSION || 'v24.0';
 const firebasePrivateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n').trim() || '';
+const requestedAiProvider = String(process.env.AI_PROVIDER || 'gemini').trim().toLowerCase();
+const aiProvider = ['gemini', 'openai', 'qwen'].includes(requestedAiProvider)
+  ? requestedAiProvider
+  : 'gemini';
 
 function envFlag(name, fallback = false) {
   const raw = process.env[name];
@@ -71,6 +75,26 @@ module.exports = {
     uploadAttempts: Number(process.env.CLOUDINARY_UPLOAD_ATTEMPTS || 3),
     retryBaseMs: Number(process.env.CLOUDINARY_RETRY_BASE_MS || 500),
     folder: process.env.CLOUDINARY_FOLDER || 'chanter-auto-poster/uploads'
+  },
+
+  autoCaption: {
+    aiProvider,
+    geminiApiKey: process.env.GEMINI_API_KEY || '',
+    geminiBaseUrl: (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, ''),
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    openAiApiKey: process.env.OPENAI_API_KEY || '',
+    openAiBaseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
+    captionModel: process.env.OPENAI_CAPTION_MODEL || 'gpt-5.5',
+    transcriptionModel: process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-mini-transcribe',
+    qwenApiKey: process.env.QWEN_API_KEY || '',
+    qwenBaseUrl: (process.env.QWEN_BASE_URL || 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, ''),
+    qwenModel: process.env.QWEN_MODEL || 'qwen-vl-max',
+    ffmpegPath: process.env.FFMPEG_PATH || '',
+    ffprobePath: process.env.FFPROBE_PATH || '',
+    ffmpegTimeoutMs: Math.max(10_000, Number(process.env.AUTO_CAPTION_FFMPEG_TIMEOUT_MS || 120_000)),
+    requestTimeoutMs: Math.max(10_000, Number(process.env.AUTO_CAPTION_REQUEST_TIMEOUT_MS || 120_000)),
+    maxAudioSeconds: Math.max(0, Number(process.env.AUTO_CAPTION_MAX_AUDIO_SECONDS || 600)),
+    maxTranscriptChars: Math.max(1_000, Number(process.env.AUTO_CAPTION_MAX_TRANSCRIPT_CHARS || 12_000))
   },
 
   tiktok: {
