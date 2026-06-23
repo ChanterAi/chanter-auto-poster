@@ -43,5 +43,14 @@
     "bpm": 154,
     "intensity": 0.92,
     "tags": ["aggressive", "trap", "bass", "action", "fast", "power"]
+  },
+  {
+  "id": "cyberpunk-dark-02",
+  "filename": "cyberpunk-dark/VEXA 2085 Rooftop.mp3",
+  "category": "cyberpunk-dark",
+  "mood": "dark futuristic",
+  "bpm": 100,
+  "intensity": 0.7,
+  "tags": ["cyberpunk", "dark", "neon", "vexa", "cinematic"]
   }
 ]
