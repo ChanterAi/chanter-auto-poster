@@ -7,6 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,700;0,9..40,900;1,9..40,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/autoposter-dashboard/assets/prompt-evolver-main.css" />
     <style>
       :root {
         --bg: #07080d;
@@ -121,6 +122,9 @@
       .btn-dashboard { border-color: rgba(255,255,255,.14); background: rgba(255,255,255,.08); color: var(--text); }
       .btn-dashboard::after { content: "\2197"; color: var(--text3); font-size: 12px; }
       .btn-dashboard:hover { border-color: rgba(255,255,255,.24); background: rgba(255,255,255,.12); transform: translateY(-1px); }
+      .btn-prompt-evolver { border-color: rgba(37,244,238,.26); background: rgba(37,244,238,.065); color: var(--cyan); }
+      .btn-prompt-evolver::after { content: "\2193"; color: var(--text3); font-size: 12px; }
+      .btn-prompt-evolver:hover { border-color: rgba(37,244,238,.42); background: rgba(37,244,238,.11); transform: translateY(-1px); }
       .btn-disconnect { color: #85899a; }
       .logout-form { display: inline-flex; }
 
@@ -443,7 +447,7 @@
         .topbar-inner { flex-direction: column; align-items: stretch; padding: 16px; }
         .brand-lockup { justify-content: space-between; }
         .topbar-actions { width: 100%; justify-content: flex-start; }
-        .topbar-actions .btn-dashboard { order: 5; flex: 1 1 100%; }
+        .topbar-actions .btn-prompt-evolver, .topbar-actions .btn-dashboard { order: 5; flex: 1 1 100%; }
         .account-context { grid-template-columns: 1fr; margin-top: -8px; padding: 15px; }
         .account-connect-flow { grid-column: auto; }
         .account-connect-flow .btn { width: 100%; }
@@ -521,6 +525,7 @@
               <div class="pill pill-warn"><span class="dot"></span>Manual Mode</div>
               <a class="btn btn-primary" href="/connect/tiktok">Connect TikTok</a>
             <% } %>
+            <a class="btn btn-prompt-evolver" href="#prompt-evolver">Prompt Evolver</a>
             <a class="btn btn-dashboard" href="/private/autoposter/dashboard">Open Dashboard</a>
             <% if (tiktokConfigured) { %>
               <a class="btn btn-ghost btn-disconnect" href="/disconnect/tiktok">Disconnect</a>
@@ -581,6 +586,21 @@
           <strong>App not yet reviewed by TikTok:</strong> Until your TikTok Developer app passes the audit, all posts are restricted to <code>SELF_ONLY</code> privacy and up to 5 users per 24 h window. To lift this, <a href="https://developers.tiktok.com/doc/content-sharing-guidelines/" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;">complete the TikTok audit</a>.
         </div>
       <% } %>
+
+      <section id="prompt-evolver" aria-label="Prompt Evolver">
+        <div id="prompt-evolver-root"></div>
+        <noscript>
+          <div class="panel" style="margin-bottom:42px;">
+            <div class="panel-head panel-head-rich">
+              <div>
+                <span class="panel-kicker">Prompt Evolver</span>
+                <h2>Creative Engine</h2>
+                <p>Enable JavaScript to generate prompt variants.</p>
+              </div>
+            </div>
+          </div>
+        </noscript>
+      </section>
 
       <!-- ─── Dashboard Grid ─── -->
       <div class="dashboard-grid" aria-label="Poster controls">
@@ -984,6 +1004,7 @@
       </details>
     </div>
 
+    <script type="module" src="/autoposter-dashboard/assets/prompt-evolver-main.js"></script>
     <script>
       // Timezone offset
       document.querySelectorAll('[data-timezone-offset]').forEach(el => {

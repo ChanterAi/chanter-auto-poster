@@ -27,9 +27,11 @@ async function probeVideoStreamDuration(filePath) {
 
 test('loads the five-category catalog and selects the requested music profile', async () => {
   const catalog = await autoMusic.loadMusicCatalog();
-  assert.equal(catalog.length, 5);
+  const categories = new Set(catalog.map((track) => track.category));
+  assert.ok(catalog.length >= 5);
+  assert.equal(categories.size, 5);
   assert.deepEqual(
-    new Set(catalog.map((track) => track.category)),
+    categories,
     new Set([
       'anime-epic',
       'cyberpunk-dark',

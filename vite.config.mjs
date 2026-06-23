@@ -10,7 +10,15 @@ export default defineConfig({
     outDir: 'public/autoposter-dashboard',
     emptyOutDir: true,
     rollupOptions: {
-      input: fileURLToPath(new URL('./dashboard.html', import.meta.url))
+      input: {
+        dashboard: fileURLToPath(new URL('./dashboard.html', import.meta.url)),
+        'prompt-evolver-main': fileURLToPath(new URL('./src/prompt-evolver-main.jsx', import.meta.url))
+      },
+      output: {
+        entryFileNames: 'assets/[name].js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/[name][extname]'
+      }
     }
   }
 });
