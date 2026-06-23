@@ -23,7 +23,11 @@ const generatedPayload = {
   hashtags: [
     '#StudioProject', '#CreativeProcess', '#BehindTheScenes', '#NewWork',
     '#VideoCreator', '#CreativeStudio', '#WorkInProgress', '#TikTokCreative'
-  ]
+  ],
+  musicCategory: 'motivation-calm',
+  musicMood: 'focused uplifting',
+  musicIntensity: 0.42,
+  musicTags: ['creative', 'studio', 'focused']
 };
 
 function jsonResponse(payload, status = 200) {
@@ -69,6 +73,8 @@ test('Gemini sends five inline frames with structured JSON configuration', async
   assert.equal(captured.body.generationConfig.response_mime_type, 'application/json');
   assert.match(captured.body.contents[0].parts[0].text, /studio-launch\.mp4/);
   assert.equal(result.caption, generatedPayload.caption);
+  assert.equal(result.musicCategory, 'motivation-calm');
+  assert.equal(result.musicIntensity, 0.42);
 });
 
 test('Qwen uses its OpenAI-compatible multimodal chat endpoint', async () => {

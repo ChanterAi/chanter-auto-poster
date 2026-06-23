@@ -97,6 +97,20 @@ module.exports = {
     maxTranscriptChars: Math.max(1_000, Number(process.env.AUTO_CAPTION_MAX_TRANSCRIPT_CHARS || 12_000))
   },
 
+  autoMusic: {
+    libraryDir: path.join(rootDir, 'music-library'),
+    catalogPath: path.join(rootDir, 'music-library', 'musicCatalog.json'),
+    backgroundVolume: Math.min(0.25, Math.max(0.15, Number(process.env.AUTO_MUSIC_BACKGROUND_VOLUME || 0.2))),
+    fadeSeconds: Math.max(0.1, Number(process.env.AUTO_MUSIC_FADE_SECONDS || 0.8)),
+    renderTimeoutMs: Math.max(30_000, Number(process.env.AUTO_MUSIC_RENDER_TIMEOUT_MS || 10 * 60_000)),
+    tokenTtlMs: Math.max(60_000, Number(process.env.AUTO_MUSIC_TOKEN_TTL_MINUTES || 30) * 60_000),
+    tokenSecret:
+      process.env.AUTO_MUSIC_TOKEN_SECRET ||
+      process.env.ADMIN_SESSION_SECRET ||
+      process.env.ADMIN_PASSWORD ||
+      ''
+  },
+
   tiktok: {
     clientKey: process.env.TIKTOK_CLIENT_KEY || '',
     clientSecret: process.env.TIKTOK_CLIENT_SECRET || '',

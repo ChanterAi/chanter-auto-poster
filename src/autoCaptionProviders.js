@@ -4,6 +4,13 @@ const path = require('path');
 const config = require('./config');
 
 const PROVIDER_NAMES = ['gemini', 'openai', 'qwen'];
+const MUSIC_CATEGORIES = [
+  'anime-epic',
+  'cyberpunk-dark',
+  'motivation-calm',
+  'emotional-orchestral',
+  'aggressive-trap'
+];
 const CAPTION_SCHEMA = {
   type: 'object',
   properties: {
@@ -21,9 +28,33 @@ const CAPTION_SCHEMA = {
     hook: {
       type: ['string', 'null'],
       description: 'An optional short opening hook, or null when it would be redundant.'
+    },
+    musicCategory: {
+      type: 'string',
+      enum: MUSIC_CATEGORIES,
+      description: 'The best matching local background music category.'
+    },
+    musicMood: {
+      type: 'string',
+      description: 'A short mood label grounded in the video.'
+    },
+    musicIntensity: {
+      type: 'number',
+      minimum: 0,
+      maximum: 1,
+      description: 'Desired music intensity from calm (0) to aggressive (1).'
+    },
+    musicTags: {
+      type: 'array',
+      maxItems: 8,
+      items: { type: 'string' },
+      description: 'Short music-selection tags grounded in the video.'
     }
   },
-  required: ['caption', 'hashtags', 'hook'],
+  required: [
+    'caption', 'hashtags', 'hook',
+    'musicCategory', 'musicMood', 'musicIntensity', 'musicTags'
+  ],
   additionalProperties: false
 };
 
@@ -42,10 +73,34 @@ const GEMINI_CAPTION_SCHEMA = {
       type: 'STRING',
       nullable: true,
       description: 'An optional short opening hook.'
+    },
+    musicCategory: {
+      type: 'STRING',
+      enum: MUSIC_CATEGORIES,
+      description: 'The best matching local background music category.'
+    },
+    musicMood: { type: 'STRING', description: 'A short mood label grounded in the video.' },
+    musicIntensity: {
+      type: 'NUMBER',
+      minimum: 0,
+      maximum: 1,
+      description: 'Desired music intensity from calm (0) to aggressive (1).'
+    },
+    musicTags: {
+      type: 'ARRAY',
+      maxItems: 8,
+      items: { type: 'STRING' },
+      description: 'Short music-selection tags grounded in the video.'
     }
   },
-  required: ['caption', 'hashtags', 'hook'],
-  propertyOrdering: ['caption', 'hashtags', 'hook']
+  required: [
+    'caption', 'hashtags', 'hook',
+    'musicCategory', 'musicMood', 'musicIntensity', 'musicTags'
+  ],
+  propertyOrdering: [
+    'caption', 'hashtags', 'hook',
+    'musicCategory', 'musicMood', 'musicIntensity', 'musicTags'
+  ]
 };
 
 async function generateCaptionWithGemini(input, options = {}) {
@@ -93,7 +148,7 @@ async function generateCaptionWithGemini(input, options = {}) {
     && Array.isArray(payload.candidates[0].content.parts)
     ? payload.candidates[0].content.parts.map((part) => part.text || '').join('')
     : '';
-  return normalizeGeneratedCaption(text, 'gemini');
+  return normalizeGeneratedCaption(text, 'gemini', input);
 }
 
 async function generateCaptionWithOpenAI(input, options = {}) {
@@ -139,7 +194,7 @@ async function generateCaptionWithOpenAI(input, options = {}) {
     'openai'
   );
   const payload = await readApiResponse(response, 'OpenAI caption generation', 'openai');
-  return normalizeGeneratedCaption(getOpenAiResponseText(payload), 'openai');
+  return normalizeGeneratedCaption(getOpenAiResponseText(payload), 'openai', input);
 }
 
 async function generateCaptionWithQwen(input, options = {}) {
@@ -183,7 +238,7 @@ async function generateCaptionWithQwen(input, options = {}) {
   const text = payload.choices && payload.choices[0] && payload.choices[0].message
     ? payload.choices[0].message.content
     : '';
-  return normalizeGeneratedCaption(text, 'qwen');
+  return normalizeGeneratedCaption(text, 'qwen', input);
 }
 
 function generateFallbackCaption(input = {}) {
@@ -205,11 +260,13 @@ function generateFallbackCaption(input = {}) {
     '#TikTokVideo', '#VideoContent', '#ContentCreator', '#CreativeVideo',
     '#NewVideo', '#WatchNow', '#BehindTheScenes', '#ForYou'
   ];
+  const profile = inferMusicProfile(input, { caption });
 
   return {
     caption: clampCaption(caption),
     hashtags: normalizeHashtags(fallbackHashtags).slice(0, 15),
     hook: null,
+    ...profile,
     provider: 'fallback',
     fallback: true
   };
@@ -270,6 +327,8 @@ function buildCaptionPrompt(input = {}) {
   return [
     'Create editable TikTok-ready copy from the five chronological video frames and context below.',
     'Return a JSON object with one natural short caption, 8 to 15 specific relevant hashtags, and an optional short hook.',
+    `Also classify background music into exactly one category: ${MUSIC_CATEGORIES.join(', ')}.`,
+    'Include a short music mood, intensity from 0 to 1, and up to 8 music-selection tags.',
     'Do not invent people, brands, places, products, claims, or events that are not supported by the frames or transcript.',
     'Avoid generic hashtag stuffing. Do not include hashtags inside the caption or hook.',
     'Keep the hook plus caption under 150 characters so the current TikTok form can store it.',
@@ -280,7 +339,7 @@ function buildCaptionPrompt(input = {}) {
   ].join('\n');
 }
 
-function normalizeGeneratedCaption(value, provider) {
+function normalizeGeneratedCaption(value, provider, input = {}) {
   let generated = value;
   if (typeof value === 'string') {
     const text = stripJsonFences(value);
@@ -298,7 +357,67 @@ function normalizeGeneratedCaption(value, provider) {
   if (hashtags.length < 8 || hashtags.length > 15) {
     throw providerError(`${provider} response must include 8 to 15 unique hashtags`, 'INVALID_AI_RESPONSE', provider);
   }
-  return { caption, hashtags, hook: hook || null };
+  return {
+    caption,
+    hashtags,
+    hook: hook || null,
+    ...inferMusicProfile(input, generated)
+  };
+}
+
+function inferMusicProfile(input = {}, generated = {}) {
+  const combined = [
+    input.filename,
+    input.transcript,
+    input.existingCaption,
+    generated.caption,
+    generated.hook,
+    ...(Array.isArray(generated.hashtags) ? generated.hashtags : []),
+    ...(Array.isArray(generated.musicTags) ? generated.musicTags : [])
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  let category = MUSIC_CATEGORIES.includes(generated.musicCategory)
+    ? generated.musicCategory
+    : '';
+  if (!category) {
+    if (/cyber|neon|future|sci.?fi|tech|dark/.test(combined)) category = 'cyberpunk-dark';
+    else if (/aggressive|trap|fight|rage|hard|fast|action/.test(combined)) category = 'aggressive-trap';
+    else if (/emotion|heart|sad|memory|story|love|cinematic/.test(combined)) category = 'emotional-orchestral';
+    else if (/motivat|calm|focus|peace|inspir|study|nature/.test(combined)) category = 'motivation-calm';
+    else category = 'anime-epic';
+  }
+
+  const defaults = {
+    'anime-epic': { mood: 'heroic', intensity: 0.75 },
+    'cyberpunk-dark': { mood: 'dark futuristic', intensity: 0.68 },
+    'motivation-calm': { mood: 'calm uplifting', intensity: 0.35 },
+    'emotional-orchestral': { mood: 'emotional cinematic', intensity: 0.5 },
+    'aggressive-trap': { mood: 'aggressive energetic', intensity: 0.9 }
+  }[category];
+  const requestedIntensity = Number(generated.musicIntensity);
+  const musicTags = normalizeMusicTags(generated.musicTags);
+
+  return {
+    musicCategory: category,
+    musicMood: cleanLine(generated.musicMood) || defaults.mood,
+    musicIntensity: Number.isFinite(requestedIntensity)
+      ? Math.min(1, Math.max(0, requestedIntensity))
+      : defaults.intensity,
+    musicTags: musicTags.length > 0 ? musicTags : category.split('-')
+  };
+}
+
+function normalizeMusicTags(values) {
+  const raw = Array.isArray(values) ? values : String(values || '').split(/[\s,]+/);
+  const seen = new Set();
+  const tags = [];
+  for (const value of raw) {
+    const cleaned = cleanLine(value).replace(/^#+/, '').toLowerCase();
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    tags.push(cleaned);
+  }
+  return tags.slice(0, 8);
 }
 
 function normalizeHashtags(values) {
@@ -416,5 +535,7 @@ module.exports = {
   configuredProviderOrder,
   normalizeHashtags,
   normalizeGeneratedCaption,
+  inferMusicProfile,
+  MUSIC_CATEGORIES,
   buildCaptionPrompt
 };

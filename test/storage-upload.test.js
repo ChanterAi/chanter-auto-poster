@@ -117,6 +117,84 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
   assert.equal(videoPost.mediaUrl, 'https://res.cloudinary.com/test/video/upload/video.mp4');
   assert.equal(videoPost.cloudinaryResourceType, 'video');
 
+  const musicOriginalPath = path.join(tempDir, 'music-original.mov');
+  const preparedPath = path.join(tempDir, 'auto-music-prepared.mp4');
+  fs.writeFileSync(musicOriginalPath, Buffer.from('original-video'));
+  fs.writeFileSync(preparedPath, Buffer.from('prepared-video'));
+  const musicOriginal = {
+    path: musicOriginalPath,
+    size: fs.statSync(musicOriginalPath).size,
+    filename: 'music-original.mov',
+    originalname: 'music-original.mov',
+    mimetype: 'video/quicktime'
+  };
+  const preparedMedia = {
+    file: {
+      path: preparedPath,
+      size: fs.statSync(preparedPath).size,
+      filename: 'auto-music-prepared.mp4',
+      originalname: 'music-original.mov',
+      mimetype: 'video/mp4'
+    },
+    originalName: musicOriginal.originalname,
+    originalSize: musicOriginal.size,
+    trackId: 'track-calm',
+    trackCategory: 'motivation-calm',
+    trackMood: 'calm uplifting'
+  };
+  const [musicPost] = await storage.addUploadedPosts('owner', [musicOriginal], {
+    ...accountDefaults,
+    preparedMedia
+  });
+  assert.equal(uploadCalls.at(-1).path, preparedPath);
+  assert.equal(musicPost.autoMusicApplied, true);
+  assert.equal(musicPost.mimeType, 'video/mp4');
+  assert.equal(musicPost.musicTrackId, 'track-calm');
+  assert.equal(musicPost.musicCategory, 'motivation-calm');
+
+  const fallbackOriginalPath = path.join(tempDir, 'music-fallback.mov');
+  const failedPreparedPath = path.join(tempDir, 'auto-music-failed.mp4');
+  fs.writeFileSync(fallbackOriginalPath, Buffer.from('fallback-original-video'));
+  fs.writeFileSync(failedPreparedPath, Buffer.from('failed-prepared-video'));
+  const fallbackOriginal = {
+    path: fallbackOriginalPath,
+    size: fs.statSync(fallbackOriginalPath).size,
+    filename: 'music-fallback.mov',
+    originalname: 'music-fallback.mov',
+    mimetype: 'video/quicktime'
+  };
+  uploadBehavior = async (file) => {
+    if (file.path === failedPreparedPath) {
+      const error = new Error('Prepared upload unavailable');
+      error.code = 'CLOUDINARY_UPLOAD_FAILED';
+      throw error;
+    }
+    return {
+      mediaUrl: 'https://res.cloudinary.com/test/video/upload/original.mov',
+      publicId: 'uploads/original',
+      resourceType: 'video'
+    };
+  };
+  const [originalFallbackPost] = await storage.addUploadedPosts('owner', [fallbackOriginal], {
+    ...accountDefaults,
+    preparedMedia: {
+      file: {
+        path: failedPreparedPath,
+        size: fs.statSync(failedPreparedPath).size,
+        filename: 'auto-music-failed.mp4',
+        originalname: fallbackOriginal.originalname,
+        mimetype: 'video/mp4'
+      },
+      originalName: fallbackOriginal.originalname,
+      originalSize: fallbackOriginal.size,
+      trackId: 'track-failed'
+    }
+  });
+  assert.equal(uploadCalls.at(-2).path, failedPreparedPath);
+  assert.equal(uploadCalls.at(-1).path, fallbackOriginalPath);
+  assert.equal(originalFallbackPost.autoMusicApplied, false);
+  assert.equal(originalFallbackPost.mediaUrl, 'https://res.cloudinary.com/test/video/upload/original.mov');
+
   const restoredImagePost = require('../src/postsMapper').postFromDoc({
     id: committed[0].ref.id,
     data: () => committed[0].data
@@ -147,7 +225,7 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
   });
   assert.equal(uploadCalls.length, callsBeforeUrlOnly);
   assert.equal(urlOnlyPost.mediaSource, 'public_url');
-  assert.equal(committed.length, 4);
+  assert.equal(committed.length, 6);
 
   const health = await storage.checkMediaStorageHealth({ writeTest: true });
   assert.deepEqual(health, {

@@ -13,6 +13,7 @@ const storage = require('../src/storage');
 const tiktok = require('../src/tiktok');
 const instagram = require('../src/instagram');
 const autoCaption = require('../src/autoCaption');
+const autoMusic = require('../src/autoMusic');
 const { attachUser } = require('../src/auth');
 
 const accounts = [
@@ -60,6 +61,7 @@ instagram.getInstagramAuthStatus = async () => {
   throw new Error('Instagram status must not be requested while the feature is disabled');
 };
 let analyzedVideoPath = '';
+let musicVideoPath = '';
 autoCaption.analyzeVideoForCaption = async (videoPath, draft) => {
   analyzedVideoPath = videoPath;
   assert.equal(draft.caption, 'Manual fallback');
@@ -74,7 +76,21 @@ autoCaption.analyzeVideoForCaption = async (videoPath, draft) => {
     transcriptionWarning: '',
     analysisWarning: '',
     provider: 'gemini',
-    fallbackUsed: false
+    fallbackUsed: false,
+    musicCategory: 'anime-epic',
+    musicMood: 'heroic uplifting',
+    musicIntensity: 0.78,
+    musicTags: ['anime', 'heroic']
+  };
+};
+autoMusic.isAutoMusicConfigured = () => true;
+autoMusic.prepareAutoMusic = async ({ videoPath, analysis }) => {
+  musicVideoPath = videoPath;
+  assert.equal(analysis.musicCategory, 'anime-epic');
+  return {
+    token: 'signed-prepared-media-token',
+    track: { id: 'anime-epic-demo-01', category: 'anime-epic' },
+    render: { hasOriginalAudio: true, musicVolume: 0.2, durationSeconds: 5 }
   };
 };
 
@@ -154,6 +170,8 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.equal(autoPosterResponse.status, 200);
   assert.match(autoPosterHtml, /Create &amp; Schedule/);
   assert.match(autoPosterHtml, /data-auto-caption-toggle/);
+  assert.match(autoPosterHtml, /data-auto-music-toggle/);
+  assert.match(autoPosterHtml, /Turn on Auto Music/);
   assert.match(autoPosterHtml, /Turn on Auto Caption/);
   assert.match(autoPosterHtml, /href="\/private\/autoposter\/dashboard"/);
   assert.match(autoPosterHtml, /account-a-history\.jpg/);
@@ -183,6 +201,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   captionBody.append('video', new Blob([Buffer.from('test-video')], { type: 'video/mp4' }), 'sample.mp4');
   captionBody.append('caption', 'Manual fallback');
   captionBody.append('hashtags', '#manual');
+  captionBody.append('autoMusic', '1');
   const captionResponse = await fetch(`${baseUrl}/api/auto-caption`, {
     method: 'POST',
     headers: { Cookie: adminCookie, Accept: 'application/json' },
@@ -195,7 +214,11 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.equal(captionResult.analysis.transcriptUsed, true);
   assert.equal(captionResult.analysis.provider, 'gemini');
   assert.equal(captionResult.analysis.fallbackUsed, false);
+  assert.equal(captionResult.music.prepared, true);
+  assert.equal(captionResult.music.token, 'signed-prepared-media-token');
+  assert.equal(captionResult.music.track.category, 'anime-epic');
   assert.ok(analyzedVideoPath);
+  assert.equal(musicVideoPath, analyzedVideoPath);
   assert.equal(fs.existsSync(analyzedVideoPath), false);
 
   let failedVideoPath = '';

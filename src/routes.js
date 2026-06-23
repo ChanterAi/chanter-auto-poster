@@ -7,6 +7,7 @@ const config = require('./config');
 const storage = require('./storage');
 const scheduler = require('./scheduler');
 const autoCaption = require('./autoCaption');
+const autoMusic = require('./autoMusic');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
 const {
@@ -108,6 +109,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     activeTikTokAccount: activeAccount ? publicTikTokAccount(activeAccount) : null,
     enableInstagram: config.ENABLE_INSTAGRAM,
     autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
+    autoMusicConfigured: autoMusic.isAutoMusicConfigured(),
     instagramStatus,
     creatorInfo,
     helpers: viewHelpers
@@ -198,6 +200,7 @@ router.get('/health', (req, res) => {
     scheduler: scheduler.getSchedulerState(),
     cronTrigger: Boolean(config.cronSecret),
     autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
+    autoMusicConfigured: autoMusic.isAutoMusicConfigured(),
     appTimeZone: config.appTimeZone
   });
 });
@@ -381,6 +384,59 @@ router.post(
       const result = await autoCaption.analyzeVideoForCaption(req.file.path, draft, {
         filename: req.file.originalname
       });
+      const autoMusicRequested = String(req.body.autoMusic || '') === '1';
+      let music = {
+        requested: autoMusicRequested,
+        prepared: false,
+        fallbackToOriginal: false,
+        token: '',
+        track: null
+      };
+
+      if (autoMusicRequested) {
+        try {
+          const preparedMusic = await autoMusic.prepareAutoMusic({
+            videoPath: req.file.path,
+            originalName: req.file.originalname,
+            originalSize: req.file.size,
+            userId: resolveUserId(req),
+            analysis: {
+              metadata: result.metadata,
+              musicCategory: result.musicCategory,
+              musicMood: result.musicMood,
+              musicIntensity: result.musicIntensity,
+              musicTags: result.musicTags
+            }
+          });
+          music = {
+            requested: true,
+            prepared: true,
+            fallbackToOriginal: false,
+            token: preparedMusic.token,
+            track: preparedMusic.track,
+            mix: {
+              originalAudioKept: preparedMusic.render.hasOriginalAudio,
+              musicVolume: preparedMusic.render.musicVolume,
+              durationSeconds: preparedMusic.render.durationSeconds
+            }
+          };
+        } catch (error) {
+          console.error('[auto-music] preparation failed; original video will be used', {
+            code: error.code || 'AUTO_MUSIC_FAILED',
+            message: error.message,
+            fileName: req.file.originalname
+          });
+          music = {
+            requested: true,
+            prepared: false,
+            fallbackToOriginal: true,
+            token: '',
+            track: null,
+            reason: 'Background music could not be mixed. The original video will be used.'
+          };
+        }
+      }
+
       res.json({
         ok: true,
         caption: result.caption,
@@ -395,8 +451,12 @@ router.post(
           analysisWarning: result.analysisWarning || '',
           provider: result.provider,
           fallbackUsed: result.fallbackUsed,
+          musicCategory: result.musicCategory,
+          musicMood: result.musicMood,
+          musicIntensity: result.musicIntensity,
           metadata: result.metadata
-        }
+        },
+        music
       });
     } catch (error) {
       console.error('[auto-caption] analysis failed', {
@@ -433,18 +493,23 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
     return;
   }
 
+  const preparedMedia = resolvePreparedMedia(req.body.autoMusicToken, userId, files);
   const created = await storage.addUploadedPosts(userId, files, {
     caption: req.body.caption,
     hashtags: req.body.hashtags,
     publicMediaUrl,
     accountId: account.accountId,
     tiktokOpenId: account.open_id,
-    username: account.username
+    username: account.username,
+    preparedMedia
   });
   const scheduledCount = await storage.autoSchedulePosts(userId, created.map((p) => p.id), account.accountId);
   const usedFallback = created.some((post) => post.storageFallback);
   const sourceNotice = usedFallback ? ' Cloudinary upload failed, so the submitted public URL was used.' : '';
-  redirectWithNotice(res, `Created ${created.length}. Scheduled ${scheduledCount}.${sourceNotice}`);
+  const musicNotice = created.some((post) => post.autoMusicApplied)
+    ? ' Background music was embedded in the final video.'
+    : (req.body.autoMusicToken ? ' Prepared music was unavailable, so the original video was used.' : '');
+  redirectWithNotice(res, `Created ${created.length}. Scheduled ${scheduledCount}.${sourceNotice}${musicNotice}`);
 }));
 
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
@@ -675,6 +740,23 @@ async function removeTemporaryUpload(filePath) {
       console.warn('[auto-caption] could not remove temporary upload:', error.message);
     }
   }
+}
+
+function resolvePreparedMedia(token, userId, files) {
+  if (!token) return null;
+  for (const file of files) {
+    try {
+      const prepared = autoMusic.verifyPreparedMediaToken(token, { userId, file });
+      if (prepared) return prepared;
+    } catch (error) {
+      console.warn('[auto-music] prepared media verification failed; using original upload', {
+        code: error.code || 'PREPARED_MEDIA_INVALID'
+      });
+      return null;
+    }
+  }
+  console.warn('[auto-music] prepared media token was invalid or expired; using original upload');
+  return null;
 }
 
 async function runCronTick(req, res) {

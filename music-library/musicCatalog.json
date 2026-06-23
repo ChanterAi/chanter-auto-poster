@@ -1,0 +1,47 @@
+[
+  {
+    "id": "anime-epic-demo-01",
+    "filename": "anime-epic/anime-epic-demo-01.mp3",
+    "category": "anime-epic",
+    "mood": "heroic uplifting",
+    "bpm": 148,
+    "intensity": 0.78,
+    "tags": ["anime", "epic", "heroic", "adventure", "battle", "uplifting"]
+  },
+  {
+    "id": "cyberpunk-dark-demo-01",
+    "filename": "cyberpunk-dark/cyberpunk-dark-demo-01.mp3",
+    "category": "cyberpunk-dark",
+    "mood": "dark futuristic",
+    "bpm": 112,
+    "intensity": 0.68,
+    "tags": ["cyberpunk", "dark", "neon", "futuristic", "technology", "sci-fi"]
+  },
+  {
+    "id": "motivation-calm-demo-01",
+    "filename": "motivation-calm/motivation-calm-demo-01.mp3",
+    "category": "motivation-calm",
+    "mood": "calm uplifting",
+    "bpm": 82,
+    "intensity": 0.32,
+    "tags": ["motivation", "calm", "focus", "peaceful", "inspiring", "study"]
+  },
+  {
+    "id": "emotional-orchestral-demo-01",
+    "filename": "emotional-orchestral/emotional-orchestral-demo-01.mp3",
+    "category": "emotional-orchestral",
+    "mood": "emotional cinematic",
+    "bpm": 72,
+    "intensity": 0.5,
+    "tags": ["emotional", "orchestral", "cinematic", "heartfelt", "story", "memory"]
+  },
+  {
+    "id": "aggressive-trap-demo-01",
+    "filename": "aggressive-trap/aggressive-trap-demo-01.mp3",
+    "category": "aggressive-trap",
+    "mood": "aggressive energetic",
+    "bpm": 154,
+    "intensity": 0.92,
+    "tags": ["aggressive", "trap", "bass", "action", "fast", "power"]
+  }
+]

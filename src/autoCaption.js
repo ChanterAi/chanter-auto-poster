@@ -151,7 +151,11 @@ function applyAutoCaptionToJob(job, generated) {
       hook: hook || null,
       hashtags: hashtagList,
       provider: generated.provider || '',
-      fallback: Boolean(generated.fallback)
+      fallback: Boolean(generated.fallback),
+      musicCategory: generated.musicCategory || '',
+      musicMood: generated.musicMood || '',
+      musicIntensity: Number(generated.musicIntensity || 0),
+      musicTags: Array.isArray(generated.musicTags) ? generated.musicTags : []
     }
   };
 }
@@ -182,7 +186,11 @@ async function analyzeVideoForCaption(videoPath, draft = {}, options = {}) {
       analysisWarning: error.message,
       provider: generated.provider,
       fallbackUsed: true,
-      providerFailures: []
+      providerFailures: [],
+      musicCategory: generated.musicCategory,
+      musicMood: generated.musicMood,
+      musicIntensity: generated.musicIntensity,
+      musicTags: generated.musicTags
     };
   }
 
@@ -220,7 +228,11 @@ async function analyzeVideoForCaption(videoPath, draft = {}, options = {}) {
     analysisWarning: '',
     provider: generated.provider,
     fallbackUsed: Boolean(generated.fallback),
-    providerFailures: generated.providerFailures || []
+    providerFailures: generated.providerFailures || [],
+    musicCategory: generated.musicCategory,
+    musicMood: generated.musicMood,
+    musicIntensity: generated.musicIntensity,
+    musicTags: generated.musicTags
   };
 }
 

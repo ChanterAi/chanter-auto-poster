@@ -397,14 +397,33 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     for (const file of sources) {
       const mediaType = file ? getUploadMediaType(file) : getPublicMediaType(fallbackUrl);
       const fileName = file ? getStoredFileName(file) : getPublicMediaName(fallbackUrl);
+      const preparedMedia = file && defaults.preparedMedia
+        && String(defaults.preparedMedia.originalName || '') === String(file.originalname || '')
+        && Number(defaults.preparedMedia.originalSize || 0) === Number(file.size || 0)
+        ? defaults.preparedMedia
+        : null;
       let mediaUrl = fallbackUrl;
       let cloudinaryPublicId = '';
       let cloudinaryResourceType = '';
       let storageFallback = false;
+      let autoMusicApplied = false;
 
       if (file) {
         try {
-          const uploaded = await saveUploadToCloudinary(file);
+          let uploaded;
+          if (preparedMedia) {
+            try {
+              uploaded = await saveUploadToCloudinary(preparedMedia.file);
+              autoMusicApplied = true;
+            } catch (error) {
+              console.warn('[auto-music] prepared video upload failed; using original video', {
+                code: error.code || 'CLOUDINARY_UPLOAD_FAILED'
+              });
+              uploaded = await saveUploadToCloudinary(file);
+            }
+          } else {
+            uploaded = await saveUploadToCloudinary(file);
+          }
           mediaUrl = uploaded.mediaUrl;
           cloudinaryPublicId = uploaded.publicId;
           cloudinaryResourceType = uploaded.resourceType;
@@ -432,7 +451,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         username,
         originalName: file ? file.originalname : fileName,
         fileName,
-        mimeType: (file && file.mimetype) || getPublicMediaMimeType(mediaType, publicMediaUrl),
+        mimeType: autoMusicApplied ? 'video/mp4' : ((file && file.mimetype) || getPublicMediaMimeType(mediaType, publicMediaUrl)),
         mediaType,
         mediaUrl,
         mediaPath: mediaUrl,
@@ -444,6 +463,10 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         publicMediaUrl,
         mediaSource: cloudinaryPublicId ? 'cloudinary' : 'public_url',
         storageFallback,
+        autoMusicApplied,
+        musicTrackId: autoMusicApplied ? String(preparedMedia.trackId || '') : '',
+        musicCategory: autoMusicApplied ? String(preparedMedia.trackCategory || '') : '',
+        musicMood: autoMusicApplied ? String(preparedMedia.trackMood || '') : '',
         caption: String(defaults.caption || '').trim(),
         hashtags: String(defaults.hashtags || '').trim(),
         publicImageUrl: mediaType === 'photo' ? publicMediaUrl : '',
@@ -479,6 +502,9 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     return created.map(({ ref, data }) => postFromDoc({ id: ref.id, data: () => data }));
   } finally {
     uploadFiles.forEach(cleanupLocalUpload);
+    if (defaults.preparedMedia && defaults.preparedMedia.file) {
+      cleanupLocalUpload(defaults.preparedMedia.file);
+    }
     if (!committed) {
       await Promise.all(cloudinaryAssets.map((asset) =>
         destroyMediaAsset(asset.publicId, asset.resourceType)

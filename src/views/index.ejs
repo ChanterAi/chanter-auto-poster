@@ -226,6 +226,7 @@
       .auto-caption-status[data-tone="working"] { color: var(--accent2); }
       .auto-caption-status[data-tone="success"] { color: var(--ok); }
       .auto-caption-status[data-tone="error"] { color: var(--danger); }
+      .auto-music-divider { height: 1px; background: var(--border); margin: 2px 0; }
       .upload-actions { justify-content: flex-end; margin-top: 20px; }
       .btn-create { min-width: 190px; height: 44px !important; }
       .btn-create::after { content: "\2192"; font-size: 16px; transition: transform .18s; }
@@ -616,6 +617,24 @@
                 <p class="auto-caption-status" data-auto-caption-status aria-live="polite">
                   <%= autoCaptionConfigured ? 'Turn on Auto Caption, then choose a video.' : 'Auto Caption is unavailable until an AI provider key is configured.' %>
                 </p>
+                <div class="auto-music-divider" aria-hidden="true"></div>
+                <label class="auto-caption-row">
+                  <span class="auto-caption-copy">
+                    <strong>Auto Music</strong>
+                    <span>Select and embed background music in the first uploaded video before scheduling.</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    name="autoMusic"
+                    value="1"
+                    data-auto-music-toggle
+                    <%= !autoMusicConfigured ? 'disabled' : '' %>
+                  />
+                </label>
+                <p class="auto-caption-status" data-auto-music-status aria-live="polite">
+                  <%= autoMusicConfigured ? 'Turn on Auto Music, then choose a video.' : 'Auto Music is unavailable until the local music library is configured.' %>
+                </p>
+                <input type="hidden" name="autoMusicToken" value="" data-auto-music-token />
               </div>
               <label class="wide url-field">
                 Public Media URL
@@ -988,15 +1007,21 @@
         const publicUrlInput = form.querySelector('[data-public-media-url]');
         const autoCaptionToggle = form.querySelector('[data-auto-caption-toggle]');
         const autoCaptionStatus = form.querySelector('[data-auto-caption-status]');
+        const autoMusicToggle = form.querySelector('[data-auto-music-toggle]');
+        const autoMusicStatus = form.querySelector('[data-auto-music-status]');
+        const autoMusicTokenInput = form.querySelector('[data-auto-music-token]');
         const captionInput = form.querySelector('[data-caption-input]');
         const hashtagsInput = form.querySelector('[data-hashtags-input]');
         const submitButton = form.querySelector('[type="submit"]');
         if (!input || !publicUrlInput) return;
         const submitInitiallyDisabled = Boolean(submitButton && submitButton.disabled);
+        const autoCaptionInitiallyDisabled = Boolean(autoCaptionToggle && autoCaptionToggle.disabled);
+        const autoMusicInitiallyDisabled = Boolean(autoMusicToggle && autoMusicToggle.disabled);
         let analysisToken = 0;
         let analyzedKey = '';
         let failedKey = '';
         let pendingAnalysis = null;
+        let musicStatusTimer = null;
 
         const validate = () => {
           const files = Array.from(input.files || []);
@@ -1013,27 +1038,54 @@
 
         const selectedVideos = () => Array.from(input.files || []).filter(file => getFileKind(file) === 'video');
         const videoKey = file => file ? [file.name, file.size, file.lastModified].join(':') : '';
+        const wantsAnalysis = () => Boolean(
+          (autoCaptionToggle && autoCaptionToggle.checked) ||
+          (autoMusicToggle && autoMusicToggle.checked)
+        );
+        const analysisKey = file => [
+          videoKey(file),
+          `caption:${autoCaptionToggle && autoCaptionToggle.checked ? 1 : 0}`,
+          `music:${autoMusicToggle && autoMusicToggle.checked ? 1 : 0}`
+        ].join('|');
         const setAutoCaptionStatus = (message, tone = '') => {
           if (!autoCaptionStatus) return;
           autoCaptionStatus.textContent = message;
           autoCaptionStatus.dataset.tone = tone;
         };
+        const setAutoMusicStatus = (message, tone = '') => {
+          if (!autoMusicStatus) return;
+          autoMusicStatus.textContent = message;
+          autoMusicStatus.dataset.tone = tone;
+        };
+        const clearAutoMusicToken = () => {
+          if (autoMusicTokenInput) autoMusicTokenInput.value = '';
+        };
+        const clearMusicStatusTimer = () => {
+          if (musicStatusTimer) window.clearTimeout(musicStatusTimer);
+          musicStatusTimer = null;
+        };
         const setAnalyzing = (analyzing, token) => {
           if (token !== analysisToken) return;
           if (submitButton) submitButton.disabled = submitInitiallyDisabled || analyzing;
-          if (autoCaptionToggle) autoCaptionToggle.disabled = analyzing;
+          if (autoCaptionToggle) autoCaptionToggle.disabled = autoCaptionInitiallyDisabled || analyzing;
+          if (autoMusicToggle) autoMusicToggle.disabled = autoMusicInitiallyDisabled || analyzing;
         };
 
         const analyzeSelectedVideo = async () => {
-          if (!autoCaptionToggle || !autoCaptionToggle.checked) return { ok: true, skipped: true };
+          if (!wantsAnalysis()) return { ok: true, skipped: true };
           const videos = selectedVideos();
           const video = videos[0];
           if (!video) {
-            setAutoCaptionStatus('Auto Caption runs on uploaded videos. Manual caption mode is still available.', '');
+            if (autoCaptionToggle && autoCaptionToggle.checked) {
+              setAutoCaptionStatus('Auto Caption runs on uploaded videos. Manual caption mode is still available.', '');
+            }
+            if (autoMusicToggle && autoMusicToggle.checked) {
+              setAutoMusicStatus('Auto Music runs on uploaded videos. The original file will be used.', '');
+            }
             return { ok: true, skipped: true };
           }
 
-          const key = videoKey(video);
+          const key = analysisKey(video);
           if (analyzedKey === key) return { ok: true, cached: true };
           if (pendingAnalysis && pendingAnalysis.key === key) return pendingAnalysis.promise;
 
@@ -1041,7 +1093,17 @@
           analyzedKey = '';
           failedKey = '';
           setAnalyzing(true, token);
-          setAutoCaptionStatus('Analyzing five frames and checking the audio track…', 'working');
+          if (autoCaptionToggle && autoCaptionToggle.checked) {
+            setAutoCaptionStatus('Analyzing five frames and checking the audio track\u2026', 'working');
+          }
+          if (autoMusicToggle && autoMusicToggle.checked) {
+            clearAutoMusicToken();
+            setAutoMusicStatus('Selecting music\u2026', 'working');
+            clearMusicStatusTimer();
+            musicStatusTimer = window.setTimeout(() => {
+              if (token === analysisToken) setAutoMusicStatus('Mixing background music\u2026', 'working');
+            }, 800);
+          }
 
           const promise = (async () => {
             try {
@@ -1049,6 +1111,7 @@
               body.append('video', video, video.name);
               body.append('caption', captionInput ? captionInput.value : '');
               body.append('hashtags', hashtagsInput ? hashtagsInput.value : '');
+              body.append('autoMusic', autoMusicToggle && autoMusicToggle.checked ? '1' : '0');
               const response = await fetch('/api/auto-caption', {
                 method: 'POST',
                 headers: { Accept: 'application/json' },
@@ -1058,27 +1121,48 @@
               if (!response.ok || !payload.ok) {
                 throw new Error(payload.reason || 'Auto Caption analysis failed.');
               }
-              if (token !== analysisToken || !autoCaptionToggle.checked) return { ok: false, stale: true };
+              if (token !== analysisToken || !wantsAnalysis()) return { ok: false, stale: true };
 
-              if (captionInput) {
-                captionInput.value = payload.caption || '';
-                captionInput.setCustomValidity('');
+              if (autoCaptionToggle && autoCaptionToggle.checked) {
+                if (captionInput) {
+                  captionInput.value = payload.caption || '';
+                  captionInput.setCustomValidity('');
+                }
+                if (hashtagsInput) hashtagsInput.value = payload.hashtags || '';
+                const audioNote = payload.analysis && payload.analysis.transcriptUsed
+                  ? 'frames and transcript'
+                  : 'video frames';
+                const batchNote = videos.length > 1 ? ' The copy applies to every selected file.' : '';
+                setAutoCaptionStatus(`Caption generated from ${audioNote}. Edit it before scheduling.${batchNote}`, 'success');
               }
-              if (hashtagsInput) hashtagsInput.value = payload.hashtags || '';
+
+              if (autoMusicToggle && autoMusicToggle.checked) {
+                if (payload.music && payload.music.prepared && payload.music.token) {
+                  if (autoMusicTokenInput) autoMusicTokenInput.value = payload.music.token;
+                  const batchNote = videos.length > 1 ? ' Music applies to the first selected video.' : '';
+                  setAutoMusicStatus(`Final video ready.${batchNote}`, 'success');
+                } else {
+                  clearAutoMusicToken();
+                  setAutoMusicStatus('Music mixing failed. The original video will be used.', 'error');
+                }
+              }
+
               analyzedKey = key;
-              const audioNote = payload.analysis && payload.analysis.transcriptUsed
-                ? 'frames and transcript'
-                : 'video frames';
-              const batchNote = videos.length > 1 ? ' The copy applies to every selected file.' : '';
-              setAutoCaptionStatus(`Caption generated from ${audioNote}. Edit it before scheduling.${batchNote}`, 'success');
               return { ok: true };
             } catch (error) {
               if (token !== analysisToken) return { ok: false, stale: true };
               failedKey = key;
-              setAutoCaptionStatus(error.message || 'Auto Caption failed. Keep or write a manual caption.', 'error');
+              if (autoCaptionToggle && autoCaptionToggle.checked) {
+                setAutoCaptionStatus(error.message || 'Auto Caption failed. Keep or write a manual caption.', 'error');
+              }
+              if (autoMusicToggle && autoMusicToggle.checked) {
+                clearAutoMusicToken();
+                setAutoMusicStatus('Music mixing failed. The original video will be used.', 'error');
+              }
               return { ok: false, error };
             } finally {
               if (token === analysisToken) {
+                clearMusicStatusTimer();
                 pendingAnalysis = null;
                 setAnalyzing(false, token);
               }
@@ -1095,7 +1179,10 @@
           analyzedKey = '';
           failedKey = '';
           pendingAnalysis = null;
-          if (autoCaptionToggle && autoCaptionToggle.checked) analyzeSelectedVideo();
+          clearMusicStatusTimer();
+          clearAutoMusicToken();
+          setAnalyzing(false, analysisToken);
+          if (wantsAnalysis()) analyzeSelectedVideo();
         });
         publicUrlInput.addEventListener('input', validate);
         if (captionInput) {
@@ -1112,6 +1199,26 @@
             } else {
               setAnalyzing(false, analysisToken);
               setAutoCaptionStatus('Auto Caption is off. Your current caption will be used unchanged.', '');
+              analyzedKey = '';
+              failedKey = '';
+              if (wantsAnalysis()) analyzeSelectedVideo();
+            }
+          });
+        }
+        if (autoMusicToggle) {
+          autoMusicToggle.addEventListener('change', () => {
+            analysisToken += 1;
+            pendingAnalysis = null;
+            clearMusicStatusTimer();
+            clearAutoMusicToken();
+            analyzedKey = '';
+            failedKey = '';
+            if (autoMusicToggle.checked) {
+              analyzeSelectedVideo();
+            } else {
+              setAnalyzing(false, analysisToken);
+              setAutoMusicStatus('Auto Music is off. The original uploaded video will be used.', '');
+              if (wantsAnalysis()) analyzeSelectedVideo();
             }
           });
         }
@@ -1124,14 +1231,14 @@
             return;
           }
 
-          if (!autoCaptionToggle || !autoCaptionToggle.checked) return;
+          if (!wantsAnalysis()) return;
           const video = selectedVideos()[0];
           if (!video) return;
-          const key = videoKey(video);
+          const key = analysisKey(video);
           if (analyzedKey === key) return;
 
           if (failedKey === key) {
-            if (captionInput && captionInput.value.trim()) return;
+            if (!autoCaptionToggle || !autoCaptionToggle.checked || (captionInput && captionInput.value.trim())) return;
             e.preventDefault();
             if (captionInput) {
               captionInput.setCustomValidity('Auto Caption failed. Write a caption before scheduling.');
@@ -1143,7 +1250,7 @@
 
           e.preventDefault();
           const result = await analyzeSelectedVideo();
-          if (result.ok || (captionInput && captionInput.value.trim())) {
+          if (result.ok || !autoCaptionToggle || !autoCaptionToggle.checked || (captionInput && captionInput.value.trim())) {
             form.requestSubmit(submitButton || undefined);
           } else if (captionInput) {
             captionInput.setCustomValidity('Auto Caption failed. Write a caption before scheduling.');
