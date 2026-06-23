@@ -4,10 +4,12 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const { createHmac, randomUUID, timingSafeEqual } = require('crypto');
+const bundledFfprobePath = require('ffprobe-static').path;
 const config = require('./config');
 const { runProcess } = require('./autoCaption');
 
 const REQUIRED_TRACK_FIELDS = ['id', 'filename', 'category', 'mood', 'bpm', 'intensity', 'tags'];
+const MAX_DURATION_DRIFT_SECONDS = 0.2;
 const MUSIC_CATEGORIES = new Set([
   'anime-epic',
   'cyberpunk-dark',
@@ -105,53 +107,92 @@ function selectMusicTrack(analysis = {}, catalog = []) {
 }
 
 async function mixBackgroundMusic(videoPath, trackPath, outputPath, metadata = {}, options = {}) {
-  const duration = Number(metadata.durationSeconds || 0);
+  const sourceMetadata = await probeSourceVideoForMusic(videoPath, options);
+  const duration = Number(sourceMetadata.durationSeconds || 0);
   if (!Number.isFinite(duration) || duration <= 0) {
     throw autoMusicError('Video duration is required for music mixing', 'INVALID_VIDEO_DURATION');
   }
 
-  const fadeSeconds = Math.min(config.autoMusic.fadeSeconds, Math.max(0.1, duration / 4));
+  const fadeSeconds = Math.min(config.autoMusic.fadeSeconds, Math.max(0.01, duration / 4));
   const fadeOutStart = Math.max(0, duration - fadeSeconds);
-  const hasOriginalAudio = Boolean(metadata.hasAudio);
+  const durationText = duration.toFixed(3);
+  const hasOriginalAudio = Boolean(sourceMetadata.hasAudio);
   const musicVolume = hasOriginalAudio ? config.autoMusic.backgroundVolume : 1;
   const filter = hasOriginalAudio
     ? [
-        `[0:a:0]volume=1.0,apad=pad_dur=${duration.toFixed(3)},atrim=0:${duration.toFixed(3)}[original]`,
-        `[1:a:0]volume=${musicVolume.toFixed(3)},atrim=0:${duration.toFixed(3)},afade=t=in:st=0:d=${fadeSeconds.toFixed(3)},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeSeconds.toFixed(3)}[music]`,
-        `[original][music]amix=inputs=2:duration=longest:dropout_transition=2:normalize=0,atrim=0:${duration.toFixed(3)},alimiter=limit=0.95[aout]`
+        `[0:a:0]volume=1.0,atrim=start=0:end=${durationText},apad=whole_dur=${durationText},atrim=start=0:end=${durationText},asetpts=N/SR/TB[original]`,
+        `[1:a:0]volume=${musicVolume.toFixed(3)},atrim=start=0:end=${durationText},asetpts=N/SR/TB,afade=t=in:st=0:d=${fadeSeconds.toFixed(3)},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeSeconds.toFixed(3)}[music]`,
+        `[original][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,atrim=start=0:end=${durationText},asetpts=N/SR/TB,alimiter=limit=0.95[aout]`
       ].join(';')
-    : `[1:a:0]volume=1.0,atrim=0:${duration.toFixed(3)},afade=t=in:st=0:d=${fadeSeconds.toFixed(3)},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeSeconds.toFixed(3)}[aout]`;
+    : `[1:a:0]volume=1.0,atrim=start=0:end=${durationText},asetpts=N/SR/TB,afade=t=in:st=0:d=${fadeSeconds.toFixed(3)},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeSeconds.toFixed(3)},alimiter=limit=0.95[aout]`;
 
   const runCommand = options.runCommand || runProcess;
-  await runCommand(
-    options.ffmpegPath || resolveFfmpegPath(),
-    [
-      '-hide_banner', '-loglevel', 'error',
-      '-i', videoPath,
-      '-stream_loop', '-1', '-i', trackPath,
-      '-filter_complex', filter,
-      '-map', '0:v:0', '-map', '[aout]',
-      '-t', duration.toFixed(3),
-      '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac', '-b:a', '192k',
-      '-movflags', '+faststart',
-      '-map_metadata', '0',
-      '-y', outputPath
-    ],
-    { timeoutMs: options.timeoutMs || config.autoMusic.renderTimeoutMs }
-  );
+  const videoStrategies = [
+    { name: 'copy', args: ['-c:v', 'copy'] },
+    { name: 'transcode', args: ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p'] }
+  ];
 
-  const stats = await fsp.stat(outputPath);
-  if (!stats.isFile() || stats.size === 0) {
-    throw autoMusicError('FFmpeg did not create a usable final video', 'AUTO_MUSIC_RENDER_FAILED');
+  let lastError;
+  for (const strategy of videoStrategies) {
+    try {
+      await fsp.rm(outputPath, { force: true });
+      await runCommand(
+        options.ffmpegPath || resolveFfmpegPath(),
+        [
+          '-hide_banner', '-loglevel', 'error',
+          '-i', videoPath,
+          '-stream_loop', '-1', '-i', trackPath,
+          '-filter_complex', filter,
+          '-map', '0:v:0', '-map', '[aout]',
+          '-t', durationText,
+          ...strategy.args,
+          '-c:a', 'aac', '-b:a', '192k',
+          '-movflags', '+faststart',
+          '-map_metadata', '0',
+          '-shortest',
+          '-y', outputPath
+        ],
+        { timeoutMs: options.timeoutMs || config.autoMusic.renderTimeoutMs }
+      );
+
+      const stats = await fsp.stat(outputPath);
+      if (!stats.isFile() || stats.size === 0) {
+        throw autoMusicError('FFmpeg did not create a usable final video', 'AUTO_MUSIC_RENDER_FAILED');
+      }
+
+      const renderedMetadata = await probeSourceVideoForMusic(outputPath, options);
+      const durationDiff = Math.abs(renderedMetadata.durationSeconds - duration);
+      if (durationDiff < MAX_DURATION_DRIFT_SECONDS) {
+        return {
+          outputPath,
+          size: stats.size,
+          hasOriginalAudio,
+          musicVolume,
+          durationSeconds: duration,
+          renderedDurationSeconds: renderedMetadata.durationSeconds,
+          durationDiffSeconds: Number(durationDiff.toFixed(3)),
+          videoMode: strategy.name
+        };
+      }
+
+      throw autoMusicError(
+        `Rendered video duration drifted by ${durationDiff.toFixed(3)}s from source duration ${durationText}s`,
+        'AUTO_MUSIC_DURATION_MISMATCH'
+      );
+    } catch (error) {
+      lastError = error;
+      await fsp.rm(outputPath, { force: true });
+      if (strategy.name === 'copy') {
+        console.warn('[auto-music] stream-copy render failed; retrying with video transcode:', error.message);
+      }
+    }
   }
-  return {
-    outputPath,
-    size: stats.size,
-    hasOriginalAudio,
-    musicVolume,
-    durationSeconds: duration
-  };
+
+  throw autoMusicError(
+    `Auto Music render failed: ${lastError ? lastError.message : 'unknown FFmpeg error'}`,
+    lastError && lastError.code ? lastError.code : 'AUTO_MUSIC_RENDER_FAILED',
+    lastError
+  );
 }
 
 async function prepareAutoMusic({ videoPath, originalName, originalSize, userId, analysis }, options = {}) {
@@ -316,6 +357,40 @@ function resolveFfmpegPath() {
   return config.autoCaption.ffmpegPath || require('ffmpeg-static') || 'ffmpeg';
 }
 
+function resolveFfprobePath() {
+  return config.autoCaption.ffprobePath || bundledFfprobePath || 'ffprobe';
+}
+
+async function probeSourceVideoForMusic(videoPath, options = {}) {
+  const runCommand = options.probeRunCommand || options.runCommand || runProcess;
+  const result = await runCommand(
+    options.ffprobePath || resolveFfprobePath(),
+    ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', videoPath],
+    { timeoutMs: options.timeoutMs || config.autoCaption.ffmpegTimeoutMs }
+  );
+
+  let probe;
+  try {
+    probe = JSON.parse(result.stdout);
+  } catch (error) {
+    throw autoMusicError('FFprobe returned invalid video metadata', 'VIDEO_PROBE_FAILED', error);
+  }
+
+  const streams = Array.isArray(probe.streams) ? probe.streams : [];
+  const video = streams.find((stream) => stream.codec_type === 'video');
+  const audio = streams.find((stream) => stream.codec_type === 'audio');
+  if (!video) throw autoMusicError('The uploaded file does not contain a video stream', 'VIDEO_STREAM_MISSING');
+
+  const duration = finiteNumber(video.duration)
+    || parseDurationTag(video.tags && (video.tags.DURATION || video.tags.duration))
+    || finiteNumber(probe.format && probe.format.duration);
+
+  return {
+    durationSeconds: Number(duration.toFixed(3)),
+    hasAudio: Boolean(audio)
+  };
+}
+
 function signToken(body) {
   return createHmac('sha256', config.autoMusic.tokenSecret).update(body).digest('base64url');
 }
@@ -329,6 +404,18 @@ function requireTokenSecret() {
 function clamp01(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 0.5;
+}
+
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function parseDurationTag(value) {
+  const text = String(value || '').trim();
+  const parts = text.split(':').map(Number);
+  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return 0;
+  return parts[0] * 3600 + parts[1] * 60 + parts[2];
 }
 
 function autoMusicError(message, code, cause) {

@@ -12,6 +12,19 @@ const config = require('../src/config');
 const autoCaption = require('../src/autoCaption');
 const autoMusic = require('../src/autoMusic');
 
+async function probeVideoStreamDuration(filePath) {
+  const result = await autoCaption.runProcess(require('ffprobe-static').path, [
+    '-v', 'error',
+    '-select_streams', 'v:0',
+    '-show_entries', 'stream=duration',
+    '-of', 'default=noprint_wrappers=1:nokey=1',
+    filePath
+  ], { timeoutMs: 30_000 });
+  const duration = Number(String(result.stdout || '').trim());
+  assert.ok(Number.isFinite(duration) && duration > 0, `expected ffprobe video duration for ${filePath}`);
+  return Number(duration.toFixed(3));
+}
+
 test('loads the five-category catalog and selects the requested music profile', async () => {
   const catalog = await autoMusic.loadMusicCatalog();
   assert.equal(catalog.length, 5);
@@ -60,6 +73,7 @@ test('mixes local music across the full video with and without original audio', 
     await autoCaption.runProcess(ffmpegPath, args, { timeoutMs: 30_000 });
 
     const metadata = await autoCaption.probeVideo(sourcePath);
+    const inputDuration = await probeVideoStreamDuration(sourcePath);
     const rendered = await autoMusic.mixBackgroundMusic(
       sourcePath,
       track.absolutePath,
@@ -67,14 +81,63 @@ test('mixes local music across the full video with and without original audio', 
       metadata,
       { timeoutMs: 30_000 }
     );
+    const outputDuration = await probeVideoStreamDuration(outputPath);
     const outputMetadata = await autoCaption.probeVideo(outputPath);
+    const durationDiff = Math.abs(inputDuration - outputDuration);
 
     assert.equal(rendered.hasOriginalAudio, hasAudio);
     assert.equal(rendered.musicVolume, hasAudio ? config.autoMusic.backgroundVolume : 1);
     assert.equal(outputMetadata.hasAudio, true);
-    assert.ok(outputMetadata.durationSeconds >= 1.9 && outputMetadata.durationSeconds <= 2.1);
+    assert.ok(durationDiff < 0.2, `expected duration drift under 0.2s, got ${durationDiff.toFixed(3)}s`);
+    assert.equal(rendered.durationSeconds, inputDuration);
+    assert.equal(rendered.renderedDurationSeconds, outputDuration);
     assert.ok(fs.statSync(outputPath).size > 1_000);
   }
+});
+
+test('loops short music and keeps rendered duration aligned to the original video', async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-auto-music-loop-test-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const sourcePath = path.join(tempDir, 'video.mp4');
+  const shortMusicPath = path.join(tempDir, 'short-music.mp3');
+  const outputPath = path.join(tempDir, 'mixed-looped.mp4');
+
+  await autoCaption.runProcess(ffmpegPath, [
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=12',
+    '-t', '3',
+    '-c:v', 'mpeg4', '-pix_fmt', 'yuv420p',
+    '-y', sourcePath
+  ], { timeoutMs: 30_000 });
+  await autoCaption.runProcess(ffmpegPath, [
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'sine=frequency=330:sample_rate=44100',
+    '-t', '0.7',
+    '-c:a', 'libmp3lame', '-b:a', '96k',
+    '-y', shortMusicPath
+  ], { timeoutMs: 30_000 });
+
+  const inputMetadata = await autoCaption.probeVideo(sourcePath);
+  const inputDuration = await probeVideoStreamDuration(sourcePath);
+  const rendered = await autoMusic.mixBackgroundMusic(
+    sourcePath,
+    shortMusicPath,
+    outputPath,
+    inputMetadata,
+    { timeoutMs: 30_000 }
+  );
+  const outputDuration = await probeVideoStreamDuration(outputPath);
+  const outputMetadata = await autoCaption.probeVideo(outputPath);
+  const durationDiff = Math.abs(inputDuration - outputDuration);
+
+  assert.equal(rendered.hasOriginalAudio, false);
+  assert.equal(rendered.musicVolume, 1);
+  assert.equal(outputMetadata.hasAudio, true);
+  assert.ok(durationDiff < 0.2, `expected duration drift under 0.2s, got ${durationDiff.toFixed(3)}s`);
+  assert.equal(rendered.durationSeconds, inputDuration);
+  assert.equal(rendered.renderedDurationSeconds, outputDuration);
+  assert.ok(outputDuration <= inputDuration + 0.2);
+  assert.ok(fs.statSync(outputPath).size > 1_000);
 });
 
 test('binds prepared video tokens to the user, original upload, and rendered file', async (t) => {
