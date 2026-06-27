@@ -6,6 +6,8 @@ const storage = require('./storage');
 const tokenRefreshBufferMs = 5 * 60 * 1000;
 const videoInitUrl = 'https://open.tiktokapis.com/v2/post/publish/video/init/';
 const creatorInfoQueryUrl = 'https://open.tiktokapis.com/v2/post/publish/creator_info/query/';
+const MIN_CHUNK_SIZE = 5 * 1024 * 1024;
+const MAX_CHUNK_SIZE = 64 * 1024 * 1024;
 
 function requestSignal(timeoutMs = config.tiktok.requestTimeoutMs) {
   return AbortSignal.timeout(Math.max(1, Number(timeoutMs) || 30_000));
@@ -148,9 +150,9 @@ async function publishVideoPost(post, accessToken, creatorInfo = null) {
   if (!source.ok) return source;
 
   const fileSize = source.fileSize;
-  const mimeType = getVideoMimeType(post);
+  const { chunkSize, totalChunkCount } = calculateTikTokChunks(fileSize);
 
-  const payload = buildVideoPayload(post, fileSize, creatorInfo);
+  const payload = buildVideoPayload(post, fileSize, creatorInfo, { chunkSize, totalChunkCount });
   const initResult = await postVideoInitPayload(payload, accessToken);
 
   if (!initResult.ok) {
@@ -169,7 +171,13 @@ async function publishVideoPost(post, accessToken, creatorInfo = null) {
     };
   }
 
-  const uploadResult = await uploadVideoFile(uploadUrl, source, fileSize, mimeType);
+  const uploadResult = await uploadVideoFile(
+    uploadUrl,
+    source,
+    fileSize,
+    chunkSize,
+    totalChunkCount
+  );
   await cancelVideoSource(source);
   if (!uploadResult.ok) return uploadResult;
 
@@ -184,9 +192,13 @@ async function publishVideoPost(post, accessToken, creatorInfo = null) {
 }
 
 async function cancelVideoSource(source) {
-  if (!source || !source.stream || typeof source.stream.cancel !== 'function') return;
+  if (!source) return;
   try {
-    await source.stream.cancel();
+    if (source.streamReader && typeof source.streamReader.cancel === 'function') {
+      await source.streamReader.cancel();
+    } else if (source.stream && typeof source.stream.cancel === 'function') {
+      await source.stream.cancel();
+    }
   } catch (error) {
     // The upload may already own or have consumed the stream.
   }
@@ -317,7 +329,49 @@ function normalizeCreatorInfo(body) {
   };
 }
 
-function buildVideoPayload(post, fileSize, creatorInfo = null) {
+function calculateTikTokChunks(videoSize) {
+  if (!Number.isFinite(videoSize) || videoSize <= 0) {
+    throw new Error('Invalid video size');
+  }
+
+  if (videoSize <= MAX_CHUNK_SIZE) {
+    return {
+      chunkSize: videoSize,
+      totalChunkCount: 1
+    };
+  }
+
+  const totalChunkCount = Math.ceil(videoSize / MAX_CHUNK_SIZE);
+  const chunkSize = Math.floor(videoSize / totalChunkCount);
+
+  if (chunkSize < MIN_CHUNK_SIZE || chunkSize > MAX_CHUNK_SIZE) {
+    throw new Error(`Invalid calculated TikTok chunk size: ${chunkSize}`);
+  }
+
+  return {
+    chunkSize,
+    totalChunkCount
+  };
+}
+
+function getTikTokChunkRange(index, chunkSize, totalChunkCount, videoSize) {
+  const start = index * chunkSize;
+  const end = index === totalChunkCount - 1
+    ? videoSize - 1
+    : start + chunkSize - 1;
+  const contentLength = end - start + 1;
+
+  return {
+    start,
+    end,
+    contentLength,
+    contentRange: `bytes ${start}-${end}/${videoSize}`
+  };
+}
+
+function buildVideoPayload(post, fileSize, creatorInfo = null, chunkConfig = null) {
+  const { chunkSize, totalChunkCount } = chunkConfig || calculateTikTokChunks(fileSize);
+
   return {
     post_info: {
       title: buildCaption(post),
@@ -329,8 +383,8 @@ function buildVideoPayload(post, fileSize, creatorInfo = null) {
     source_info: {
       source: 'FILE_UPLOAD',
       video_size: fileSize,
-      chunk_size: fileSize,
-      total_chunk_count: 1
+      chunk_size: chunkSize,
+      total_chunk_count: totalChunkCount
     },
     post_mode: 'DIRECT_POST'
   };
@@ -353,8 +407,12 @@ async function postVideoInitPayload(payload, accessToken) {
     const body = await parseResponseBody(response);
 
     if (!response.ok) {
+      const error = getTikTokErrorLogFields(body);
       console.error('[tiktok] video init failed', JSON.stringify({
         status: response.status,
+        code: error.code,
+        message: error.message,
+        log_id: error.logId,
         body,
         payload
       }, null, 2));
@@ -375,6 +433,16 @@ async function postVideoInitPayload(payload, accessToken) {
 
     const apiError = getTikTokApiError(body);
     if (apiError) {
+      const error = getTikTokErrorLogFields(body);
+      console.error('[tiktok] video init failed', JSON.stringify({
+        status: response.status,
+        code: error.code,
+        message: error.message,
+        log_id: error.logId,
+        body,
+        payload
+      }, null, 2));
+
       return {
         ok: false,
         mode: 'api',
@@ -397,45 +465,54 @@ async function postVideoInitPayload(payload, accessToken) {
   }
 }
 
-async function uploadVideoFile(uploadUrl, source, fileSize, mimeType) {
+async function uploadVideoFile(uploadUrl, source, fileSize, chunkSize, totalChunkCount) {
   try {
-    const firstByte = 0;
-    const lastByte = fileSize - 1;
-    const uploadBody = source.stream || source.buffer || fs.createReadStream(source.videoPath);
-    const requestOptions = {
-      method: 'PUT',
-      headers: {
-        'Content-Type': mimeType,
-        'Content-Length': String(fileSize),
-        'Content-Range': `bytes ${firstByte}-${lastByte}/${fileSize}`
-      },
-      body: uploadBody,
-      signal: requestSignal(config.tiktok.uploadTimeoutMs)
-    };
-    if (source.stream || source.videoPath) requestOptions.duplex = 'half';
+    let lastResponseBody = null;
 
-    const response = await fetch(uploadUrl, requestOptions);
-
-    const body = await parseResponseBody(response);
-
-    if (!response.ok) {
-      console.error('[tiktok] video upload failed', JSON.stringify({
-        status: response.status,
-        body
-      }, null, 2));
-
-      return {
-        ok: false,
-        mode: 'api',
-        reason: `TikTok video upload returned HTTP ${response.status}`,
-        response: body
+    for (let index = 0; index < totalChunkCount; index += 1) {
+      const range = getTikTokChunkRange(index, chunkSize, totalChunkCount, fileSize);
+      const uploadBody = createTikTokChunkBody(source, range);
+      const requestOptions = {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'video/mp4',
+          'Content-Length': String(range.contentLength),
+          'Content-Range': range.contentRange
+        },
+        body: uploadBody,
+        signal: requestSignal(config.tiktok.uploadTimeoutMs)
       };
+      if (source.stream || source.videoPath) requestOptions.duplex = 'half';
+
+      const response = await fetch(uploadUrl, requestOptions);
+      const body = await parseResponseBody(response);
+
+      if (!response.ok) {
+        const error = getTikTokErrorLogFields(body);
+        console.error('[tiktok] video upload failed', JSON.stringify({
+          status: response.status,
+          code: error.code,
+          message: error.message,
+          log_id: error.logId,
+          chunk_index: index,
+          body
+        }, null, 2));
+
+        return {
+          ok: false,
+          mode: 'api',
+          reason: `TikTok video upload returned HTTP ${response.status}`,
+          response: body
+        };
+      }
+
+      lastResponseBody = body;
     }
 
     return {
       ok: true,
       mode: 'api',
-      response: body || { uploaded: true, size: fileSize }
+      response: lastResponseBody || { uploaded: true, size: fileSize, chunks: totalChunkCount }
     };
   } catch (error) {
     return {
@@ -444,6 +521,65 @@ async function uploadVideoFile(uploadUrl, source, fileSize, mimeType) {
       reason: error.message
     };
   }
+}
+
+function createTikTokChunkBody(source, range) {
+  if (source.buffer) {
+    return source.buffer.subarray(range.start, range.end + 1);
+  }
+
+  if (source.videoPath) {
+    return fs.createReadStream(source.videoPath, {
+      start: range.start,
+      end: range.end
+    });
+  }
+
+  if (source.stream) {
+    return createRemoteTikTokChunkStream(source, range.contentLength);
+  }
+
+  throw new Error('TikTok video source is unavailable');
+}
+
+function createRemoteTikTokChunkStream(source, contentLength) {
+  if (!source.streamReader) {
+    source.streamReader = source.stream.getReader();
+  }
+
+  let remaining = contentLength;
+
+  return new ReadableStream({
+    async pull(controller) {
+      if (remaining === 0) {
+        controller.close();
+        return;
+      }
+
+      let chunk = source.pendingStreamChunk;
+      if (!chunk || chunk.byteLength === 0) {
+        const { done, value } = await source.streamReader.read();
+        if (done) {
+          controller.error(new Error('Video media stream ended before the declared size'));
+          return;
+        }
+        chunk = value;
+      }
+
+      const bytesToSend = Math.min(chunk.byteLength, remaining);
+      const output = chunk.subarray(0, bytesToSend);
+      source.pendingStreamChunk = bytesToSend < chunk.byteLength
+        ? chunk.subarray(bytesToSend)
+        : null;
+      remaining -= bytesToSend;
+      controller.enqueue(output);
+
+      if (remaining === 0) controller.close();
+    },
+    async cancel(reason) {
+      await source.streamReader.cancel(reason);
+    }
+  });
 }
 
 function getUploadUrl(response) {
@@ -472,18 +608,6 @@ function getRemoteMediaUrl(post) {
   ];
 
   return candidates.map((value) => String(value || '').trim()).find(isUsablePublicUrl) || '';
-}
-
-function getVideoMimeType(post) {
-  const mimeType = String(post.mimeType || '').toLowerCase();
-  if (['video/mp4', 'video/quicktime', 'video/webm'].includes(mimeType)) {
-    return mimeType;
-  }
-
-  const fileName = String(post.fileName || '').toLowerCase();
-  if (fileName.endsWith('.mov')) return 'video/quicktime';
-  if (fileName.endsWith('.webm')) return 'video/webm';
-  return 'video/mp4';
 }
 
 function buildPhotoPayload(post, imageUrl, creatorInfo = null) {
@@ -676,6 +800,18 @@ function getTikTokApiError(body) {
   return error.message || error.description || `TikTok API returned ${error.code}`;
 }
 
+function getTikTokErrorLogFields(body) {
+  const error = body && typeof body === 'object' && body.error && typeof body.error === 'object'
+    ? body.error
+    : {};
+
+  return {
+    code: String(error.code || ''),
+    message: String(error.message || error.description || ''),
+    logId: String(error.log_id || '')
+  };
+}
+
 function isUsablePublicUrl(value) {
   try {
     const url = new URL(value);
@@ -712,6 +848,8 @@ module.exports = {
   buildCaption,
   buildPhotoPayload,
   buildVideoPayload,
+  calculateTikTokChunks,
+  getTikTokChunkRange,
   getPublicImageUrl,
   resolvePrivacyLevel
 };
