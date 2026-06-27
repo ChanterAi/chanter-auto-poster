@@ -6,9 +6,10 @@ const test = require('node:test');
 test('cron tick atomically publishes a due scheduled Firestore job', async (t) => {
   const firestorePath = require.resolve('../src/firestore');
   const tiktokPath = require.resolve('../src/tiktok');
+  const instagramPath = require.resolve('../src/instagram');
   const mapperPath = require.resolve('../src/postsMapper');
   const schedulerPath = require.resolve('../src/scheduler');
-  for (const modulePath of [firestorePath, tiktokPath, mapperPath, schedulerPath]) {
+  for (const modulePath of [firestorePath, tiktokPath, instagramPath, mapperPath, schedulerPath]) {
     delete require.cache[modulePath];
   }
 
@@ -32,6 +33,17 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
     createdAt: timestamp('2026-06-20T10:00:00.000Z'),
     updatedAt: timestamp('2026-06-20T10:00:00.000Z'),
     claimAttempts: 0
+  }], ['instagram-job', {
+    userId: 'owner',
+    platform: 'instagram',
+    originalName: 'story.mp4',
+    mediaType: 'video',
+    mediaUrl: 'https://cdn.example.com/story.mp4',
+    status: 'scheduled',
+    scheduledAt: timestamp('2026-06-20T11:57:00.000Z'),
+    createdAt: timestamp('2026-06-20T08:00:00.000Z'),
+    updatedAt: timestamp('2026-06-20T08:00:00.000Z'),
+    claimAttempts: 0
   }], ['legacy-job', {
     userId: 'owner',
     platform: 'tiktok',
@@ -47,6 +59,8 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
   const queries = [];
   const logs = [];
   const publishedJobs = [];
+  let instagramHealthChecks = 0;
+  let instagramPublishCalls = 0;
 
   const document = (id) => ({
     id,
@@ -126,12 +140,34 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
       }
     }
   };
+  require.cache[instagramPath] = {
+    id: instagramPath,
+    filename: instagramPath,
+    loaded: true,
+    exports: {
+      getInstagramHealth: async () => {
+        instagramHealthChecks += 1;
+        return {
+          success: true,
+          platform: 'instagram',
+          configured: false,
+          canPublish: false,
+          mode: 'dry-run',
+          missing: ['META_APP_ID']
+        };
+      },
+      publishInstagramMedia: async () => {
+        instagramPublishCalls += 1;
+        throw new Error('Instagram Graph API must not be called when configuration is missing');
+      }
+    }
+  };
 
   const originalLog = console.log;
   console.log = (...args) => logs.push(args.join(' '));
   t.after(() => {
     console.log = originalLog;
-    for (const modulePath of [firestorePath, tiktokPath, mapperPath, schedulerPath]) {
+    for (const modulePath of [firestorePath, tiktokPath, instagramPath, mapperPath, schedulerPath]) {
       delete require.cache[modulePath];
     }
   });
@@ -142,20 +178,30 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
   assert.deepEqual(result, {
     ok: true,
     now: fixedNow.toISOString(),
-    checked: 2,
-    due: 2,
+    checked: 3,
+    due: 3,
     posted: 1,
-    failed: 1,
-    errors: [{
-      id: 'legacy-job',
-      error: 'TikTok account is unassigned for this job; publishing was blocked.'
-    }]
+    failed: 2,
+    errors: [
+      {
+        id: 'instagram-job',
+        error: 'Instagram publishing is not configured.'
+      },
+      {
+        id: 'legacy-job',
+        error: 'TikTok account is unassigned for this job; publishing was blocked.'
+      }
+    ]
   });
   assert.equal(records.get('due-job').status, 'posted');
   assert.equal(records.get('due-job').lockedBy, null);
   assert.equal(records.get('due-job').claimAttempts, 1);
   assert.equal(records.get('legacy-job').status, 'failed');
   assert.match(records.get('legacy-job').errorMessage, /unassigned/i);
+  assert.equal(records.get('instagram-job').status, 'failed');
+  assert.equal(records.get('instagram-job').errorMessage, 'Instagram publishing is not configured.');
+  assert.equal(instagramHealthChecks, 1);
+  assert.equal(instagramPublishCalls, 0);
   assert.equal(publishedJobs.length, 1);
   assert.equal(publishedJobs[0].accountId, 'account-b');
   assert.equal(publishedJobs[0].tiktokOpenId, 'account-b');

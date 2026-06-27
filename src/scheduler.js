@@ -5,6 +5,7 @@ const config = require('./config');
 const { postsCollection, getFirestore, Timestamp, FieldValue } = require('./firestore');
 const { postFromDoc, toTimestampOrNull } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
+const instagram = require('./instagram');
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
@@ -224,7 +225,9 @@ async function processPost(id, {
   console.log(`[POST_START] id=${id}`);
   let result;
   try {
-    if (!claimed.accountId || claimed.accountId === 'legacy' || claimed.accountAssignment === 'legacy') {
+    if (String(claimed.platform || 'tiktok').toLowerCase() === 'instagram') {
+      result = await publishScheduledInstagramPost(claimed);
+    } else if (!claimed.accountId || claimed.accountId === 'legacy' || claimed.accountAssignment === 'legacy') {
       result = {
         ok: false,
         mode: 'api',
@@ -249,6 +252,32 @@ async function processPost(id, {
     console.error(`[POST_FAILED] id=${id} error=${finalized.reason || 'Unknown publish error'}`);
   }
   return finalized;
+}
+
+async function publishScheduledInstagramPost(post) {
+  const health = await instagram.getInstagramHealth();
+  if (!health.configured) {
+    return {
+      ok: false,
+      mode: 'api',
+      code: 'INSTAGRAM_NOT_CONFIGURED',
+      reason: 'Instagram publishing is not configured.'
+    };
+  }
+  if (!health.canPublish) {
+    return {
+      ok: false,
+      mode: 'api',
+      code: 'INSTAGRAM_LIVE_DISABLED',
+      reason: 'Instagram live publishing is disabled.'
+    };
+  }
+
+  return instagram.publishInstagramMedia({
+    post,
+    userId: post.userId,
+    dryRun: false
+  });
 }
 
 async function finalize(id, workerId, result) {

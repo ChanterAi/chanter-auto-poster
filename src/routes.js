@@ -92,6 +92,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
   const instagramStatus = config.ENABLE_INSTAGRAM
     ? await instagram.getInstagramAuthStatus()
     : null;
+  const instagramHealth = await instagram.getInstagramHealth();
   const creatorInfo = tiktokAuthStatus.connected
     ? (await getCreatorInfoSafe(activeAccountId, userId)) || creatorInfoFromAccount(activeAccount)
     : creatorInfoFromAccount(activeAccount);
@@ -111,6 +112,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
     autoMusicConfigured: autoMusic.isAutoMusicConfigured(),
     instagramStatus,
+    instagramHealth,
     creatorInfo,
     helpers: viewHelpers
   });
@@ -333,6 +335,11 @@ router.get('/disconnect/instagram', requireAdminPage, asyncRoute(async (req, res
   redirectWithNotice(res, 'Instagram disconnected.');
 }));
 
+router.get('/api/instagram/health', asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(await instagram.getInstagramHealth());
+}));
+
 router.get('/api/instagram/status', requireAdminApi, asyncRoute(async (req, res) => {
   const status = await instagram.getInstagramAuthStatus();
   const containerId = String(req.query.containerId || '').trim();
@@ -351,9 +358,29 @@ router.post('/api/instagram/publish', requireAdminApi, express.json({ limit: '1m
   try {
     const result = await instagram.publishInstagramMedia(payload);
     await saveInstagramAttempt(userId, payload.postId, result);
+    if (result.code === 'INSTAGRAM_NOT_CONFIGURED' && wantsJson(req)) {
+      res.status(503).json({
+        success: false,
+        platform: 'instagram',
+        code: result.code,
+        message: result.message,
+        missing: result.missing
+      });
+      return;
+    }
     if (wantsJson(req)) { res.status(result.ok ? 200 : 400).json({ ok: result.ok, result }); return; }
     redirectWithNotice(res, instagramNotice(result));
   } catch (error) {
+    if (error.code === 'INSTAGRAM_NOT_CONFIGURED' && wantsJson(req)) {
+      res.status(503).json({
+        success: false,
+        platform: 'instagram',
+        code: error.code,
+        message: error.message,
+        missing: Array.isArray(error.missing) ? error.missing : []
+      });
+      return;
+    }
     const result = { ok: false, mode: 'api', published: false, reason: error.message, response: error.response || null };
     await saveInstagramAttempt(userId, payload.postId, result);
     if (wantsJson(req)) { res.status(400).json({ ok: false, result }); return; }
@@ -1004,8 +1031,9 @@ async function saveInstagramAttempt(userId, postId, result) {
 }
 
 function instagramNotice(result) {
+  if (result.code === 'INSTAGRAM_NOT_CONFIGURED') return result.message;
   if (result.ok && result.published) return 'Instagram accepted the publish request.';
-  if (result.ok) return 'Instagram test completed. Container created; public publish skipped.';
+  if (result.ok) return 'Instagram dry-run completed. No public publish was attempted.';
   if (result.mode === 'manual') return result.reason || 'Instagram needs a public media URL before testing.';
   return `Instagram attempt failed: ${result.reason || 'Unknown error'}`;
 }

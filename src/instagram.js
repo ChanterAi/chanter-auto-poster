@@ -4,6 +4,15 @@ const storage = require('./storage');
 const tokenRefreshBufferMs = 5 * 60 * 1000;
 const defaultStatusPollAttempts = Number(process.env.INSTAGRAM_STATUS_POLL_ATTEMPTS || 5);
 const defaultStatusPollIntervalMs = Number(process.env.INSTAGRAM_STATUS_POLL_INTERVAL_MS || 3000);
+const INSTAGRAM_NOT_CONFIGURED_MESSAGE =
+  'Instagram publishing is not configured. Add the required Meta API keys to enable publishing.';
+const REQUIRED_INSTAGRAM_KEYS = [
+  'META_APP_ID',
+  'META_APP_SECRET',
+  'META_ACCESS_TOKEN',
+  'INSTAGRAM_BUSINESS_ACCOUNT_ID',
+  'FACEBOOK_PAGE_ID'
+];
 
 function hasOAuthConfig() {
   return Boolean(config.instagram.appId && config.instagram.appSecret && config.instagram.redirectUri);
@@ -179,8 +188,72 @@ async function getInstagramAuth() {
   };
 }
 
+async function getInstagramHealth() {
+  let auth;
+  try {
+    auth = await getInstagramAuth();
+  } catch {
+    // Instagram configuration is optional. A storage/config lookup problem
+    // must not prevent the rest of AutoPoster from rendering.
+    auth = instagramAuthFromEnvironment();
+  }
+
+  return buildInstagramHealth(auth);
+}
+
+function buildInstagramHealth(auth = {}) {
+  const missing = getMissingInstagramKeys(auth);
+  const configured = missing.length === 0;
+  const liveRequested = Boolean(config.instagram.publishEnabled && !config.instagram.testMode);
+  const tokenExpired = Boolean(auth.access_token && isTokenExpired(auth));
+  const canPublish = configured && liveRequested && !tokenExpired;
+  const mode = canPublish ? 'live' : 'dry-run';
+
+  let message = 'Instagram publishing is not configured yet. The app can run in dry-run mode.';
+  if (configured && canPublish) {
+    message = 'Instagram publishing is configured.';
+  } else if (configured) {
+    message = tokenExpired
+      ? 'Instagram credentials are configured, but the access token is expired. Dry-run mode is active.'
+      : 'Instagram publishing is configured. Dry-run mode is active.';
+  }
+
+  return {
+    success: true,
+    platform: 'instagram',
+    configured,
+    canPublish,
+    mode,
+    missing,
+    message
+  };
+}
+
+function getMissingInstagramKeys(auth = {}) {
+  const available = {
+    META_APP_ID: config.instagram.appId,
+    META_APP_SECRET: config.instagram.appSecret,
+    META_ACCESS_TOKEN: auth.access_token || config.instagram.accessToken,
+    INSTAGRAM_BUSINESS_ACCOUNT_ID:
+      auth.instagram_business_account_id || config.instagram.instagramBusinessAccountId,
+    FACEBOOK_PAGE_ID: auth.facebook_page_id || config.instagram.facebookPageId
+  };
+
+  return REQUIRED_INSTAGRAM_KEYS.filter((key) => !String(available[key] || '').trim());
+}
+
+function instagramAuthFromEnvironment() {
+  return {
+    access_token: config.instagram.accessToken || '',
+    instagram_business_account_id: config.instagram.instagramBusinessAccountId || '',
+    facebook_page_id: config.instagram.facebookPageId || '',
+    expires_at: null
+  };
+}
+
 async function getInstagramAuthStatus() {
   const auth = await getInstagramAuth();
+  const health = buildInstagramHealth(auth);
   const connected = Boolean(auth.access_token);
   const tokenExpired = connected && isTokenExpired(auth);
   const hasProfessionalAccount = Boolean(auth.instagram_business_account_id);
@@ -201,7 +274,7 @@ async function getInstagramAuthStatus() {
   }
 
   return {
-    configured: hasOAuthConfig() || Boolean(config.instagram.accessToken),
+    configured: health.configured,
     connected,
     tokenExpired,
     readyToPublish,
@@ -209,7 +282,9 @@ async function getInstagramAuthStatus() {
     label,
     testMode: config.instagram.testMode,
     publishEnabled: config.instagram.publishEnabled,
-    canPublishPublicly: readyToPublish && config.instagram.publishEnabled && !config.instagram.testMode,
+    canPublishPublicly: readyToPublish && health.canPublish,
+    mode: health.mode,
+    missing: health.missing,
     expires_at: auth.expires_at || null,
     scope: auth.scope || config.instagram.scopes || '',
     source: auth.source || '',
@@ -222,7 +297,6 @@ async function getInstagramAuthStatus() {
 }
 
 async function publishInstagramMedia(input = {}) {
-  const auth = await getActiveInstagramAuth();
   const post = input.post || (input.postId ? await storage.getPost(input.userId, input.postId) : null);
 
   if (input.postId && !post) {
@@ -236,6 +310,38 @@ async function publishInstagramMedia(input = {}) {
 
   const publishKind = resolvePublishKind(input, post);
   const mediaUrl = resolvePublicMediaUrl(input, post, publishKind);
+  const payload = buildContainerPayload({
+    publishKind,
+    mediaUrl,
+    caption: resolveCaption(input, post),
+    altText: String(input.altText || '').trim(),
+    shareToFeed: parseBoolean(input.shareToFeed, true),
+    isCarouselItem: parseBoolean(input.isCarouselItem, false)
+  });
+  const shouldPublish = shouldPublishPublicly(input);
+  const health = await getInstagramHealth();
+
+  if (!shouldPublish) {
+    return {
+      ok: true,
+      mode: 'dry-run',
+      published: false,
+      reason: 'Instagram dry-run completed. No Instagram Graph API request was sent.',
+      response: {
+        apiCalled: false,
+        publishKind,
+        mediaUrl: mediaUrl || '',
+        payload: sanitizeParams(payload),
+        configured: health.configured
+      }
+    };
+  }
+
+  if (!health.configured) {
+    return instagramNotConfiguredResult(health.missing);
+  }
+
+  const auth = await getActiveInstagramAuth();
 
   if (!isUsablePublicUrl(mediaUrl)) {
     return {
@@ -249,15 +355,6 @@ async function publishInstagramMedia(input = {}) {
       }
     };
   }
-
-  const payload = buildContainerPayload({
-    publishKind,
-    mediaUrl,
-    caption: resolveCaption(input, post),
-    altText: String(input.altText || '').trim(),
-    shareToFeed: parseBoolean(input.shareToFeed, true),
-    isCarouselItem: parseBoolean(input.isCarouselItem, false)
-  });
 
   const container = await graphRequest(`${auth.instagram_business_account_id}/media`, {
     method: 'POST',
@@ -282,29 +379,6 @@ async function publishInstagramMedia(input = {}) {
   let containerStatus = null;
   if (publishKind !== 'photo') {
     containerStatus = await waitForContainerProcessing(containerId, auth.access_token);
-  }
-
-  const shouldPublish = shouldPublishPublicly(input);
-  if (!shouldPublish) {
-    logApiStep('media.publish.skipped', {
-      containerId,
-      testMode: config.instagram.testMode,
-      publishEnabled: config.instagram.publishEnabled,
-      dryRun: parseBoolean(input.dryRun, false)
-    });
-
-    return {
-      ok: true,
-      mode: 'test',
-      published: false,
-      reason: 'Instagram test mode created a media container. Public media_publish was skipped.',
-      response: {
-        container,
-        containerStatus,
-        payload: sanitizeParams(payload),
-        publishSkipped: true
-      }
-    };
   }
 
   if (containerStatus && !isFinishedStatus(containerStatus.status_code)) {
@@ -339,6 +413,20 @@ async function publishInstagramMedia(input = {}) {
       containerStatus,
       publish
     }
+  };
+}
+
+function instagramNotConfiguredResult(missing = REQUIRED_INSTAGRAM_KEYS) {
+  return {
+    ok: false,
+    success: false,
+    platform: 'instagram',
+    code: 'INSTAGRAM_NOT_CONFIGURED',
+    message: INSTAGRAM_NOT_CONFIGURED_MESSAGE,
+    missing: [...missing],
+    mode: 'api',
+    published: false,
+    reason: 'Instagram publishing is not configured.'
   };
 }
 
@@ -709,10 +797,13 @@ function maskToken(value) {
 }
 
 module.exports = {
+  REQUIRED_INSTAGRAM_KEYS,
+  INSTAGRAM_NOT_CONFIGURED_MESSAGE,
   hasOAuthConfig,
   buildInstagramAuthUrl,
   exchangeCodeForToken,
   getInstagramAuth,
+  getInstagramHealth,
   getInstagramAuthStatus,
   publishInstagramMedia,
   getContainerStatus,

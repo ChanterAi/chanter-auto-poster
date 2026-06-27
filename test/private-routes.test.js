@@ -60,6 +60,33 @@ tiktok.queryCreatorInfo = async (accountId) => ({
 instagram.getInstagramAuthStatus = async () => {
   throw new Error('Instagram status must not be requested while the feature is disabled');
 };
+const missingInstagramKeys = [
+  'META_APP_ID',
+  'META_APP_SECRET',
+  'META_ACCESS_TOKEN',
+  'INSTAGRAM_BUSINESS_ACCOUNT_ID',
+  'FACEBOOK_PAGE_ID'
+];
+instagram.getInstagramHealth = async () => ({
+  success: true,
+  platform: 'instagram',
+  configured: false,
+  canPublish: false,
+  mode: 'dry-run',
+  missing: missingInstagramKeys,
+  message: 'Instagram publishing is not configured yet. The app can run in dry-run mode.'
+});
+instagram.publishInstagramMedia = async () => ({
+  ok: false,
+  success: false,
+  platform: 'instagram',
+  code: 'INSTAGRAM_NOT_CONFIGURED',
+  message: 'Instagram publishing is not configured. Add the required Meta API keys to enable publishing.',
+  missing: missingInstagramKeys,
+  mode: 'api',
+  published: false,
+  reason: 'Instagram publishing is not configured.'
+});
 let analyzedVideoPath = '';
 let musicVideoPath = '';
 autoCaption.analyzeVideoForCaption = async (videoPath, draft) => {
@@ -130,6 +157,18 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.equal(unauthorizedConnect.status, 302);
   assert.match(unauthorizedConnect.headers.get('location'), /^\/admin-login/);
 
+  const instagramHealthResponse = await fetch(`${baseUrl}/api/instagram/health`);
+  assert.equal(instagramHealthResponse.status, 200);
+  assert.deepEqual(await instagramHealthResponse.json(), {
+    success: true,
+    platform: 'instagram',
+    configured: false,
+    canPublish: false,
+    mode: 'dry-run',
+    missing: missingInstagramKeys,
+    message: 'Instagram publishing is not configured yet. The app can run in dry-run mode.'
+  });
+
   const loginPageResponse = await fetch(`${baseUrl}/admin-login`);
   const loginPageHtml = await loginPageResponse.text();
   assert.equal(loginPageResponse.status, 200);
@@ -177,7 +216,9 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /account-a-history\.jpg/);
   assert.doesNotMatch(autoPosterHtml, /account-b-queue\.jpg/);
   assert.match(autoPosterHtml, /Switch \/ Connect another/);
-  assert.doesNotMatch(autoPosterHtml, /Instagram/i);
+  assert.match(autoPosterHtml, /Instagram: Not configured/);
+  assert.match(autoPosterHtml, /Dry-run mode active/);
+  assert.match(autoPosterHtml, /Add Meta API keys to enable Instagram publishing/);
 
   assert.equal(dashboardResponse.status, 200);
   assert.match(dashboardHtml, /AutoPoster Control Room/);
@@ -196,6 +237,24 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.equal(dashboardData.selectedAccountId, 'account-a');
   assert.deepEqual(dashboardData.accounts.map((account) => account.id), ['account-a', 'account-b']);
   assert.deepEqual(dashboardData.jobs.map((job) => job.accountId).sort(), ['account-a', 'account-b']);
+
+  const blockedInstagramPublish = await fetch(`${baseUrl}/api/instagram/publish`, {
+    method: 'POST',
+    headers: {
+      Cookie: adminCookie,
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ publishType: 'story', mediaUrl: 'https://cdn.example.com/story.mp4' })
+  });
+  assert.equal(blockedInstagramPublish.status, 503);
+  assert.deepEqual(await blockedInstagramPublish.json(), {
+    success: false,
+    platform: 'instagram',
+    code: 'INSTAGRAM_NOT_CONFIGURED',
+    message: 'Instagram publishing is not configured. Add the required Meta API keys to enable publishing.',
+    missing: missingInstagramKeys
+  });
 
   const captionBody = new FormData();
   captionBody.append('video', new Blob([Buffer.from('test-video')], { type: 'video/mp4' }), 'sample.mp4');
