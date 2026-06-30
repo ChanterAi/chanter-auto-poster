@@ -639,3 +639,69 @@ Reviewed `storage.disconnectTikTokAccount()`: correctly clears `access_token`, `
 ### Explicit Note
 
 **No real TikTok post was triggered** during this loop. All TikTok API interactions in tests use mocked fetch responses. No live TikTok publish endpoints were called.
+
+---
+
+## P1 Persistence and Posting Ledger Loop Completed (2026-06-30)
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/scheduler.js` | Added `extractPublishId()` helper to extract durable publish ID from TikTok API response; `finalize()` now stores `publishId` as a top-level Firestore field on success and stores redacted error metadata (no raw response) on failure; `claimPost()` now rejects jobs that already have a `publishId` (duplicate-post guard in both normal and force mode); added `extractPublishId` and `finalize` to `_private` exports |
+| `src/postsMapper.js` | Added `publishId` field to the mapped post object so it's readable throughout the app |
+| `test/p1-ledger.test.js` | New test file: 4 tests for successful publish ledger, failed publish redaction, duplicate-post guard, and extractPublishId helper |
+
+### Persistence Behavior Confirmed
+
+- **Firestore is the production path** for all job state: `posts/{postId}` collection is the source of truth for queue, scheduling, and publish results
+- **Local `data/*.json` files** are legacy only, used by `migrate-to-firestore.js` for one-time migration. The running app does not read them for job state.
+- **Cloudinary** is the durable media store; Firestore stores the `secure_url` as `mediaUrl`
+- **TikTok account tokens** are in Firestore `tiktokAccounts/{encodedOpenId}` — server-only, Firestore rules deny all client access
+- No changes were needed to the persistence architecture — it was already correctly structured
+
+### Publish Ledger Fields Added/Confirmed
+
+| Field | Location | Behavior |
+|------|----------|----------|
+| `publishId` | `posts/{postId}.publishId` | **New field** — extracted from TikTok API response (`publish_id`, `post_id`, `share_url`, etc.) on successful publish; stored as top-level string field |
+| `postedAt` | `posts/{postId}.postedAt` | Already existed — Timestamp set on successful finalize |
+| `status` | `posts/{postId}.status` | Already existed — set to `posted` on success, `failed` on failure |
+| `lastResult` | `posts/{postId}.lastResult` | **Modified** — success: stores full result + `completedAt`; failure: now stores only `{ ok, mode, reason, code, completedAt }` — raw API response with potential tokens is excluded |
+| `errorMessage` | `posts/{postId}.errorMessage` | Already existed — human-readable failure reason |
+| `failedAt` | `posts/{postId}.failedAt` | Already existed — Timestamp set on failure |
+
+### Duplicate-Post Guard Behavior
+
+The guard is implemented in `claimPost()` (Firestore transaction):
+
+1. **Normal mode (scheduled job due for publish):** If `data.status === 'posted'` AND `data.publishId` exists → return `null` (skip)
+2. **Force mode (manual retry):** If `data.publishId` exists → return `null` (skip), regardless of status
+
+This means:
+- A job that was successfully published (with a `publishId`) can never be re-published, even if `reclaimStaleLocks` retries it after a crash
+- Manual "Post Now" / force retry is blocked for any job that already has a `publishId`
+- The guard runs inside the Firestore transaction, so it's atomic with the claim
+
+### Commands Run and Results
+
+| Command | Result |
+|---------|--------|
+| `npm run build` | ✅ Pass — syntax checks + EJS compile + Vite build |
+| `npm test` | ✅ Pass — 46 tests, 0 failures, ~1.6s (4 new tests added) |
+| `git commit` | ✅ `546546d fix: harden auto poster publish persistence` |
+
+### Remaining P1 Items
+
+- **P1-2:** In-memory login rate limiting → use Firestore (not yet started)
+- **P1-5:** Render starter plan sleep risk → monitoring/alerting (not yet started)
+
+**Note:** P1-4 (duplicate post risk after crash) is now substantially mitigated by the duplicate-post guard. A job with a stored `publishId` will not be re-published. The remaining edge case is: crash occurs after TikTok accepts the post but before `finalize()` writes the `publishId` — in this case the guard has no `publishId` to check and will retry. Full elimination would require querying TikTok's API for publish status, which needs TikTok API research and is out of scope for this loop.
+
+### Remaining P2 Items
+
+- P2-1 through P2-7: structured logging, rate limiting, Cloudinary health, backups, legacy query cleanup, session revocation, CI/CD
+
+### Explicit Note
+
+**No real TikTok post was triggered** during this loop. All TikTok API interactions in tests use mocked responses. No live TikTok publish endpoints were called.

@@ -72,6 +72,7 @@ function postFromDoc(doc) {
     createdAt: toIsoOrNull(data.createdAt),
     updatedAt: toIsoOrNull(data.updatedAt),
     postedAt: toIsoOrNull(data.postedAt),
+    publishId: data.publishId || '',
     readyAt: toIsoOrNull(data.readyAt),
     lastResult: data.lastResult || null,
     lastInstagramResult: data.lastInstagramResult || null,

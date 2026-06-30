@@ -181,6 +181,14 @@ async function claimPost(id, { force, workerId, now = new Date() }) {
     const data = snap.data();
     if (data.status === 'processing') return null;
 
+    // Duplicate-post guard: if this job already has a durable publish
+    // identifier and a terminal success status, never publish again.
+    // This prevents duplicates when reclaimStaleLocks retries a post
+    // that TikTok actually accepted before the crash.
+    if (data.status === 'posted' && data.publishId) {
+      return null;
+    }
+
     if (!force) {
       const isCanonical = data.status === 'scheduled';
       const isLegacy = data.status === 'pending' && data.scheduledTimeUTC;
@@ -190,6 +198,12 @@ async function claimPost(id, { force, workerId, now = new Date() }) {
       const scheduledTimestamp = normalizeTimestamp(scheduledAt);
       if (!scheduledTimestamp || scheduledTimestamp.toMillis() > now.getTime()) return null;
     } else if (!['pending', 'scheduled', 'failed', 'ready'].includes(data.status)) {
+      return null;
+    }
+
+    // Even in force mode, refuse to re-publish a job that already has
+    // a durable publish identifier — the content is already on TikTok.
+    if (data.publishId) {
       return null;
     }
 
@@ -286,6 +300,10 @@ async function finalize(id, workerId, result) {
   const reason = result.reason || 'TikTok publish failed';
   let applied = false;
 
+  // Extract a durable publish identifier from the TikTok API response
+  // so we can guard against duplicate publishing on retry.
+  const publishId = result.ok ? extractPublishId(result.response) : null;
+
   await getFirestore().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) return;
@@ -293,7 +311,7 @@ async function finalize(id, workerId, result) {
     if (data.status !== 'processing' || data.lockedBy !== workerId) return;
 
     if (result.ok) {
-      tx.update(ref, {
+      const update = {
         status: 'posted',
         postedAt: Timestamp.now(),
         readyAt: null,
@@ -303,15 +321,27 @@ async function finalize(id, workerId, result) {
         lockedBy: null,
         lastResult: { ...result, completedAt },
         updatedAt: FieldValue.serverTimestamp()
-      });
+      };
+      if (publishId) {
+        update.publishId = publishId;
+      }
+      tx.update(ref, update);
     } else {
+      // Store redacted error metadata — no raw tokens or full payloads.
+      const safeResult = {
+        ok: false,
+        mode: result.mode || 'api',
+        reason,
+        completedAt
+      };
+      if (result.code) safeResult.code = result.code;
       tx.update(ref, {
         status: 'failed',
         failedAt: Timestamp.now(),
         errorMessage: reason,
         lockedAt: null,
         lockedBy: null,
-        lastResult: { ...result, completedAt },
+        lastResult: safeResult,
         updatedAt: FieldValue.serverTimestamp()
       });
     }
@@ -347,6 +377,20 @@ function safeTikTokSummary(result) {
   };
 }
 
+/**
+ * Extracts a durable publish identifier from a TikTok API response.
+ * Returns the first matching value found, or null if none exists.
+ */
+function extractPublishId(response) {
+  if (!response || typeof response !== 'object') return null;
+  const keys = new Set([
+    'publish_id', 'publishid', 'post_id', 'postid',
+    'share_url', 'shareurl', 'item_id', 'itemid',
+    'video_id', 'videoid'
+  ]);
+  return findSafeValue(response, keys);
+}
+
 function findSafeValue(value, keys) {
   if (!value || typeof value !== 'object') return null;
   for (const [key, child] of Object.entries(value)) {
@@ -374,6 +418,8 @@ module.exports = {
     claimPost,
     findDueJobs,
     describeQueryError,
-    safeTikTokSummary
+    safeTikTokSummary,
+    extractPublishId,
+    finalize
   }
 };
