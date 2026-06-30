@@ -4,7 +4,7 @@ const path = require('path');
 const config = require('./config');
 const routes = require('./routes');
 const storage = require('./storage');
-const { attachUser, requireAdminPage, validateAdminConfig } = require('./auth');
+const { attachUser, csrfOriginCheck, requireAdminPage, validateAdminConfig } = require('./auth');
 const { validateFirebaseConfig } = require('./firestore');
 const { configureCloudinary } = require('./cloudinary');
 
@@ -16,6 +16,7 @@ app.set('trust proxy', 1);
 
 app.use(express.urlencoded({ extended: true }));
 app.use(attachUser);
+app.use(csrfOriginCheck);
 app.use(
   '/autoposter-dashboard',
   requireAdminPage,

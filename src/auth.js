@@ -167,11 +167,63 @@ function requireUser(req, res, next) {
   requireAdminPage(req, res, next);
 }
 
+/**
+ * CSRF protection via Origin/Referer header check.
+ *
+ * SameSite=Lax on the session cookie already blocks cross-site POST
+ * requests in modern browsers, but older browsers and edge cases can
+ * still leak the cookie. This middleware provides defense-in-depth by
+ * verifying that every state-changing request originates from the same
+ * host. No form modifications are needed — the browser automatically
+ * sends Origin (or Referer as fallback) on all non-GET requests.
+ */
+function csrfOriginCheck(req, res, next) {
+  const safeMethods = ['GET', 'HEAD', 'OPTIONS'];
+  if (safeMethods.includes(req.method)) {
+    return next();
+  }
+
+  const host = req.headers['host'];
+  if (!host) {
+    return res.status(403).send('CSRF check failed: missing Host header');
+  }
+
+  const origin = req.headers['origin'];
+  const referer = req.headers['referer'];
+
+  if (origin) {
+    try {
+      const originUrl = new URL(origin);
+      if (originUrl.host === host) {
+        return next();
+      }
+    } catch {
+      // Invalid Origin URL — fall through to rejection
+    }
+    return res.status(403).send('CSRF check failed: Origin mismatch');
+  }
+
+  if (referer) {
+    try {
+      const refererUrl = new URL(referer);
+      if (refererUrl.host === host) {
+        return next();
+      }
+    } catch {
+      // Invalid Referer URL — fall through to rejection
+    }
+    return res.status(403).send('CSRF check failed: Referer mismatch');
+  }
+
+  return res.status(403).send('CSRF check failed: missing Origin header');
+}
+
 module.exports = {
   ADMIN_SESSION_COOKIE,
   DEFAULT_USER_ID: config.defaultUserId,
   attachUser,
   clearAdminSessionCookie,
+  csrfOriginCheck,
   createAdminSessionToken,
   requireAdminApi,
   requireAdminOAuth,

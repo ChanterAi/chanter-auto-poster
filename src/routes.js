@@ -646,7 +646,10 @@ router.post('/posts/:id/pending', requireConnectedTikTokAccount, asyncRoute(asyn
     postedAt: null,
     readyAt: null,
     errorMessage: null,
-    lastResult: null
+    lastResult: null,
+    claimAttempts: 0,
+    lockedAt: null,
+    lockedBy: null
   }, req.activeTikTokAccount.accountId);
   redirectWithNotice(res, post.scheduledAt ? 'Back to schedule.' : 'Back to pending.');
 }));
