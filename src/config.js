@@ -3,7 +3,7 @@ require('dotenv').config();
 
 const rootDir = path.resolve(__dirname, '..');
 const port = Number(process.env.PORT || 3000);
-const ENABLE_INSTAGRAM = false;
+const ENABLE_INSTAGRAM = envFlag('ENABLE_INSTAGRAM', false);
 const metaGraphVersion = process.env.META_GRAPH_VERSION || process.env.INSTAGRAM_GRAPH_VERSION || 'v24.0';
 const firebasePrivateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n').trim() || '';
 const requestedAiProvider = String(process.env.AI_PROVIDER || 'gemini').trim().toLowerCase();
@@ -148,3 +148,36 @@ module.exports = {
     publishEnabled: envFlag('INSTAGRAM_PUBLISH_ENABLED', false)
   }
 };
+
+/**
+ * Validates that critical secrets are present at startup.
+ * Called from server.js after config is loaded.
+ * Returns an array of warning messages for missing optional config;
+ * throws for truly required config (handled by auth.js and firestore.js).
+ */
+function validateSecrets() {
+  const warnings = [];
+
+  if (!cronSecret) {
+    warnings.push('CRON_SECRET is not set — /api/cron/tick will reject all external requests');
+  }
+  if (!adminSessionSecret) {
+    warnings.push('ADMIN_SESSION_SECRET is not set — deriving from ADMIN_PASSWORD (less secure, set a separate secret)');
+  }
+  if (!firebase.projectId) {
+    warnings.push('FIREBASE_PROJECT_ID is not set — Firestore will fail on first request');
+  }
+  if (!cloudinary.cloudName) {
+    warnings.push('CLOUDINARY_CLOUD_NAME is not set — media uploads will fail');
+  }
+  if (!tiktok.clientKey || !tiktok.clientSecret) {
+    warnings.push('TIKTOK_CLIENT_KEY/SECRET not set — TikTok OAuth will not work');
+  }
+
+  return warnings;
+}
+
+// Expose nested objects for validateSecrets
+const { cronSecret, adminSessionSecret, firebase, cloudinary, tiktok } = module.exports;
+
+module.exports.validateSecrets = validateSecrets;

@@ -2,6 +2,7 @@
 
 process.env.ADMIN_PASSWORD = 'test-admin-password-123';
 process.env.OPENAI_API_KEY = 'test-openai-key';
+process.env.ENABLE_INSTAGRAM = 'false';
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

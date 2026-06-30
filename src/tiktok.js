@@ -9,6 +9,42 @@ const creatorInfoQueryUrl = 'https://open.tiktokapis.com/v2/post/publish/creator
 const MIN_CHUNK_SIZE = 5 * 1024 * 1024;
 const MAX_CHUNK_SIZE = 64 * 1024 * 1024;
 
+const SENSITIVE_KEYS = new Set([
+  'access_token', 'accessToken', 'refresh_token', 'refreshToken',
+  'client_secret', 'clientSecret', 'open_id', 'openId', 'code'
+]);
+
+/**
+ * Redacts token-like fields from objects before logging.
+ * Recursively walks objects and arrays, replacing sensitive values
+ * with '[REDACTED]'.
+ */
+function redactSensitive(value) {
+  if (value == null) return value;
+  if (typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(redactSensitive);
+
+  const result = {};
+  for (const [key, val] of Object.entries(value)) {
+    if (SENSITIVE_KEYS.has(key)) {
+      result[key] = '[REDACTED]';
+    } else if (val && typeof val === 'object') {
+      result[key] = redactSensitive(val);
+    } else {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+function safeLog(label, obj) {
+  console.log(label, JSON.stringify(redactSensitive(obj), null, 2));
+}
+
+function safeError(label, obj) {
+  console.error(label, JSON.stringify(redactSensitive(obj), null, 2));
+}
+
 function requestSignal(timeoutMs = config.tiktok.requestTimeoutMs) {
   return AbortSignal.timeout(Math.max(1, Number(timeoutMs) || 30_000));
 }
@@ -106,7 +142,7 @@ async function publishPhotoPost(post) {
     return {
       ok: false,
       mode: 'manual',
-      reason: `TikTok account ${accountId} is not connected; publishing was blocked.`
+      reason: `TikTok account ${accountId} is not connected or its token has expired. Please click Disconnect then reconnect TikTok to get a fresh token.`
     };
   }
 
@@ -392,7 +428,7 @@ function buildVideoPayload(post, fileSize, creatorInfo = null, chunkConfig = nul
 
 async function postVideoInitPayload(payload, accessToken) {
   try {
-    console.log('[tiktok] video init payload', JSON.stringify(payload, null, 2));
+    safeLog('[tiktok] video init payload', payload);
 
     const response = await fetch(videoInitUrl, {
       method: 'POST',
@@ -408,14 +444,14 @@ async function postVideoInitPayload(payload, accessToken) {
 
     if (!response.ok) {
       const error = getTikTokErrorLogFields(body);
-      console.error('[tiktok] video init failed', JSON.stringify({
+      safeError('[tiktok] video init failed', {
         status: response.status,
         code: error.code,
         message: error.message,
         log_id: error.logId,
         body,
         payload
-      }, null, 2));
+      });
 
       // HTTP 403 after approval = stale pre-approval token
       // User must Disconnect and reconnect TikTok to get fresh production token
@@ -434,14 +470,14 @@ async function postVideoInitPayload(payload, accessToken) {
     const apiError = getTikTokApiError(body);
     if (apiError) {
       const error = getTikTokErrorLogFields(body);
-      console.error('[tiktok] video init failed', JSON.stringify({
+      safeError('[tiktok] video init failed', {
         status: response.status,
         code: error.code,
         message: error.message,
         log_id: error.logId,
         body,
         payload
-      }, null, 2));
+      });
 
       return {
         ok: false,
@@ -489,14 +525,14 @@ async function uploadVideoFile(uploadUrl, source, fileSize, chunkSize, totalChun
 
       if (!response.ok) {
         const error = getTikTokErrorLogFields(body);
-        console.error('[tiktok] video upload failed', JSON.stringify({
+        safeError('[tiktok] video upload failed', {
           status: response.status,
           code: error.code,
           message: error.message,
           log_id: error.logId,
           chunk_index: index,
           body
-        }, null, 2));
+        });
 
         return {
           ok: false,
@@ -668,7 +704,22 @@ async function getActiveTikTokAuth(accountId, userId) {
   if (!auth) return null;
   if (!auth.connected || !auth.access_token) return null;
   if (!shouldRefresh(auth)) return auth;
-  return refreshTikTokToken(accountId, userId);
+
+  // Token is near expiry — attempt refresh. If refresh fails (e.g.,
+  // refresh_token expired or revoked), return null so the caller
+  // produces a clear "reconnect required" message instead of silently
+  // using a stale token.
+  try {
+    const refreshed = await refreshTikTokToken(accountId, userId);
+    if (!refreshed || !refreshed.access_token) {
+      console.warn('[tiktok] token refresh returned no valid token for account', redactSensitive({ accountId }));
+      return null;
+    }
+    return refreshed;
+  } catch (error) {
+    console.warn('[tiktok] token refresh failed for account', redactSensitive({ accountId, error: error.message }));
+    return null;
+  }
 }
 
 function shouldRefresh(auth) {
@@ -680,7 +731,7 @@ function shouldRefresh(auth) {
 
 async function postPhotoPayload(payload, accessToken) {
   try {
-    console.log('[tiktok] photo publish payload', JSON.stringify(payload, null, 2));
+    safeLog('[tiktok] photo publish payload', payload);
 
     const response = await fetch(config.tiktok.contentPostInitUrl, {
       method: 'POST',
@@ -695,11 +746,11 @@ async function postPhotoPayload(payload, accessToken) {
     const body = await parseResponseBody(response);
 
     if (!response.ok) {
-      console.error('[tiktok] photo content init failed', JSON.stringify({
+      safeError('[tiktok] photo content init failed', {
         status: response.status,
         body,
         payload
-      }, null, 2));
+      });
 
       const reason = response.status === 403
         ? 'Token was issued before app approval. Please click Disconnect then reconnect TikTok to get a fresh production token.'
@@ -851,5 +902,6 @@ module.exports = {
   calculateTikTokChunks,
   getTikTokChunkRange,
   getPublicImageUrl,
-  resolvePrivacyLevel
+  resolvePrivacyLevel,
+  redactSensitive
 };

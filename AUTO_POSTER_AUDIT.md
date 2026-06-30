@@ -475,21 +475,10 @@ git log --all -- data/tiktok_auth.json  # verify no secrets in history
 
 ### Issues Not Fixed (Blocked)
 
-#### P0-2: Git-Tracked Data Files — ⚠️ Blocked by Safety Guard
-`git rm --cached data/posts.json data/settings.json data/tiktok_auth.json` was blocked by AutoClaw Safety Guard (detected `rm` pattern as high-risk). This command is safe — `--cached` only removes files from git index without deleting local copies.
+#### P0-2: Git-Tracked Data Files — ✅ Resolved (manual commit)
+User manually ran `git rm --cached` and committed as `584326e fix: harden auto poster csrf and runtime data tracking`. Verified: `git ls-files data/` returns empty. `.gitignore` includes `data/*.json`.
 
-**Manual step required before deploy:**
-```powershell
-cd "C:\Users\IT\OneDrive\Desktop\New folder\chanter-auto-poster"
-git rm --cached data/posts.json data/settings.json data/tiktok_auth.json
-git commit -m "chore: stop tracking data/*.json (already in .gitignore)"
-```
-Then verify no secrets in git history:
-```powershell
-git log --all -- data/tiktok_auth.json
-```
-
-### Commands Run and Results
+### Commands Run and Results (P0 Loop 1)
 
 | Command | Result |
 |---------|--------|
@@ -499,7 +488,7 @@ git log --all -- data/tiktok_auth.json
 ### Remaining Items
 
 **P0:**
-- P0-2: Git-tracked data files — blocked, needs manual `git rm --cached`
+- None — all P0 items resolved
 
 **P1 (not yet started):**
 - P1-1: SHA-256 for admin password → use bcrypt/scrypt
@@ -513,8 +502,140 @@ git log --all -- data/tiktok_auth.json
 
 ### Manual Steps Before Deploy
 
-1. Run `git rm --cached data/posts.json data/settings.json data/tiktok_auth.json` and commit
-2. Verify no secrets in git history: `git log --all -- data/tiktok_auth.json`
+1. ~~Run `git rm --cached data/*.json` and commit~~ — ✅ Done
+2. ~~Verify no secrets in git history~~ — ✅ Done (see verification below)
 3. Deploy the updated `src/auth.js`, `src/server.js`, `src/routes.js`
 4. Verify CSRF middleware doesn't block legitimate traffic (test login, upload, schedule, post-now, account switch)
 5. Test that a failed post can now be retried more than 5 times after clicking "Back to pending"
+
+---
+
+## P0 Loop 1 Verification (2026-06-30)
+
+### Git Hygiene Status
+
+| Check | Result |
+|-------|--------|
+| `git status` | On branch `main`, ahead of `origin/main` by 1 commit (`584326e`) |
+| `git ls-files data/` | Empty — no data files tracked |
+| `.gitignore` includes `data/*.json` | ✅ Yes |
+| `data/*.json` files exist locally | ✅ Yes (untracked, not deleted) |
+
+### Runtime JSON Tracking Status
+
+| File | Tracked before | Tracked now | Local file exists |
+|------|----------------|-------------|-------------------|
+| `data/posts.json` | Yes (since `5d94c7e`) | No | Yes |
+| `data/settings.json` | Yes (since `5d94c7e`) | No | Yes |
+| `data/tiktok_auth.json` | Yes (since `5d94c7e`) | No | Yes |
+
+### Code Changes Verified
+
+| File | Change | Verified |
+|------|--------|----------|
+| `src/auth.js` | `csrfOriginCheck()` function at line 180; exported at line 226 | ✅ |
+| `src/server.js` | Import at line 7; `app.use(csrfOriginCheck)` at line 19 | ✅ |
+| `src/routes.js` | `claimAttempts: 0` at line 650 in `/posts/:id/pending` route | ✅ |
+
+### Git History Check: `data/tiktok_auth.json`
+
+- **Commits containing the file:** `5d94c7e` (Initial CHANTER Auto Poster), `584326e` (removal commit)
+- **Content at `5d94c7e`:** Empty/default values — `connected: false`, `access_token: ""`, `refresh_token: ""`, `open_id: ""`
+- **Content at `584326e`:** File removed from index (not in tree)
+- **Actual secrets leaked:** None found — all token fields were empty strings
+
+**Security follow-up (not a blocker):** Although the committed `data/tiktok_auth.json` contained only empty/default values, the file existed in git history. As a precautionary measure, **TikTok OAuth token rotation is recommended**: disconnect and reconnect the TikTok account after deployment to ensure any tokens issued during local development are invalidated. If the repository is or was ever public, also consider using `git filter-branch` or BFG Repo-Cleaner to purge the file from history entirely.
+
+### Commands Run and Results (Verification)
+
+| Command | Result |
+|---------|--------|
+| `git status` | ✅ Clean working tree on `main`, 1 commit ahead of origin |
+| `git ls-files data/` | ✅ Empty — no data files tracked |
+| `.gitignore` | ✅ Contains `data/*.json` |
+| `git log --oneline -3` | `584326e` (fix commit), `c2cf77b`, `412749d` |
+| `git log --all --oneline -- data/tiktok_auth.json` | `584326e`, `5d94c7e` — file in initial commit, removed in fix commit |
+| `git show 5d94c7e:data/tiktok_auth.json` | Empty/default values only (no secrets) |
+| `git show 584326e:data/tiktok_auth.json` | File not in tree (removed from index) |
+| `npm run build` | ✅ Pass — syntax checks + EJS compile + Vite build |
+| `npm test` | ✅ Pass — 35 tests, 0 failures, ~1.6s |
+
+### Remaining Blockers
+
+**P0:** None — all P0 items verified as resolved.
+
+**P1 (not yet started):**
+- P1-1: SHA-256 for admin password → use bcrypt/scrypt
+- P1-2: In-memory login rate limiting → use Firestore
+- P1-4: Duplicate post risk after crash → store publish_id
+- P1-5: Render starter plan sleep risk → monitoring/alerting
+- P1-6: `ENABLE_INSTAGRAM` hardcoded false → read from env
+
+**Security follow-up (non-blocking):**
+- Rotate TikTok OAuth tokens (disconnect + reconnect) after deployment, because `data/tiktok_auth.json` existed in git history (even though it contained only empty values)
+- Consider purging `data/tiktok_auth.json` from git history with BFG if the repo was ever public
+
+**Verification result:** P0 Loop 1 is complete and verified. All P0 issues are resolved. Safe to proceed to P1 items when ready.
+
+---
+
+## P1 Security Loop Completed (2026-06-30)
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/auth.js` | Replaced SHA-256 password hashing with `crypto.scryptSync` (KDF with salt derived from password); cached derived key for process lifetime |
+| `src/config.js` | `ENABLE_INSTAGRAM` now read from env via `envFlag()` instead of hardcoded `false`; added `validateSecrets()` function returning warnings for missing critical config |
+| `src/server.js` | Calls `config.validateSecrets()` at startup and logs warnings |
+| `src/tiktok.js` | Added `redactSensitive()` helper and `safeLog`/`safeError` functions; replaced all `console.log`/`console.error` calls that log payloads/responses with redacted versions; improved `getActiveTikTokAuth()` to catch refresh failures and return clear reconnect-required message; improved `publishPhotoPost` error message for missing/expired token |
+| `test/p1-security.test.js` | New test file: 7 tests for scrypt password verification, ENABLE_INSTAGRAM boolean parsing, redactSensitive behavior, validateSecrets function |
+| `test/private-routes.test.js` | Added `process.env.ENABLE_INSTAGRAM = 'false'` to prevent .env pollution |
+
+### Security Issues Fixed
+
+#### P1-1: Admin Password Hashing — ✅ Fixed
+Replaced `createHash('sha256')` with `crypto.scryptSync` (Node.js built-in KDF). Salt is derived deterministically from the password using SHA-256, avoiding a separate salt env var. Derived key is cached per process lifetime to avoid repeated KDF computation. No new dependencies added.
+
+#### P1-6: ENABLE_INSTAGRAM Hardcoded — ✅ Fixed
+Changed from `const ENABLE_INSTAGRAM = false;` to `const ENABLE_INSTAGRAM = envFlag('ENABLE_INSTAGRAM', false);`. Now correctly parses `"false"`, `"true"`, `"0"`, `"1"`, etc. Default remains `false`.
+
+#### P1-3: claimAttempts Reset — ✅ Fixed (in P0 Loop 1)
+Already fixed in P0 Loop 1. `/posts/:id/pending` route resets `claimAttempts: 0`.
+
+#### Token Safety Improvements — ✅ Fixed
+- All `console.log`/`console.error` calls in `tiktok.js` that log API payloads, responses, or error bodies now pass through `redactSensitive()` which replaces `access_token`, `refresh_token`, `open_id`, `client_secret`, and `code` fields with `[REDACTED]`
+- `getActiveTikTokAuth()` now wraps `refreshTikTokToken()` in try/catch — refresh failures log a warning (with redacted account ID) and return `null` instead of throwing
+- `publishPhotoPost` error message for missing/expired token now explicitly says "Please click Disconnect then reconnect TikTok to get a fresh token"
+
+#### Startup Secret Validation — ✅ Added
+`config.validateSecrets()` returns warnings for: missing `CRON_SECRET`, missing `ADMIN_SESSION_SECRET`, missing `FIREBASE_PROJECT_ID`, missing `CLOUDINARY_CLOUD_NAME`, missing `TIKTOK_CLIENT_KEY/SECRET`. Warnings are logged at startup without blocking boot.
+
+#### Disconnect/Reconnect Safety — ✅ Verified
+Reviewed `storage.disconnectTikTokAccount()`: correctly clears `access_token`, `refresh_token`, `expires_at`, sets `connected: false`, uses `{ merge: true }` to preserve account record. Reconnect via OAuth flow creates fresh tokens via `saveTikTokAccount` with `set({ merge: true })`. No changes needed.
+
+### Commands Run and Results
+
+| Command | Result |
+|---------|--------|
+| `npm run build` | ✅ Pass — syntax checks + EJS compile + Vite build |
+| `npm test` | ✅ Pass — 42 tests, 0 failures, ~1.8s (7 new tests added) |
+| `git commit` | ✅ `fd14061 fix: harden auto poster auth and token safety` |
+
+### Remaining P1 Items
+
+- **P1-2:** In-memory login rate limiting → use Firestore (not yet started)
+- **P1-4:** Duplicate post risk after crash → store publish_id (not yet started)
+- **P1-5:** Render starter plan sleep risk → monitoring/alerting (not yet started)
+
+### Remaining P2 Items
+
+- P2-1 through P2-7: structured logging, rate limiting, Cloudinary health, backups, legacy query cleanup, session revocation, CI/CD
+
+### Manual Action Required
+
+**TikTok disconnect + reconnect after deploy/restart:** Because `data/tiktok_auth.json` existed in git history (P0-2), rotate TikTok OAuth tokens by disconnecting and reconnecting the TikTok account after deployment. This invalidates any tokens that may have been issued during local development.
+
+### Explicit Note
+
+**No real TikTok post was triggered** during this loop. All TikTok API interactions in tests use mocked fetch responses. No live TikTok publish endpoints were called.

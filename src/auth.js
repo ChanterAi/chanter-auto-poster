@@ -1,6 +1,6 @@
 'use strict';
 
-const { createHash, createHmac, randomBytes, timingSafeEqual } = require('crypto');
+const { createHash, createHmac, randomBytes, timingSafeEqual, scryptSync } = require('crypto');
 const config = require('./config');
 
 const ADMIN_SESSION_COOKIE = 'chanter_admin_session';
@@ -76,11 +76,28 @@ function verifyAdminSessionToken(token, now = Date.now()) {
   }
 }
 
+// Cache the scrypt-derived key so we only run the KDF once per process
+// lifetime. The salt is derived deterministically from the password so
+// no separate salt env var is needed.
+let cachedPasswordKey = null;
+let cachedPasswordSource = null;
+
+function derivePasswordKey(password) {
+  if (cachedPasswordSource === password && cachedPasswordKey) {
+    return cachedPasswordKey;
+  }
+  const salt = createHash('sha256').update(`chanter-admin-salt:${password}`).digest();
+  cachedPasswordKey = scryptSync(password, salt, 64);
+  cachedPasswordSource = password;
+  return cachedPasswordKey;
+}
+
 function verifyAdminPassword(candidate) {
   if (!config.adminPassword) return false;
-  const expected = createHash('sha256').update(config.adminPassword).digest();
-  const actual = createHash('sha256').update(String(candidate || '')).digest();
-  return timingSafeEqual(expected, actual);
+  const expected = derivePasswordKey(config.adminPassword);
+  const salt = createHash('sha256').update(`chanter-admin-salt:${config.adminPassword}`).digest();
+  const actual = scryptSync(String(candidate || ''), salt, 64);
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 function isSecureRequest(req) {

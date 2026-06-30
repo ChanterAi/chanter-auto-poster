@@ -58,6 +58,15 @@ async function start() {
   // booting a "healthy-looking" server that 500s on the first real request.
   validateFirebaseConfig();
   configureCloudinary();
+
+  // Warn about missing optional secrets without blocking startup.
+  if (typeof config.validateSecrets === 'function') {
+    const warnings = config.validateSecrets();
+    for (const warning of warnings) {
+      console.warn(`[config] ${warning}`);
+    }
+  }
+
   await storage.ensureStorage();
   app.listen(config.port, () => {
     console.log(`${config.appName} running at http://localhost:${config.port}`);
