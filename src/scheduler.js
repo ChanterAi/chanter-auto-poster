@@ -10,13 +10,65 @@ const instagram = require('./instagram');
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
 
+// Track the last successful tick time for health monitoring.
+// This is in-memory only — it resets on restart, which is exactly what
+// we want: if the process just booted, we don't know when the last tick
+// was, and the health endpoint should reflect that uncertainty.
+let lastTickAt = null;
+let lastTickSummary = null;
+
 function getSchedulerState() {
   return {
     mode: 'external_cron',
     persistent: true,
     inMemoryTimer: false,
     schedule: 'every minute',
-    endpoint: '/api/cron/tick'
+    endpoint: '/api/cron/tick',
+    lastTickAt: lastTickAt ? lastTickAt.toISOString() : null,
+    lastTickOk: lastTickSummary ? lastTickSummary.ok : null
+  };
+}
+
+/**
+ * Returns safe health metadata for the /health endpoint.
+ * No secrets, no tokens, no raw env values.
+ */
+async function getSchedulerHealth() {
+  let staleProcessingCount = 0;
+  let stuckPendingCount = 0;
+
+  try {
+    // Count jobs stuck in processing (potential crashed workers)
+    const processingSnap = await postsCollection()
+      .where('status', '==', 'processing')
+      .get();
+    staleProcessingCount = processingSnap.size;
+
+    // Count jobs in 'pending' that have a scheduledAt in the past
+    // (missed schedule — should have been picked up by a tick)
+    const nowTs = Timestamp.now();
+    const pendingSnap = await postsCollection()
+      .where('status', '==', 'pending')
+      .where('scheduledTimeUTC', '<=', nowTs)
+      .get();
+    stuckPendingCount = pendingSnap.size;
+  } catch (error) {
+    // Firestore might not be available during health check — don't crash
+    console.warn('[scheduler] health check query failed:', error.message);
+  }
+
+  return {
+    lastTickAt: lastTickAt ? lastTickAt.toISOString() : null,
+    lastTickOk: lastTickSummary ? lastTickSummary.ok : null,
+    lastTickSummary: lastTickSummary ? {
+      checked: lastTickSummary.checked,
+      posted: lastTickSummary.posted,
+      failed: lastTickSummary.failed
+    } : null,
+    staleProcessingCount,
+    stuckPendingCount,
+    staleLockMinutes: config.scheduler.staleLockMinutes,
+    maxClaimAttempts: config.scheduler.maxClaimAttempts
   };
 }
 
@@ -58,6 +110,8 @@ async function runSchedulerTick({ now = new Date() } = {}) {
     summary.errors.push({ error: detail.message, indexUrl: detail.indexUrl || undefined });
     console.error(`[CRON_QUERY_FAILED] error=${detail.message}`);
     if (detail.indexUrl) console.error(`[CRON_INDEX_REQUIRED] url=${detail.indexUrl}`);
+    lastTickAt = new Date();
+    lastTickSummary = { ...summary };
     return summary;
   }
 
@@ -80,6 +134,10 @@ async function runSchedulerTick({ now = new Date() } = {}) {
       console.error(`[POST_FAILED] id=${job.id} error=${message}`);
     }
   }
+
+  // Record tick metadata for health monitoring
+  lastTickAt = new Date();
+  lastTickSummary = { ...summary };
 
   return summary;
 }
@@ -411,6 +469,7 @@ function describeQueryError(error) {
 
 module.exports = {
   getSchedulerState,
+  getSchedulerHealth,
   publishNextPost,
   runSchedulerTick,
   processPost,

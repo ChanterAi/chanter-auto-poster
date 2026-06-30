@@ -705,3 +705,111 @@ This means:
 ### Explicit Note
 
 **No real TikTok post was triggered** during this loop. All TikTok API interactions in tests use mocked responses. No live TikTok publish endpoints were called.
+
+---
+
+## P1 Render and Scheduler Reliability Loop Completed (2026-06-30)
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/scheduler.js` | Added `lastTickAt`/`lastTickSummary` tracking (in-memory, resets on restart); added `getSchedulerHealth()` async function returning `staleProcessingCount`, `stuckPendingCount`, `lastTickAt`, `lastTickOk`, tick summary, and scheduler config; `runSchedulerTick()` now records tick metadata on both success and early-return paths; added `getSchedulerHealth` to exports |
+| `src/routes.js` | `/health` endpoint now async; includes `currentTime`, `schedulerHealth` (with stale job counts, last tick info), removed redundant `appTimeZone` duplicate |
+| `test/p1-reliability.test.js` | New test file: 5 tests for stale lock recovery, max-attempts failure, health endpoint safety, duplicate-post guard with force, and lastTickAt recording |
+
+### Scheduler/Cron Behavior Confirmed
+
+- **External cron**: Render Cron Job (`* * * * *`) calls `GET /api/cron/tick` with `x-cron-secret` header → web service wakes (if sleeping) and runs `runSchedulerTick()`
+- **In-process timer**: None — correctly removed. The app relies entirely on the external cron, which is the right design for Render (survives sleep/restart)
+- **Idempotent ticks**: Multiple overlapping ticks are safe — Firestore transactional claiming prevents double-publish
+- **Missed jobs**: If the cron stops, overdue `scheduled` jobs accumulate. On the next tick, `findDueJobs()` picks up all jobs where `scheduledAt <= now` — no job is missed, only delayed
+- **Legacy fallback**: `findDueJobs()` also queries `pending` + `scheduledTimeUTC` for pre-migration jobs
+
+### Stale Lock Recovery Behavior
+
+- `reclaimStaleLocks()` runs before every tick: finds `processing` jobs with `lockedAt` older than `SCHEDULER_STALE_LOCK_MINUTES` (20 min)
+- If `claimAttempts < MAX_CLAIM_ATTEMPTS` (5): resets to `scheduled`, clears lock fields → next tick republishes
+- If `claimAttempts >= MAX_CLAIM_ATTEMPTS`: marks as `failed` with errorMessage → stops retrying poison-pill jobs
+- **Duplicate guard**: Jobs with `publishId` are never re-claimed, even in force mode (added in P1 Ledger Loop)
+- **Stuck pending detection**: `getSchedulerHealth()` queries `pending` jobs with `scheduledTimeUTC <= now` to surface missed schedules
+
+### Health/Status Behavior
+
+`GET /health` now returns:
+```json
+{
+  "ok": true,
+  "app": "CHANTER Auto Poster",
+  "uptimeSeconds": 3600,
+  "currentTime": "2026-06-30T16:30:00.000Z",
+  "appTimeZone": "Asia/Nicosia",
+  "scheduler": {
+    "mode": "external_cron",
+    "persistent": true,
+    "schedule": "every minute",
+    "endpoint": "/api/cron/tick",
+    "lastTickAt": "2026-06-30T16:29:00.000Z",
+    "lastTickOk": true
+  },
+  "schedulerHealth": {
+    "lastTickAt": "2026-06-30T16:29:00.000Z",
+    "lastTickOk": true,
+    "lastTickSummary": { "checked": 3, "posted": 1, "failed": 0 },
+    "staleProcessingCount": 0,
+    "stuckPendingCount": 0,
+    "staleLockMinutes": 20,
+    "maxClaimAttempts": 5
+  },
+  "cronTrigger": true,
+  "autoCaptionConfigured": true,
+  "autoMusicConfigured": true
+}
+```
+
+No secrets, tokens, or raw env values are exposed. Verified by test.
+
+### Render Deployment Risks
+
+| Risk | Status | Mitigation |
+|------|--------|------------|
+| **Starter plan sleep** | Known | Cron job pings every minute; if cron itself fails, web service sleeps and posts are delayed (not lost — Firestore persists them). Upgrade to paid plan for production. |
+| **Cron job failure** | Unmonitored | `lastTickAt` in `/health` now allows external monitoring (e.g., uptime checker) to detect stale ticks. Set alert if `lastTickAt` > 5 min old. |
+| **Cold start delay** | Acceptable | First tick after sleep may take a few seconds to boot; job is delayed by <1 min, not missed. |
+| **Ephemeral filesystem** | Resolved | Firestore + Cloudinary are external stores; local `uploads/` is temporary staging only. |
+| **Single instance** | Safe | Firestore transactions prevent double-publish even if Render scales to multiple instances (not currently configured). |
+
+**Recommended Render production setup:**
+1. Upgrade web service from `starter` to `standard` or higher (eliminates sleep)
+2. Keep the Render Cron Job as-is (every minute)
+3. Set up external uptime monitoring on `GET /health` — alert if `lastTickAt` is >5 min stale or `staleProcessingCount` > 0
+4. Ensure `CRON_SECRET` is identical on both web and cron services (Blueprint env group handles this)
+5. Set `APP_URL` on the cron service to the web service's HTTPS URL
+
+**Manual monitoring checklist:**
+- [ ] Check `/health` endpoint: `schedulerHealth.staleProcessingCount` should be 0
+- [ ] Check `schedulerHealth.lastTickAt` is recent (<2 min old)
+- [ ] Check Render cron job logs for `[scheduler-ping]` entries
+- [ ] Check web service logs for `[CRON_TICK]` entries
+
+### Commands Run and Results
+
+| Command | Result |
+|---------|--------|
+| `npm run build` | ✅ Pass — syntax checks + EJS compile + Vite build |
+| `npm test` | ✅ Pass — 51 tests, 0 failures, ~1.8s (5 new tests added) |
+| `git commit` | ✅ `1457135 fix: harden auto poster scheduler reliability` |
+
+### Remaining P1 Items
+
+- **P1-2:** In-memory login rate limiting → use Firestore (not yet started)
+
+**P1-5 (Render starter plan sleep risk)** is now substantially mitigated: `getSchedulerHealth()` provides `lastTickAt` and `staleProcessingCount` for external monitoring. The remaining recommendation is to upgrade to a non-sleeping plan for production.
+
+### Remaining P2 Items
+
+- P2-1 through P2-7: structured logging, rate limiting, Cloudinary health, backups, legacy query cleanup, session revocation, CI/CD
+
+### Explicit Note
+
+**No real TikTok post was triggered** during this loop. All TikTok API interactions in tests use mocked responses. No live TikTok publish endpoints were called.

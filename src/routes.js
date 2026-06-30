@@ -194,18 +194,21 @@ router.get('/api/private/autoposter/dashboard', requireAdminApi, asyncRoute(asyn
   });
 }));
 
-router.get('/health', (req, res) => {
+router.get('/health', asyncRoute(async (req, res) => {
+  const schedulerHealth = await scheduler.getSchedulerHealth();
   res.json({
     ok: true,
     app: config.appName,
     uptimeSeconds: Math.round(process.uptime()),
+    currentTime: new Date().toISOString(),
+    appTimeZone: config.appTimeZone,
     scheduler: scheduler.getSchedulerState(),
+    schedulerHealth,
     cronTrigger: Boolean(config.cronSecret),
     autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
-    autoMusicConfigured: autoMusic.isAutoMusicConfigured(),
-    appTimeZone: config.appTimeZone
+    autoMusicConfigured: autoMusic.isAutoMusicConfigured()
   });
-});
+}));
 
 router.get('/api/storage/health', asyncRoute(async (req, res) => {
   if (!authorizeCronRequest(req, res, 'debug')) return;
