@@ -8,7 +8,7 @@ const test = require('node:test');
  * safety, and missed job handling. Uses mocked Firestore and TikTok.
  */
 
-function setupMocks({ records = new Map() } = {}) {
+function setupMocks({ records = new Map(), failQueries = [] } = {}) {
   const firestorePath = require.resolve('../src/firestore');
   const tiktokPath = require.resolve('../src/tiktok');
   const instagramPath = require.resolve('../src/instagram');
@@ -24,6 +24,7 @@ function setupMocks({ records = new Map() } = {}) {
     toMillis: () => new Date(value).getTime()
   });
   const serverTimestamp = timestamp(fixedNow);
+  const failedQueryNames = new Set(failQueries);
 
   const document = (id) => ({
     id,
@@ -45,6 +46,12 @@ function setupMocks({ records = new Map() } = {}) {
     orderBy() { return createQuery(filters); },
     limit(value) { return createQuery(filters); },
     async get() {
+      const queryName = getQueryName(filters);
+      if (failedQueryNames.has(queryName)) {
+        const error = new Error('Simulated Firestore health query failure');
+        error.code = 'unavailable';
+        throw error;
+      }
       let docs = [...records.keys()].map(document);
       for (const filter of filters) {
         docs = docs.filter((doc) => {
@@ -59,7 +66,7 @@ function setupMocks({ records = new Map() } = {}) {
           return false;
         });
       }
-      return { docs };
+      return { docs, size: docs.length };
     }
   });
   const collection = {
@@ -117,6 +124,20 @@ function setupMocks({ records = new Map() } = {}) {
       }
     }
   };
+}
+
+function getQueryName(filters) {
+  const status = filters.find((filter) => filter.field === 'status' && filter.operator === '==')?.value;
+  if (status === 'scheduled' && filters.some((filter) => filter.field === 'scheduledAt')) {
+    return 'canonicalScheduledOverdue';
+  }
+  if (status === 'pending' && filters.some((filter) => filter.field === 'scheduledTimeUTC')) {
+    return 'legacyPendingOverdue';
+  }
+  if (status === 'processing' && !filters.some((filter) => filter.field === 'lockedAt')) {
+    return 'processingLocks';
+  }
+  return 'other';
 }
 
 test('stale locked job is recovered to scheduled status on next tick', async () => {
@@ -189,6 +210,10 @@ test('getSchedulerHealth returns safe fields without secrets', async () => {
   // Must include operational fields
   assert.ok('staleProcessingCount' in health, 'should report staleProcessingCount');
   assert.ok('stuckPendingCount' in health, 'should report stuckPendingCount');
+  assert.equal(health.lastTickScope, 'process-local');
+  assert.equal(health.lastTickDurable, false);
+  assert.equal(health.degraded, false);
+  assert.equal(health.firestoreHealthError, false);
   assert.ok('staleLockMinutes' in health, 'should report staleLockMinutes');
   assert.ok('maxClaimAttempts' in health, 'should report maxClaimAttempts');
 
@@ -198,6 +223,113 @@ test('getSchedulerHealth returns safe fields without secrets', async () => {
   assert.ok(!healthStr.includes('secret'), 'health must not contain "secret"');
   assert.ok(!healthStr.includes('password'), 'health must not contain "password"');
   assert.ok(!healthStr.includes('api_key'), 'health must not contain "api_key"');
+
+  cleanup();
+});
+
+test('scheduler health counts overdue canonical jobs and excludes future scheduled jobs', async () => {
+  const records = new Map();
+  const { fixedNow, timestamp, cleanup } = setupMocks({ records });
+  records.set('overdue-canonical', {
+    status: 'scheduled',
+    scheduledAt: timestamp('2026-06-20T11:59:00.000Z')
+  });
+  records.set('future-canonical', {
+    status: 'scheduled',
+    scheduledAt: timestamp('2026-06-20T12:05:00.000Z')
+  });
+
+  const scheduler = require('../src/scheduler');
+  const health = await scheduler.getSchedulerHealth({ now: fixedNow });
+
+  assert.equal(health.overdueScheduledCount, 1);
+  assert.equal(health.overdueLegacyPendingCount, 0);
+  assert.equal(health.overdueTotalCount, 1);
+  assert.equal(health.degraded, true);
+  assert.ok(health.degradedReasons.some((reason) => reason.code === 'overdue_scheduled_jobs'));
+
+  cleanup();
+});
+
+test('scheduler health separates active processing jobs from stale processing jobs', async () => {
+  const records = new Map();
+  const { fixedNow, timestamp, cleanup } = setupMocks({ records });
+  records.set('active-processing', {
+    status: 'processing',
+    lockedAt: timestamp(fixedNow)
+  });
+  records.set('stale-processing', {
+    status: 'processing',
+    lockedAt: timestamp('2026-06-19T12:00:00.000Z')
+  });
+
+  const scheduler = require('../src/scheduler');
+  const health = await scheduler.getSchedulerHealth({ now: fixedNow });
+
+  assert.equal(health.activeProcessingCount, 1);
+  assert.equal(health.staleProcessingCount, 1);
+  assert.equal(health.processingMissingLockCount, 0);
+  assert.ok(health.degradedReasons.some((reason) => reason.code === 'stale_processing_jobs'));
+
+  cleanup();
+});
+
+test('scheduler health reports processing jobs with missing or invalid lock metadata', async () => {
+  const records = new Map([
+    ['missing-lock', { status: 'processing' }],
+    ['invalid-lock', { status: 'processing', lockedAt: 'not-a-firestore-timestamp' }]
+  ]);
+  const { fixedNow, cleanup } = setupMocks({ records });
+  const scheduler = require('../src/scheduler');
+
+  const health = await scheduler.getSchedulerHealth({ now: fixedNow });
+
+  assert.equal(health.processingMissingLockCount, 2);
+  assert.equal(health.activeProcessingCount, 0);
+  assert.equal(health.staleProcessingCount, 0);
+  assert.equal(health.degraded, true);
+  assert.ok(health.degradedReasons.some((reason) => reason.code === 'processing_missing_lock'));
+
+  cleanup();
+});
+
+test('scheduler health reports Firestore query failures as degraded instead of false green', async () => {
+  const { fixedNow, cleanup } = setupMocks({ failQueries: ['canonicalScheduledOverdue'] });
+  const scheduler = require('../src/scheduler');
+
+  const health = await scheduler.getSchedulerHealth({ now: fixedNow });
+
+  assert.equal(health.degraded, true);
+  assert.equal(health.firestoreHealthError, true);
+  assert.deepEqual(health.firestoreHealthFailedQueries, ['canonicalScheduledOverdue']);
+  assert.equal(health.overdueScheduledCount, null);
+  assert.equal(health.overdueTotalCount, null);
+  assert.ok(health.degradedReasons.some((reason) => reason.code === 'firestore_health_query_failed'));
+  assert.doesNotMatch(JSON.stringify(health), /Simulated Firestore health query failure/);
+
+  cleanup();
+});
+
+test('scheduler health preserves legacy pending scheduledTimeUTC compatibility', async () => {
+  const records = new Map();
+  const { fixedNow, timestamp, cleanup } = setupMocks({ records });
+  records.set('overdue-legacy', {
+    status: 'pending',
+    scheduledTimeUTC: timestamp('2026-06-20T11:59:00.000Z')
+  });
+  records.set('future-legacy', {
+    status: 'pending',
+    scheduledTimeUTC: timestamp('2026-06-20T12:05:00.000Z')
+  });
+
+  const scheduler = require('../src/scheduler');
+  const health = await scheduler.getSchedulerHealth({ now: fixedNow });
+
+  assert.equal(health.overdueScheduledCount, 0);
+  assert.equal(health.overdueLegacyPendingCount, 1);
+  assert.equal(health.stuckPendingCount, 1);
+  assert.equal(health.overdueTotalCount, 1);
+  assert.ok(health.degradedReasons.some((reason) => reason.code === 'overdue_legacy_pending_jobs'));
 
   cleanup();
 });
@@ -246,6 +378,8 @@ test('runSchedulerTick records lastTickAt for health monitoring', async () => {
   const stateAfter = scheduler.getSchedulerState();
   assert.ok(stateAfter.lastTickAt, 'lastTickAt should be set after tick');
   assert.equal(stateAfter.lastTickOk, true, 'lastTickOk should be true after successful tick');
+  assert.equal(stateAfter.lastTickScope, 'process-local');
+  assert.equal(stateAfter.lastTickDurable, false);
 
   cleanup();
 });

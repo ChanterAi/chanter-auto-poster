@@ -25,7 +25,9 @@ function getSchedulerState() {
     schedule: 'every minute',
     endpoint: '/api/cron/tick',
     lastTickAt: lastTickAt ? lastTickAt.toISOString() : null,
-    lastTickOk: lastTickSummary ? lastTickSummary.ok : null
+    lastTickOk: lastTickSummary ? lastTickSummary.ok : null,
+    lastTickScope: 'process-local',
+    lastTickDurable: false
   };
 }
 
@@ -33,43 +35,163 @@ function getSchedulerState() {
  * Returns safe health metadata for the /health endpoint.
  * No secrets, no tokens, no raw env values.
  */
-async function getSchedulerHealth() {
-  let staleProcessingCount = 0;
-  let stuckPendingCount = 0;
+async function getSchedulerHealth({ now = new Date() } = {}) {
+  const nowDate = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(nowDate.getTime())) throw new Error('Scheduler health received an invalid time');
 
-  try {
-    // Count jobs stuck in processing (potential crashed workers)
-    const processingSnap = await postsCollection()
-      .where('status', '==', 'processing')
-      .get();
-    staleProcessingCount = processingSnap.size;
+  const nowTimestamp = Timestamp.fromDate(nowDate);
+  const staleBeforeMillis = nowDate.getTime() - STALE_LOCK_MS;
+  const checks = [
+    {
+      name: 'canonicalScheduledOverdue',
+      run: () => postsCollection()
+        .where('status', '==', 'scheduled')
+        .where('scheduledAt', '<=', nowTimestamp)
+        .get()
+    },
+    {
+      name: 'legacyPendingOverdue',
+      run: () => postsCollection()
+        .where('status', '==', 'pending')
+        .where('scheduledTimeUTC', '<=', nowTimestamp)
+        .get()
+    },
+    {
+      name: 'processingLocks',
+      run: () => postsCollection()
+        .where('status', '==', 'processing')
+        .get()
+    }
+  ];
 
-    // Count jobs in 'pending' that have a scheduledAt in the past
-    // (missed schedule — should have been picked up by a tick)
-    const nowTs = Timestamp.now();
-    const pendingSnap = await postsCollection()
-      .where('status', '==', 'pending')
-      .where('scheduledTimeUTC', '<=', nowTs)
-      .get();
-    stuckPendingCount = pendingSnap.size;
-  } catch (error) {
-    // Firestore might not be available during health check — don't crash
-    console.warn('[scheduler] health check query failed:', error.message);
+  const settledChecks = await Promise.allSettled(
+    checks.map((check) => Promise.resolve().then(check.run))
+  );
+  const snapshots = new Map();
+  const firestoreHealthFailedQueries = [];
+
+  settledChecks.forEach((result, index) => {
+    const check = checks[index];
+    if (result.status === 'fulfilled') {
+      snapshots.set(check.name, result.value);
+      return;
+    }
+
+    firestoreHealthFailedQueries.push(check.name);
+    console.warn('[scheduler] health check query failed', {
+      query: check.name,
+      code: safeErrorCode(result.reason)
+    });
+  });
+
+  const canonicalSnapshot = snapshots.get('canonicalScheduledOverdue');
+  const legacySnapshot = snapshots.get('legacyPendingOverdue');
+  const processingSnapshot = snapshots.get('processingLocks');
+  const overdueScheduledCount = canonicalSnapshot ? snapshotSize(canonicalSnapshot) : null;
+  const overdueLegacyPendingCount = legacySnapshot ? snapshotSize(legacySnapshot) : null;
+  let staleProcessingCount = processingSnapshot ? 0 : null;
+  let activeProcessingCount = processingSnapshot ? 0 : null;
+  let processingMissingLockCount = processingSnapshot ? 0 : null;
+
+  if (processingSnapshot) {
+    for (const doc of processingSnapshot.docs || []) {
+      const lockedAtMillis = timestampMillis(doc.data()?.lockedAt);
+      if (!Number.isFinite(lockedAtMillis)) {
+        processingMissingLockCount += 1;
+      } else if (lockedAtMillis <= staleBeforeMillis) {
+        staleProcessingCount += 1;
+      } else {
+        activeProcessingCount += 1;
+      }
+    }
+  }
+
+  const degradedReasons = [];
+  if (firestoreHealthFailedQueries.length > 0) {
+    degradedReasons.push({
+      code: 'firestore_health_query_failed',
+      message: 'One or more Firestore scheduler health checks could not be completed.'
+    });
+  }
+  if (overdueScheduledCount > 0) {
+    degradedReasons.push({
+      code: 'overdue_scheduled_jobs',
+      message: 'Canonical scheduled jobs are overdue for processing.'
+    });
+  }
+  if (overdueLegacyPendingCount > 0) {
+    degradedReasons.push({
+      code: 'overdue_legacy_pending_jobs',
+      message: 'Legacy pending jobs are overdue for processing.'
+    });
+  }
+  if (staleProcessingCount > 0) {
+    degradedReasons.push({
+      code: 'stale_processing_jobs',
+      message: 'Processing jobs have exceeded the configured lock threshold.'
+    });
+  }
+  if (processingMissingLockCount > 0) {
+    degradedReasons.push({
+      code: 'processing_missing_lock',
+      message: 'Processing jobs are missing valid lock timestamps.'
+    });
   }
 
   return {
     lastTickAt: lastTickAt ? lastTickAt.toISOString() : null,
     lastTickOk: lastTickSummary ? lastTickSummary.ok : null,
+    lastTickScope: 'process-local',
+    lastTickDurable: false,
     lastTickSummary: lastTickSummary ? {
       checked: lastTickSummary.checked,
       posted: lastTickSummary.posted,
       failed: lastTickSummary.failed
     } : null,
+    degraded: degradedReasons.length > 0,
+    degradedReasons,
+    firestoreHealthError: firestoreHealthFailedQueries.length > 0,
+    firestoreHealthFailedQueries,
+    overdueScheduledCount,
+    overdueLegacyPendingCount,
+    overdueTotalCount: Number.isInteger(overdueScheduledCount) && Number.isInteger(overdueLegacyPendingCount)
+      ? overdueScheduledCount + overdueLegacyPendingCount
+      : null,
     staleProcessingCount,
-    stuckPendingCount,
+    activeProcessingCount,
+    processingMissingLockCount,
+    // Backward-compatible field for existing health consumers. This remains
+    // the legacy pending/scheduledTimeUTC count, not the canonical count.
+    stuckPendingCount: overdueLegacyPendingCount,
     staleLockMinutes: config.scheduler.staleLockMinutes,
     maxClaimAttempts: config.scheduler.maxClaimAttempts
   };
+}
+
+function snapshotSize(snapshot) {
+  if (Number.isInteger(snapshot?.size)) return snapshot.size;
+  return Array.isArray(snapshot?.docs) ? snapshot.docs.length : 0;
+}
+
+function timestampMillis(value) {
+  if (value && typeof value.toMillis === 'function') {
+    const millis = value.toMillis();
+    return Number.isFinite(millis) ? millis : null;
+  }
+  if (value && typeof value.toDate === 'function') {
+    const millis = value.toDate().getTime();
+    return Number.isFinite(millis) ? millis : null;
+  }
+  if (value instanceof Date) {
+    const millis = value.getTime();
+    return Number.isFinite(millis) ? millis : null;
+  }
+  return null;
+}
+
+function safeErrorCode(error) {
+  const code = String((error && error.code) || 'unknown').replace(/[^a-z0-9_-]/gi, '').slice(0, 64);
+  return code || 'unknown';
 }
 
 async function runSchedulerTick({ now = new Date() } = {}) {

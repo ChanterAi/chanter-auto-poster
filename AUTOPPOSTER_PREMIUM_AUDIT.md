@@ -138,7 +138,7 @@ Render note: the Blueprint uses paid `plan: starter`. Current Render documentati
 
 - **Severity:** Medium
 - **Files:** `package.json`, `package-lock.json`
-- **Why it matters:** `npm audit --omit=dev` reports eight moderate vulnerabilities through the Firebase Admin dependency chain (`uuid`, `gaxios`, `google-gax`, `@google-cloud/firestore`, `@google-cloud/storage`, `retry-request`, and `teeny-request`). The reported all-findings remediation would install `firebase-admin@10.3.0`, which is a breaking downgrade from the current major version and is not a safe automatic fix.
+- **Why it matters:** `npm audit --omit=dev` reports eight moderate vulnerabilities through the Firebase Admin dependency chain (`uuid`, `gaxios`, `google-gax`, `@google-cloud/firestore`, `@google-cloud/storage`, `retry-request`, and `teeny-request`). The current reported all-findings remediation would install `firebase-admin@14.1.0`, which is a breaking major upgrade and is not a safe automatic fix.
 - **Recommended fix:** Review current compatible Firebase Admin/transitive releases and upstream advisory status in a dedicated dependency patch. Run the full test/build suite and Firestore smoke after any lockfile change. Do not use `npm audit fix --force` blindly.
 - **Risk of changing it:** Medium to High. Firebase Admin version changes can alter credential, Timestamp, Firestore, and Storage behavior.
 
@@ -210,7 +210,50 @@ Patch boundary:
 
 Why first: it improves observability of missed/stuck jobs, does not alter posting or privacy, and gives the later reliability work a trustworthy operational signal.
 
-**Not implemented in this audit.**
+**Implemented in Loop 1A on 2026-07-01.** See the result below.
+
+### Loop 1A result: truthful scheduler health
+
+#### What changed
+
+- Health now counts canonical overdue jobs through `status == scheduled` and `scheduledAt <= now`.
+- The legacy `pending/scheduledTimeUTC` count remains as an additional compatibility signal and as the backward-compatible `stuckPendingCount` field.
+- Processing jobs are classified as active, stale by the configured threshold, or missing/invalid lock metadata. No job is repaired or written by health checks.
+- Each Firestore health query is isolated. A failed check returns its count as `null`, sets `firestoreHealthError: true`, lists only the fixed query identifier, and adds a safe structured degraded reason.
+- `lastTickAt` is retained and explicitly labeled `lastTickScope: process-local` plus `lastTickDurable: false`.
+- `/health` continues to return HTTP 200.
+
+#### What did not change
+
+- No TikTok API payload, endpoint, token, publishing, Post Now, claim, finalize, retry, upload, OAuth, privacy, dashboard, Firestore write, migration, or index behavior changed.
+- No durable scheduler heartbeat was added.
+- No audit vulnerability was changed or auto-fixed.
+
+#### Tests added or updated
+
+- Canonical overdue versus future scheduled jobs.
+- Active versus stale processing locks.
+- Missing and invalid processing lock metadata.
+- Firestore query failure returning degraded health and unknown counts instead of false zero.
+- Legacy pending/scheduledTimeUTC compatibility.
+- Safe fields and explicit process-local tick metadata.
+
+#### Validation
+
+| Command | Result |
+|---|---|
+| `node --test test/p1-reliability.test.js` | **Passed:** 10 tests, 0 failed. |
+| `npm test` | **Passed:** 56 tests, 0 failed, 0 skipped. |
+| `npm run build` | **Passed:** syntax checks, EJS compilation, and Vite production build. |
+| `npm audit --omit=dev` | **Failed as expected:** 8 moderate Firebase-chain transitive vulnerabilities; no fix applied. |
+| `git diff --check` | **Passed.** |
+
+#### Remaining risks and next loop
+
+- Health still has no durable cross-restart cron heartbeat; process-local `lastTickAt` is not proof of cron continuity.
+- An immediately due canonical job makes health degraded until a tick claims it; a later loop can add an explicit grace/alert policy using durable heartbeat data.
+- TikTok final-status reconciliation, acceptance/finalization duplicate risk, retry/backoff, disclosure compliance, and premium dashboard clarity remain open.
+- **Next recommended loop:** Loop 1B, a durable token-free Firestore scheduler heartbeat and alert thresholds, without changing publishing behavior.
 
 ## E. Test Plan
 
@@ -298,7 +341,7 @@ These results are filled from this documentation-only audit run:
 |---|---|
 | `npm test` | **Passed:** 51 tests, 0 failed, 0 skipped, duration 1560.7539 ms. External providers were mocked; no real post was made. |
 | `npm run build` | **Passed:** Node syntax checks, EJS compilation, and Vite 8.0.16 production build; 24 modules transformed in 184 ms. Generated tracked assets had no content changes. |
-| `npm audit --omit=dev` | **Failed:** exit 1; 8 moderate vulnerabilities in the Firebase Admin transitive dependency chain. The proposed force fix is breaking and was not applied. |
+| `npm audit --omit=dev` | **Failed:** exit 1; 8 moderate vulnerabilities in the Firebase Admin transitive dependency chain. The current proposed force fix is a breaking Firebase Admin major upgrade and was not applied. |
 | `git diff --check` | **Passed:** exit 0. Git emitted existing LF-to-CRLF warnings for generated dashboard assets; no tracked asset content changed. |
 | Lint | Not available: `package.json` has no `lint` script. |
 | Live TikTok/Firestore/Render smoke | Not run; would require production credentials and can trigger a real post. |
