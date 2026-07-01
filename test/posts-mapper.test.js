@@ -49,3 +49,30 @@ test('legacy scheduledTimeUTC remains readable during queue migration', () => {
   });
   assert.equal(restored.scheduledAt, iso);
 });
+
+test('postFromDoc preserves queue status reporting fields', () => {
+  const iso = '2026-06-20T09:15:00.000Z';
+  const restored = postFromDoc({
+    id: 'status-job',
+    data: () => ({
+      status: 'failed',
+      errorMessage: 'TikTok publishing is not configured.',
+      lockedAt: { toDate: () => new Date(iso) },
+      lockedBy: 'worker-123',
+      claimAttempts: 2,
+      publishId: 'publish-123',
+      lastResult: {
+        ok: false,
+        mode: 'api',
+        reason: 'TikTok publishing is not configured.'
+      }
+    })
+  });
+
+  assert.equal(restored.errorMessage, 'TikTok publishing is not configured.');
+  assert.equal(restored.lockedAt, iso);
+  assert.equal(restored.lockedBy, 'worker-123');
+  assert.equal(restored.claimAttempts, 2);
+  assert.equal(restored.publishId, 'publish-123');
+  assert.equal(restored.lastResult.reason, 'TikTok publishing is not configured.');
+});

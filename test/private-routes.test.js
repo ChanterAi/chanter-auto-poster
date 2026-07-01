@@ -3,6 +3,7 @@
 process.env.ADMIN_PASSWORD = 'test-admin-password-123';
 process.env.OPENAI_API_KEY = 'test-openai-key';
 process.env.ENABLE_INSTAGRAM = 'false';
+process.env.CRON_SECRET = 'test-cron-secret';
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -51,6 +52,30 @@ storage.getCounts = async () => ({
   failed: 0
 });
 storage.getDashboardJobs = async () => Object.values(postsByAccount).flat();
+storage.getRecentJobs = async () => [{
+  id: 'debug-processing',
+  status: 'processing',
+  scheduledAt: '2026-06-20T11:59:00.000Z',
+  originalName: 'debug-video.mp4',
+  caption: 'Debug queue item',
+  privacyLevel: 'SELF_ONLY',
+  lockedAt: '2026-06-20T12:00:00.000Z',
+  lockedBy: 'worker-123',
+  claimAttempts: 2,
+  publishId: 'publish-123',
+  errorMessage: 'TikTok publishing is not configured.',
+  lastResult: {
+    ok: false,
+    mode: 'api',
+    code: 'TIKTOK_NOT_CONFIGURED',
+    reason: 'TikTok publishing is not configured.',
+    response: { token: 'must-not-be-exposed' },
+    completedAt: '2026-06-20T12:01:00.000Z'
+  },
+  createdAt: '2026-06-20T11:55:00.000Z',
+  postedAt: null,
+  updatedAt: '2026-06-20T12:01:00.000Z'
+}];
 tiktok.getTikTokAuthStatus = async (accountId) => ({
   connected: Boolean(accountId), accountId, open_id: accountId, username: accountId === 'account-b' ? 'account_b' : 'account_a'
 });
@@ -238,6 +263,26 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.equal(dashboardData.selectedAccountId, 'account-a');
   assert.deepEqual(dashboardData.accounts.map((account) => account.id), ['account-a', 'account-b']);
   assert.deepEqual(dashboardData.jobs.map((job) => job.accountId).sort(), ['account-a', 'account-b']);
+
+  const debugJobsResponse = await fetch(`${baseUrl}/api/debug/jobs`, {
+    headers: { 'x-cron-secret': 'test-cron-secret' }
+  });
+  const debugJobs = await debugJobsResponse.json();
+  assert.equal(debugJobsResponse.status, 200);
+  assert.equal(debugJobs.jobs[0].id, 'debug-processing');
+  assert.equal(debugJobs.jobs[0].lockedAt, '2026-06-20T12:00:00.000Z');
+  assert.equal(debugJobs.jobs[0].lockedBy, 'worker-123');
+  assert.equal(debugJobs.jobs[0].claimAttempts, 2);
+  assert.equal(debugJobs.jobs[0].publishId, 'publish-123');
+  assert.equal(debugJobs.jobs[0].errorMessage, 'TikTok publishing is not configured.');
+  assert.deepEqual(debugJobs.jobs[0].lastAttempt, {
+    ok: false,
+    mode: 'api',
+    code: 'TIKTOK_NOT_CONFIGURED',
+    reason: 'TikTok publishing is not configured.',
+    completedAt: '2026-06-20T12:01:00.000Z'
+  });
+  assert.doesNotMatch(JSON.stringify(debugJobs), /must-not-be-exposed/);
 
   const blockedInstagramPublish = await fetch(`${baseUrl}/api/instagram/publish`, {
     method: 'POST',

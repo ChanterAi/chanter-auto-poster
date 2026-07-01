@@ -74,6 +74,7 @@ function postFromDoc(doc) {
     postedAt: toIsoOrNull(data.postedAt),
     publishId: data.publishId || '',
     readyAt: toIsoOrNull(data.readyAt),
+    errorMessage: data.errorMessage || '',
     lastResult: data.lastResult || null,
     lastInstagramResult: data.lastInstagramResult || null,
     disableComment: Boolean(data.disableComment),

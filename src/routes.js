@@ -233,7 +233,14 @@ router.get('/api/debug/jobs', asyncRoute(async (req, res) => {
       scheduledAt: job.scheduledAt,
       title: firstNonEmptyLine(job.caption) || job.originalName || job.fileName || 'Untitled',
       privacy: job.privacyLevel,
+      lockedAt: job.lockedAt || null,
+      lockedBy: job.lockedBy || null,
+      claimAttempts: job.claimAttempts,
+      publishId: job.publishId || '',
+      errorMessage: job.errorMessage || summarizeLastResult(job.lastResult).reason || '',
+      lastAttempt: summarizeLastResult(job.lastResult),
       createdAt: job.createdAt,
+      postedAt: job.postedAt,
       updatedAt: job.updatedAt
     }))
   });
@@ -813,6 +820,20 @@ function authorizeCronRequest(req, res, purpose) {
 
 function firstNonEmptyLine(value) {
   return String(value || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
+}
+
+function summarizeLastResult(result) {
+  if (!result || typeof result !== 'object') {
+    return { ok: null, mode: '', code: '', reason: '', completedAt: '' };
+  }
+
+  return {
+    ok: typeof result.ok === 'boolean' ? result.ok : null,
+    mode: String(result.mode || ''),
+    code: String(result.code || ''),
+    reason: String(result.reason || result.message || result.error || ''),
+    completedAt: String(result.completedAt || '')
+  };
 }
 
 async function getCreatorInfoSafe(accountId, userId) {

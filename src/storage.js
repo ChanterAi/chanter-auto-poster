@@ -253,6 +253,7 @@ async function getDashboardJobs(userId) {
         '',
       lastError:
         data.lastError ||
+        data.errorMessage ||
         data.error ||
         (lastResult && (lastResult.reason || lastResult.error || lastResult.message)) ||
         '',
