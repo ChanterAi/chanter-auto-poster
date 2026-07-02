@@ -217,6 +217,7 @@ async function runSchedulerTick({ now = new Date() } = {}) {
     await reclaimStaleLocks(nowDate);
   } catch (error) {
     const message = error.message || String(error);
+    summary.ok = false;
     summary.errors.push({ error: `Stale lock recovery failed: ${message}` });
     console.error(`[LOCK_RECOVERY_FAILED] error=${message}`);
   }
@@ -304,51 +305,89 @@ async function findDueJobs(nowTimestamp) {
 }
 
 async function reclaimStaleLocks(nowDate) {
-  const threshold = Timestamp.fromMillis(nowDate.getTime() - STALE_LOCK_MS);
   const snapshot = await postsCollection()
     .where('status', '==', 'processing')
-    .where('lockedAt', '<=', threshold)
     .get();
 
-  await Promise.all(snapshot.docs.map((doc) => reclaimOne(doc.ref)));
+  await Promise.all(snapshot.docs.map((doc) => reclaimOne(doc.ref, nowDate)));
 }
 
-async function reclaimOne(ref) {
-  try {
-    await getFirestore().runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (!snap.exists) return;
+async function reclaimOne(ref, nowDate) {
+  await getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return;
 
-      const data = snap.data();
-      if (data.status !== 'processing') return;
+    const data = snap.data();
+    if (data.status !== 'processing') return;
 
-      const attempts = Number(data.claimAttempts || 0);
-      if (attempts >= MAX_CLAIM_ATTEMPTS) {
-        const reason = `Publish worker stopped during ${attempts} attempts`;
-        tx.update(ref, {
-          status: 'failed',
-          lockedAt: null,
-          lockedBy: null,
-          failedAt: FieldValue.serverTimestamp(),
-          errorMessage: reason,
-          updatedAt: FieldValue.serverTimestamp(),
-          lastResult: { ok: false, mode: 'api', reason, completedAt: new Date().toISOString() }
-        });
-        return;
-      }
+    const lockedAtMillis = timestampMillis(data.lockedAt);
+    const staleBeforeMillis = nowDate.getTime() - STALE_LOCK_MS;
+    if (Number.isFinite(lockedAtMillis) && lockedAtMillis > staleBeforeMillis) return;
 
-      const scheduledAt = data.scheduledAt || data.scheduledTimeUTC || Timestamp.now();
+    if (data.publishId) {
+      const reason = 'A remote publish identifier already exists. Automatic retry was blocked; verify the provider result before changing this job.';
       tx.update(ref, {
-        status: 'scheduled',
-        scheduledAt,
+        status: 'failed',
         lockedAt: null,
         lockedBy: null,
+        failedAt: FieldValue.serverTimestamp(),
+        errorMessage: reason,
+        lastResult: {
+          ok: false,
+          mode: 'recovery',
+          code: 'RECOVERY_REMOTE_STATE_UNKNOWN',
+          reason,
+          completedAt: nowDate.toISOString()
+        },
         updatedAt: FieldValue.serverTimestamp()
       });
+      return;
+    }
+
+    if (!Number.isFinite(lockedAtMillis)) {
+      const reason = 'Processing lock is missing or invalid. Automatic retry was blocked to prevent duplicate publishing.';
+      tx.update(ref, {
+        status: 'failed',
+        lockedAt: null,
+        lockedBy: null,
+        failedAt: FieldValue.serverTimestamp(),
+        errorMessage: reason,
+        lastResult: {
+          ok: false,
+          mode: 'recovery',
+          code: 'RECOVERY_LOCK_INVALID',
+          reason,
+          completedAt: nowDate.toISOString()
+        },
+        updatedAt: FieldValue.serverTimestamp()
+      });
+      return;
+    }
+
+    const attempts = Number(data.claimAttempts || 0);
+    if (attempts >= MAX_CLAIM_ATTEMPTS) {
+      const reason = `Publish worker stopped during ${attempts} attempts`;
+      tx.update(ref, {
+        status: 'failed',
+        lockedAt: null,
+        lockedBy: null,
+        failedAt: FieldValue.serverTimestamp(),
+        errorMessage: reason,
+        updatedAt: FieldValue.serverTimestamp(),
+        lastResult: { ok: false, mode: 'api', reason, completedAt: nowDate.toISOString() }
+      });
+      return;
+    }
+
+    const scheduledAt = data.scheduledAt || data.scheduledTimeUTC || Timestamp.now();
+    tx.update(ref, {
+      status: 'scheduled',
+      scheduledAt,
+      lockedAt: null,
+      lockedBy: null,
+      updatedAt: FieldValue.serverTimestamp()
     });
-  } catch (error) {
-    console.error(`[LOCK_RECOVERY_FAILED] id=${ref.id} error=${error.message || error}`);
-  }
+  });
 }
 
 async function claimPost(id, { force, workerId, now = new Date() }) {

@@ -200,6 +200,113 @@ test('stale locked job that exceeded maxClaimAttempts is marked failed', async (
   cleanup();
 });
 
+test('active processing job is not recovered or republished', async () => {
+  const records = new Map([['active-job', {
+    userId: 'owner', platform: 'tiktok', accountId: 'acc-1', tiktokOpenId: 'acc-1',
+    status: 'processing',
+    scheduledAt: { toDate: () => new Date('2026-06-20T11:59:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:59:00.000Z') },
+    lockedAt: { toDate: () => new Date('2026-06-20T11:55:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:55:00.000Z') },
+    lockedBy: 'active-worker',
+    claimAttempts: 1
+  }]]);
+
+  let publishCalled = false;
+  const { fixedNow, cleanup } = setupMocks({ records });
+  require.cache[require.resolve('../src/tiktok')].exports.publishPhotoPost = async () => {
+    publishCalled = true;
+    return { ok: true };
+  };
+  const scheduler = require('../src/scheduler');
+
+  await scheduler.runSchedulerTick({ now: fixedNow });
+  const stored = records.get('active-job');
+
+  assert.equal(publishCalled, false);
+  assert.equal(stored.status, 'processing');
+  assert.equal(stored.lockedBy, 'active-worker');
+  assert.equal(stored.claimAttempts, 1);
+
+  cleanup();
+});
+
+test('processing job with missing lock metadata fails closed without publishing', async () => {
+  const records = new Map([['missing-lock-job', {
+    userId: 'owner', platform: 'tiktok', accountId: 'acc-1', tiktokOpenId: 'acc-1',
+    status: 'processing',
+    scheduledAt: { toDate: () => new Date('2026-06-20T11:59:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:59:00.000Z') },
+    lockedBy: 'unknown-worker',
+    claimAttempts: 1
+  }]]);
+
+  let publishCalled = false;
+  const { fixedNow, cleanup } = setupMocks({ records });
+  require.cache[require.resolve('../src/tiktok')].exports.publishPhotoPost = async () => {
+    publishCalled = true;
+    return { ok: true };
+  };
+  const scheduler = require('../src/scheduler');
+
+  const result = await scheduler.runSchedulerTick({ now: fixedNow });
+  const stored = records.get('missing-lock-job');
+
+  assert.equal(result.ok, true);
+  assert.equal(publishCalled, false);
+  assert.equal(stored.status, 'failed');
+  assert.equal(stored.lockedAt, null);
+  assert.equal(stored.lockedBy, null);
+  assert.equal(stored.lastResult.code, 'RECOVERY_LOCK_INVALID');
+  assert.match(stored.errorMessage, /automatic retry was blocked/i);
+
+  cleanup();
+});
+
+test('stale processing job with a publishId is not resubmitted', async () => {
+  const staleTime = new Date('2026-06-20T11:30:00.000Z');
+  const records = new Map([['accepted-before-crash', {
+    userId: 'owner', platform: 'tiktok', accountId: 'acc-1', tiktokOpenId: 'acc-1',
+    status: 'processing',
+    scheduledAt: { toDate: () => new Date('2026-06-20T11:59:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:59:00.000Z') },
+    lockedAt: { toDate: () => staleTime, toMillis: () => staleTime.getTime() },
+    lockedBy: 'old-worker',
+    claimAttempts: 1,
+    publishId: 'remote-publish-123'
+  }]]);
+
+  let publishCalled = false;
+  const { fixedNow, cleanup } = setupMocks({ records });
+  require.cache[require.resolve('../src/tiktok')].exports.publishPhotoPost = async () => {
+    publishCalled = true;
+    return { ok: true };
+  };
+  const scheduler = require('../src/scheduler');
+
+  await scheduler.runSchedulerTick({ now: fixedNow });
+  const stored = records.get('accepted-before-crash');
+
+  assert.equal(publishCalled, false);
+  assert.equal(stored.status, 'failed');
+  assert.equal(stored.publishId, 'remote-publish-123');
+  assert.equal(stored.lastResult.code, 'RECOVERY_REMOTE_STATE_UNKNOWN');
+  assert.match(stored.errorMessage, /verify the provider result/i);
+
+  cleanup();
+});
+
+test('stale lock recovery query failure makes the tick non-successful', async () => {
+  const { fixedNow, cleanup } = setupMocks({ failQueries: ['processingLocks'] });
+  const scheduler = require('../src/scheduler');
+
+  const result = await scheduler.runSchedulerTick({ now: fixedNow });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.checked, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0].error, /stale lock recovery failed/i);
+
+  cleanup();
+});
+
 test('getSchedulerHealth returns safe fields without secrets', async () => {
   const records = new Map();
   const { cleanup } = setupMocks({ records });
