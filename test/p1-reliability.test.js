@@ -8,7 +8,12 @@ const test = require('node:test');
  * safety, and missed job handling. Uses mocked Firestore and TikTok.
  */
 
-function setupMocks({ records = new Map(), failQueries = [] } = {}) {
+function setupMocks({
+  records = new Map(),
+  failQueries = [],
+  heartbeat = undefined,
+  failHeartbeatWrite = false
+} = {}) {
   const firestorePath = require.resolve('../src/firestore');
   const tiktokPath = require.resolve('../src/tiktok');
   const instagramPath = require.resolve('../src/instagram');
@@ -25,6 +30,10 @@ function setupMocks({ records = new Map(), failQueries = [] } = {}) {
   });
   const serverTimestamp = timestamp(fixedNow);
   const failedQueryNames = new Set(failQueries);
+  let heartbeatRecord = heartbeat === undefined
+    ? { completedAt: timestamp(fixedNow), ok: true, summary: { checked: 0, due: 0, posted: 0, failed: 0 } }
+    : heartbeat;
+  let heartbeatWriteCount = 0;
 
   const document = (id) => ({
     id,
@@ -84,6 +93,28 @@ function setupMocks({ records = new Map(), failQueries = [] } = {}) {
           update: (documentRef, patch) => applyUpdate(documentRef.id, patch)
         })
       }),
+      configDoc: () => ({
+        async get() {
+          if (failedQueryNames.has('durableHeartbeat')) {
+            const error = new Error('Simulated Firestore heartbeat read failure');
+            error.code = 'unavailable';
+            throw error;
+          }
+          return {
+            exists: heartbeatRecord !== null,
+            data: () => heartbeatRecord
+          };
+        },
+        async set(value) {
+          heartbeatWriteCount += 1;
+          if (failHeartbeatWrite) {
+            const error = new Error('Simulated Firestore heartbeat write failure');
+            error.code = 'unavailable';
+            throw error;
+          }
+          heartbeatRecord = value;
+        }
+      }),
       Timestamp: {
         now: () => serverTimestamp,
         fromDate: timestamp,
@@ -118,6 +149,8 @@ function setupMocks({ records = new Map(), failQueries = [] } = {}) {
     fixedNow,
     timestamp,
     records,
+    getHeartbeat: () => heartbeatRecord,
+    getHeartbeatWriteCount: () => heartbeatWriteCount,
     cleanup: () => {
       for (const modulePath of [firestorePath, tiktokPath, instagramPath, mapperPath, schedulerPath]) {
         delete require.cache[modulePath];
@@ -309,18 +342,22 @@ test('stale lock recovery query failure makes the tick non-successful', async ()
 
 test('getSchedulerHealth returns safe fields without secrets', async () => {
   const records = new Map();
-  const { cleanup } = setupMocks({ records });
+  const { fixedNow, getHeartbeatWriteCount, cleanup } = setupMocks({ records });
   const scheduler = require('../src/scheduler');
 
-  const health = await scheduler.getSchedulerHealth();
+  const health = await scheduler.getSchedulerHealth({ now: fixedNow });
 
   // Must include operational fields
   assert.ok('staleProcessingCount' in health, 'should report staleProcessingCount');
   assert.ok('stuckPendingCount' in health, 'should report stuckPendingCount');
   assert.equal(health.lastTickScope, 'process-local');
   assert.equal(health.lastTickDurable, false);
+  assert.equal(health.durableHeartbeat.durable, true);
+  assert.equal(health.durableHeartbeat.scope, 'firestore');
+  assert.equal(health.durableHeartbeat.status, 'healthy');
   assert.equal(health.degraded, false);
   assert.equal(health.firestoreHealthError, false);
+  assert.equal(getHeartbeatWriteCount(), 0, 'health reads must not write heartbeat state');
   assert.ok('staleLockMinutes' in health, 'should report staleLockMinutes');
   assert.ok('maxClaimAttempts' in health, 'should report maxClaimAttempts');
 
@@ -331,6 +368,116 @@ test('getSchedulerHealth returns safe fields without secrets', async () => {
   assert.ok(!healthStr.includes('password'), 'health must not contain "password"');
   assert.ok(!healthStr.includes('api_key'), 'health must not contain "api_key"');
 
+  cleanup();
+});
+
+test('scheduler tick records a durable token-free heartbeat without due jobs', async () => {
+  const records = new Map();
+  const { fixedNow, getHeartbeat, getHeartbeatWriteCount, cleanup } = setupMocks({ records });
+  let publishCalled = false;
+  const tiktokModule = require.cache[require.resolve('../src/tiktok')].exports;
+  tiktokModule.publishPhotoPost = async () => {
+    publishCalled = true;
+    return { ok: true };
+  };
+  const scheduler = require('../src/scheduler');
+
+  const result = await scheduler.runSchedulerTick({ now: fixedNow });
+  const heartbeat = getHeartbeat();
+
+  assert.equal(result.ok, true);
+  assert.equal(publishCalled, false, 'heartbeat-only tick must not call TikTok when no jobs are due');
+  assert.equal(getHeartbeatWriteCount(), 1);
+  assert.equal(heartbeat.schemaVersion, 1);
+  assert.equal(heartbeat.ok, true);
+  assert.deepEqual(heartbeat.summary, { checked: 0, due: 0, posted: 0, failed: 0 });
+  assert.ok(heartbeat.completedAt);
+  assert.ok(heartbeat.updatedAt);
+  assert.deepEqual(Object.keys(heartbeat).sort(), ['completedAt', 'ok', 'schemaVersion', 'summary', 'updatedAt']);
+  assert.doesNotMatch(JSON.stringify(heartbeat), /token|secret|password|api_key/i);
+
+  cleanup();
+});
+
+test('scheduler health reports missing, stale, and failed durable heartbeats truthfully', async () => {
+  const missingMocks = setupMocks({ heartbeat: null });
+  let scheduler = require('../src/scheduler');
+  let health = await scheduler.getSchedulerHealth({ now: missingMocks.fixedNow });
+
+  assert.equal(health.durableHeartbeat.status, 'missing');
+  assert.equal(health.degraded, true);
+  assert.ok(health.degradedReasons.some((reason) => reason.code === 'scheduler_heartbeat_missing'));
+  missingMocks.cleanup();
+
+  const staleHeartbeat = {
+    completedAt: { toMillis: () => Date.parse('2026-06-20T11:50:00.000Z') },
+    ok: true,
+    summary: { checked: 2, due: 1, posted: 1, failed: 0 }
+  };
+  const staleMocks = setupMocks({ heartbeat: staleHeartbeat });
+  scheduler = require('../src/scheduler');
+  health = await scheduler.getSchedulerHealth({ now: staleMocks.fixedNow });
+
+  assert.equal(health.durableHeartbeat.status, 'stale');
+  assert.equal(health.durableHeartbeat.ageSeconds, 600);
+  assert.equal(health.durableHeartbeat.staleAfterSeconds, 300);
+  assert.deepEqual(health.durableHeartbeat.lastTickSummary, staleHeartbeat.summary);
+  assert.ok(health.degradedReasons.some((reason) => reason.code === 'scheduler_heartbeat_stale'));
+  staleMocks.cleanup();
+
+  const failedMocks = setupMocks({
+    heartbeat: {
+      completedAt: { toMillis: () => Date.parse('2026-06-20T11:59:00.000Z') },
+      ok: false,
+      summary: { checked: 0, due: 0, posted: 0, failed: 0 }
+    }
+  });
+  scheduler = require('../src/scheduler');
+  health = await scheduler.getSchedulerHealth({ now: failedMocks.fixedNow });
+
+  assert.equal(health.durableHeartbeat.status, 'failed');
+  assert.equal(health.durableHeartbeat.lastTickOk, false);
+  assert.ok(health.degradedReasons.some((reason) => reason.code === 'scheduler_last_tick_failed'));
+  failedMocks.cleanup();
+});
+
+test('scheduler health degrades safely when the durable heartbeat cannot be read', async () => {
+  const { fixedNow, cleanup } = setupMocks({ failQueries: ['durableHeartbeat'] });
+  const scheduler = require('../src/scheduler');
+
+  const health = await scheduler.getSchedulerHealth({ now: fixedNow });
+
+  assert.equal(health.durableHeartbeat.status, 'unavailable');
+  assert.equal(health.firestoreHealthError, true);
+  assert.ok(health.firestoreHealthFailedQueries.includes('durableHeartbeat'));
+  assert.ok(health.degradedReasons.some((reason) => reason.code === 'scheduler_heartbeat_unavailable'));
+  assert.doesNotMatch(JSON.stringify(health), /Simulated Firestore heartbeat read failure/);
+  cleanup();
+});
+
+test('heartbeat write failure does not change scheduler results or call providers', async (t) => {
+  const { fixedNow, getHeartbeatWriteCount, cleanup } = setupMocks({ failHeartbeatWrite: true });
+  let publishCalled = false;
+  const tiktokModule = require.cache[require.resolve('../src/tiktok')].exports;
+  tiktokModule.publishPhotoPost = async () => {
+    publishCalled = true;
+    return { ok: true };
+  };
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  t.after(() => { console.warn = originalWarn; });
+  const scheduler = require('../src/scheduler');
+
+  const result = await scheduler.runSchedulerTick({ now: fixedNow });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.checked, 0);
+  assert.equal(publishCalled, false);
+  assert.equal(getHeartbeatWriteCount(), 1);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0][0], '[SCHEDULER_HEARTBEAT_FAILED]');
+  assert.deepEqual(warnings[0][1], { code: 'unavailable' });
   cleanup();
 });
 

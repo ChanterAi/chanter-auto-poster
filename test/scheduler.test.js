@@ -114,6 +114,7 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
           update: (documentRef, patch) => applyUpdate(documentRef.id, patch)
         })
       }),
+      configDoc: () => ({ set: async () => {} }),
       Timestamp: {
         now: () => serverTimestamp,
         fromDate: timestamp,

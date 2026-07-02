@@ -2,13 +2,15 @@
 
 const { randomUUID } = require('crypto');
 const config = require('./config');
-const { postsCollection, getFirestore, Timestamp, FieldValue } = require('./firestore');
+const { postsCollection, configDoc, getFirestore, Timestamp, FieldValue } = require('./firestore');
 const { postFromDoc, toTimestampOrNull } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
+const HEARTBEAT_DOC = 'schedulerHeartbeat';
+const HEARTBEAT_STALE_AFTER_MS = 5 * 60 * 1000;
 
 // Track the last successful tick time for health monitoring.
 // This is in-memory only — it resets on restart, which is exactly what
@@ -42,6 +44,10 @@ async function getSchedulerHealth({ now = new Date() } = {}) {
   const nowTimestamp = Timestamp.fromDate(nowDate);
   const staleBeforeMillis = nowDate.getTime() - STALE_LOCK_MS;
   const checks = [
+    {
+      name: 'durableHeartbeat',
+      run: () => configDoc(HEARTBEAT_DOC).get()
+    },
     {
       name: 'canonicalScheduledOverdue',
       run: () => postsCollection()
@@ -84,6 +90,10 @@ async function getSchedulerHealth({ now = new Date() } = {}) {
     });
   });
 
+  const heartbeatSnapshot = snapshots.get('durableHeartbeat');
+  const durableHeartbeat = heartbeatSnapshot
+    ? describeDurableHeartbeat(heartbeatSnapshot, nowDate)
+    : unavailableDurableHeartbeat();
   const canonicalSnapshot = snapshots.get('canonicalScheduledOverdue');
   const legacySnapshot = snapshots.get('legacyPendingOverdue');
   const processingSnapshot = snapshots.get('processingLocks');
@@ -112,6 +122,35 @@ async function getSchedulerHealth({ now = new Date() } = {}) {
       code: 'firestore_health_query_failed',
       message: 'One or more Firestore scheduler health checks could not be completed.'
     });
+  }
+  if (durableHeartbeat.status === 'unavailable') {
+    degradedReasons.push({
+      code: 'scheduler_heartbeat_unavailable',
+      message: 'The durable scheduler heartbeat could not be read.'
+    });
+  } else if (durableHeartbeat.status === 'missing') {
+    degradedReasons.push({
+      code: 'scheduler_heartbeat_missing',
+      message: 'No durable scheduler heartbeat has been recorded yet.'
+    });
+  } else if (durableHeartbeat.status === 'invalid') {
+    degradedReasons.push({
+      code: 'scheduler_heartbeat_invalid',
+      message: 'The durable scheduler heartbeat is incomplete or invalid.'
+    });
+  } else {
+    if (durableHeartbeat.stale) {
+      degradedReasons.push({
+        code: 'scheduler_heartbeat_stale',
+        message: 'The durable scheduler heartbeat is older than the alert threshold.'
+      });
+    }
+    if (durableHeartbeat.lastTickOk === false) {
+      degradedReasons.push({
+        code: 'scheduler_last_tick_failed',
+        message: 'The last durably recorded scheduler tick did not complete successfully.'
+      });
+    }
   }
   if (overdueScheduledCount > 0) {
     degradedReasons.push({
@@ -148,6 +187,7 @@ async function getSchedulerHealth({ now = new Date() } = {}) {
       posted: lastTickSummary.posted,
       failed: lastTickSummary.failed
     } : null,
+    durableHeartbeat,
     degraded: degradedReasons.length > 0,
     degradedReasons,
     firestoreHealthError: firestoreHealthFailedQueries.length > 0,
@@ -166,6 +206,70 @@ async function getSchedulerHealth({ now = new Date() } = {}) {
     staleLockMinutes: config.scheduler.staleLockMinutes,
     maxClaimAttempts: config.scheduler.maxClaimAttempts
   };
+}
+
+function describeDurableHeartbeat(snapshot, nowDate) {
+  const base = {
+    durable: true,
+    scope: 'firestore',
+    status: 'missing',
+    lastTickAt: null,
+    lastTickOk: null,
+    ageSeconds: null,
+    stale: null,
+    staleAfterSeconds: HEARTBEAT_STALE_AFTER_MS / 1000,
+    lastTickSummary: null
+  };
+
+  if (!snapshot.exists) return base;
+
+  const data = snapshot.data() || {};
+  const completedAtMillis = timestampMillis(data.completedAt);
+  const lastTickOk = typeof data.ok === 'boolean' ? data.ok : null;
+  if (!Number.isFinite(completedAtMillis) || lastTickOk === null) {
+    return { ...base, status: 'invalid' };
+  }
+
+  const ageMillis = Math.max(0, nowDate.getTime() - completedAtMillis);
+  const ageSeconds = Math.floor(ageMillis / 1000);
+  const stale = ageMillis > HEARTBEAT_STALE_AFTER_MS;
+  return {
+    ...base,
+    status: stale ? 'stale' : (lastTickOk ? 'healthy' : 'failed'),
+    lastTickAt: new Date(completedAtMillis).toISOString(),
+    lastTickOk,
+    ageSeconds,
+    stale,
+    lastTickSummary: sanitizeHeartbeatSummary(data.summary)
+  };
+}
+
+function unavailableDurableHeartbeat() {
+  return {
+    durable: true,
+    scope: 'firestore',
+    status: 'unavailable',
+    lastTickAt: null,
+    lastTickOk: null,
+    ageSeconds: null,
+    stale: null,
+    staleAfterSeconds: HEARTBEAT_STALE_AFTER_MS / 1000,
+    lastTickSummary: null
+  };
+}
+
+function sanitizeHeartbeatSummary(summary) {
+  if (!summary || typeof summary !== 'object') return null;
+  return {
+    checked: safeCount(summary.checked),
+    due: safeCount(summary.due),
+    posted: safeCount(summary.posted),
+    failed: safeCount(summary.failed)
+  };
+}
+
+function safeCount(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 function snapshotSize(snapshot) {
@@ -233,9 +337,7 @@ async function runSchedulerTick({ now = new Date() } = {}) {
     summary.errors.push({ error: detail.message, indexUrl: detail.indexUrl || undefined });
     console.error(`[CRON_QUERY_FAILED] error=${detail.message}`);
     if (detail.indexUrl) console.error(`[CRON_INDEX_REQUIRED] url=${detail.indexUrl}`);
-    lastTickAt = new Date();
-    lastTickSummary = { ...summary };
-    return summary;
+    return completeSchedulerTick(summary);
   }
 
   for (const job of dueJobs) {
@@ -258,9 +360,25 @@ async function runSchedulerTick({ now = new Date() } = {}) {
     }
   }
 
-  // Record tick metadata for health monitoring
-  lastTickAt = new Date();
+  return completeSchedulerTick(summary);
+}
+
+async function completeSchedulerTick(summary) {
+  const completedAt = new Date();
+  lastTickAt = completedAt;
   lastTickSummary = { ...summary };
+
+  try {
+    await configDoc(HEARTBEAT_DOC).set({
+      schemaVersion: 1,
+      completedAt: Timestamp.fromDate(completedAt),
+      ok: summary.ok === true,
+      summary: sanitizeHeartbeatSummary(summary),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+  } catch (error) {
+    console.warn('[SCHEDULER_HEARTBEAT_FAILED]', { code: safeErrorCode(error) });
+  }
 
   return summary;
 }

@@ -71,6 +71,7 @@ function setupMocks({ records = new Map(), tiktokResult = null } = {}) {
           update: (documentRef, patch) => applyUpdate(documentRef.id, patch)
         })
       }),
+      configDoc: () => ({ set: async () => {} }),
       Timestamp: {
         now: () => serverTimestamp,
         fromDate: timestamp,

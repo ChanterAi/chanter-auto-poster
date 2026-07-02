@@ -248,6 +248,15 @@ If TikTok API credentials or a public image URL are not configured, the schedule
 
 `render.yaml` defines a web service and a Render Cron Job that calls `/api/cron/tick` every minute. Set `APP_URL` on the cron service to the Render web-service URL. Both services must use the same `CRON_SECRET`; the Blueprint environment group handles this when deployed from `render.yaml`.
 
+Each completed cron tick also writes a token-free heartbeat to the dedicated
+`config/schedulerHeartbeat` Firestore document. The write contains only the
+completion time, success state, and aggregate checked/due/posted/failed counts;
+it does not call a social provider or store provider responses, job details,
+tokens, or secrets. `/health` exposes this under
+`schedulerHealth.durableHeartbeat` and marks missing, failed, unavailable, or
+older-than-five-minute heartbeats as degraded while preserving the existing
+HTTP status contract.
+
 There is no in-process timer. Firestore is the source of truth, so a sleeping or restarted web service recovers overdue `scheduled` jobs on the next external tick. Each job is atomically changed to `processing` before TikTok publishing, then to `posted` or `failed`.
 
 Deploy the required Firestore indexes before enabling the cron job:
