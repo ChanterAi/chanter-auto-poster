@@ -290,6 +290,20 @@ The Add Media form also accepts an HTTPS Public Media URL without a file. When o
 
 Posts uploaded before this storage change may still reference Render-local `/uploads/...` paths. Re-upload those pending items after deployment if their media is no longer present.
 
+## Campaign Mode v0.1 manual smoke
+
+Campaign Mode is TikTok-only and uses the existing Firestore scheduler. Instagram configuration is not required.
+
+1. Connect two TikTok accounts and confirm both appear as connected on `/private/autoposter`.
+2. In Campaign Mode, choose one MP4, MOV, or WebM video.
+3. Select two different accounts, enter a different caption and hashtag set for each, and choose a future base time.
+4. Confirm the preview shows exactly two jobs, with account 2 scheduled 15 minutes after account 1.
+5. Create the campaign and confirm Campaign history groups both child jobs under one campaign ID.
+6. Inspect `/api/debug/jobs` or Firestore and confirm both children share `campaignId` and one media reference, use different account/copy fields, and have distinct `scheduledAt` minutes.
+7. Let the cron tick run. Confirm each child transitions independently and a failed child keeps its error evidence without changing the sibling's queued or posted state.
+
+Expected guards: more than two accounts, duplicate account selection, matching captions, matching hashtag sets, expired/disconnected tokens, past times, and occupied schedule minutes are rejected before campaign jobs are committed.
+
 ## Project Structure
 
 ```text

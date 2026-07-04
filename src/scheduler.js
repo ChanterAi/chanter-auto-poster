@@ -2,10 +2,11 @@
 
 const { randomUUID } = require('crypto');
 const config = require('./config');
-const { postsCollection, configDoc, getFirestore, Timestamp, FieldValue } = require('./firestore');
+const { postsCollection, campaignsCollection, configDoc, getFirestore, Timestamp, FieldValue } = require('./firestore');
 const { postFromDoc, toTimestampOrNull } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
+const { deriveCampaignStatus } = require('./campaigns');
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
@@ -446,6 +447,10 @@ async function reclaimOne(ref, nowDate) {
       const reason = 'A remote publish identifier already exists. Automatic retry was blocked; verify the provider result before changing this job.';
       tx.update(ref, {
         status: 'failed',
+        ...(data.campaignId || data.campaign_id ? {
+          campaignJobStatus: 'retry_required',
+          campaign_job_status: 'retry_required'
+        } : {}),
         lockedAt: null,
         lockedBy: null,
         failedAt: FieldValue.serverTimestamp(),
@@ -466,6 +471,10 @@ async function reclaimOne(ref, nowDate) {
       const reason = 'Processing lock is missing or invalid. Automatic retry was blocked to prevent duplicate publishing.';
       tx.update(ref, {
         status: 'failed',
+        ...(data.campaignId || data.campaign_id ? {
+          campaignJobStatus: 'retry_required',
+          campaign_job_status: 'retry_required'
+        } : {}),
         lockedAt: null,
         lockedBy: null,
         failedAt: FieldValue.serverTimestamp(),
@@ -487,6 +496,10 @@ async function reclaimOne(ref, nowDate) {
       const reason = `Publish worker stopped during ${attempts} attempts`;
       tx.update(ref, {
         status: 'failed',
+        ...(data.campaignId || data.campaign_id ? {
+          campaignJobStatus: 'retry_required',
+          campaign_job_status: 'retry_required'
+        } : {}),
         lockedAt: null,
         lockedBy: null,
         failedAt: FieldValue.serverTimestamp(),
@@ -500,6 +513,10 @@ async function reclaimOne(ref, nowDate) {
     const scheduledAt = data.scheduledAt || data.scheduledTimeUTC || Timestamp.now();
     tx.update(ref, {
       status: 'scheduled',
+      ...(data.campaignId || data.campaign_id ? {
+        campaignJobStatus: 'queued',
+        campaign_job_status: 'queued'
+      } : {}),
       scheduledAt,
       lockedAt: null,
       lockedBy: null,
@@ -546,6 +563,10 @@ async function claimPost(id, { force, workerId, now = new Date() }) {
 
     tx.update(ref, {
       status: 'processing',
+      ...(data.campaignId || data.campaign_id ? {
+        campaignJobStatus: 'posting',
+        campaign_job_status: 'posting'
+      } : {}),
       lockedAt: FieldValue.serverTimestamp(),
       lockedBy: workerId,
       claimAttempts: FieldValue.increment(1),
@@ -636,6 +657,7 @@ async function finalize(id, workerId, result) {
   const completedAt = new Date().toISOString();
   const reason = result.reason || 'TikTok publish failed';
   let applied = false;
+  let campaignId = '';
 
   // Extract a durable publish identifier from the TikTok API response
   // so we can guard against duplicate publishing on retry.
@@ -646,10 +668,15 @@ async function finalize(id, workerId, result) {
     if (!snap.exists) return;
     const data = snap.data();
     if (data.status !== 'processing' || data.lockedBy !== workerId) return;
+    campaignId = data.campaignId || data.campaign_id || '';
 
     if (result.ok) {
       const update = {
         status: 'posted',
+        ...(campaignId ? {
+          campaignJobStatus: 'posted',
+          campaign_job_status: 'posted'
+        } : {}),
         postedAt: Timestamp.now(),
         readyAt: null,
         failedAt: null,
@@ -674,6 +701,12 @@ async function finalize(id, workerId, result) {
       if (result.code) safeResult.code = result.code;
       tx.update(ref, {
         status: 'failed',
+        ...(campaignId ? {
+          campaignJobStatus: 'failed',
+          campaign_job_status: 'failed',
+          errorEvidence: safeResult,
+          error_evidence: safeResult
+        } : {}),
         failedAt: Timestamp.now(),
         errorMessage: reason,
         lockedAt: null,
@@ -685,11 +718,36 @@ async function finalize(id, workerId, result) {
     applied = true;
   });
 
+  if (applied && campaignId) {
+    try {
+      await syncCampaignParentStatus(campaignId);
+    } catch (error) {
+      console.warn('[campaign] parent status sync failed', { campaignId, message: error.message });
+    }
+  }
+
   if (!applied) {
     return { ok: false, mode: 'skipped', postId: id, reason: 'Job lock changed before completion.' };
   }
   if (result.ok) return { ok: true, mode: result.mode || 'api', postId: id };
   return { ok: false, mode: result.mode || 'api', postId: id, reason };
+}
+
+async function syncCampaignParentStatus(campaignId) {
+  const ref = campaignsCollection().doc(campaignId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) return;
+  const data = snapshot.data() || {};
+  const childJobIds = data.childJobIds || data.created_child_job_ids || [];
+  const children = await Promise.all(childJobIds.map((id) => postsCollection().doc(id).get()));
+  const campaignStatus = deriveCampaignStatus(
+    children.filter((child) => child.exists).map((child) => child.data() || {})
+  );
+  await ref.update({
+    campaignStatus,
+    campaign_status: campaignStatus,
+    updatedAt: FieldValue.serverTimestamp()
+  });
 }
 
 function normalizeTimestamp(value) {

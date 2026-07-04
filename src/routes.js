@@ -43,6 +43,26 @@ const upload = multer({
   limits: { files: 100, fileSize: 250 * 1024 * 1024 }
 });
 
+const campaignUpload = multer({
+  storage: multer.diskStorage({
+    destination: config.uploadsDir,
+    filename: (req, file, callback) => {
+      const extension = path.extname(file.originalname || '').toLowerCase() || defaultExtension(file);
+      callback(null, `campaign-${Date.now()}-${randomUUID()}${extension}`);
+    }
+  }),
+  fileFilter: (req, file, callback) => {
+    const mime = String(file.mimetype || '').toLowerCase();
+    const extension = path.extname(file.originalname || '').toLowerCase();
+    if (mime.startsWith('video/') && ['.mp4', '.mov', '.webm'].includes(extension)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Campaign Mode requires one MP4, MOV, or WebM video.'));
+  },
+  limits: { files: 1, fileSize: 250 * 1024 * 1024 }
+});
+
 const autoCaptionUpload = multer({
   storage: multer.diskStorage({
     destination: config.uploadsDir,
@@ -108,6 +128,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     tiktokAuthStatus,
     tiktokAccounts: accounts.map(publicTikTokAccount),
     activeTikTokAccount: activeAccount ? publicTikTokAccount(activeAccount) : null,
+    campaigns: await storage.getCampaigns(userId),
     enableInstagram: config.ENABLE_INSTAGRAM,
     autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
     autoMusicConfigured: autoMusic.isAutoMusicConfigured(),
@@ -229,6 +250,9 @@ router.get('/api/debug/jobs', asyncRoute(async (req, res) => {
     ok: true,
     jobs: jobs.map((job) => ({
       id: job.id,
+      campaignId: job.campaignId || '',
+      campaignJobStatus: job.campaignJobStatus || '',
+      accountId: job.accountId || '',
       status: job.status,
       scheduledAt: job.scheduledAt,
       title: firstNonEmptyLine(job.caption) || job.originalName || job.fileName || 'Untitled',
@@ -548,6 +572,59 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
     : (req.body.autoMusicToken ? ' Prepared music was unavailable, so the original video was used.' : '');
   redirectWithNotice(res, `Created ${created.length}. Scheduled ${scheduledCount}.${sourceNotice}${musicNotice}`);
 }));
+
+router.post(
+  '/campaigns',
+  requireAdminPage,
+  campaignUpload.single('campaignVideo'),
+  asyncRoute(async (req, res) => {
+    const userId = resolveUserId(req);
+    const selectedJobs = [1, 2]
+      .map((slot) => ({
+        accountId: String(req.body[`campaignAccountId${slot}`] || '').trim(),
+        caption: String(req.body[`campaignCaption${slot}`] || '').trim(),
+        hashtags: String(req.body[`campaignHashtags${slot}`] || '').trim()
+      }))
+      .filter((job) => job.accountId);
+    const baseScheduledAt = parseDateTimeLocal(
+      req.body.campaignBaseScheduledAt,
+      req.body.timezoneOffsetMinutes
+    );
+
+    try {
+      if (!req.file) {
+        const error = new Error('Choose one MP4, MOV, or WebM video for the campaign.');
+        error.status = 400;
+        throw error;
+      }
+
+      const tokenChecks = await Promise.all(selectedJobs.map((job) => (
+        tiktok.validateTikTokAccount(job.accountId, userId)
+      )));
+      const badToken = tokenChecks.find((result) => !result.ok);
+      if (badToken) {
+        const account = (await storage.getTikTokAccounts(userId))
+          .find((candidate) => candidate.accountId === badToken.accountId);
+        const error = new Error(`${accountLabel(account)}: ${badToken.reason}`);
+        error.status = 400;
+        throw error;
+      }
+
+      const campaign = await storage.createTikTokCampaign(userId, req.file, {
+        baseScheduledAt,
+        jobs: selectedJobs
+      });
+      redirectWithNotice(
+        res,
+        `Campaign ${campaign.campaignId.slice(0, 8)} created with ${campaign.childJobs.length} staggered TikTok job${campaign.childJobs.length === 1 ? '' : 's'}.`
+      );
+    } catch (error) {
+      redirectWithNotice(res, error.message || 'Campaign could not be created.');
+    } finally {
+      if (req.file) await removeTemporaryUpload(req.file.path);
+    }
+  })
+);
 
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
   const dailyPostTime = String(req.body.dailyPostTime || '').trim();

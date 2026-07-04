@@ -6,6 +6,7 @@ const config = require('./config');
 const {
   postsCollection,
   tiktokAccountsCollection,
+  campaignsCollection,
   configDoc,
   getFirestore,
   Timestamp,
@@ -13,6 +14,13 @@ const {
 } = require('./firestore');
 const { uploadMediaFile, destroyMediaAsset, checkCloudinaryHealth } = require('./cloudinary');
 const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore } = require('./postsMapper');
+const {
+  buildCampaignPlan,
+  validateCampaignAccounts,
+  campaignJobStatus,
+  deriveCampaignStatus,
+  minuteKey
+} = require('./campaigns');
 
 const defaultSettings = {
   dailyPostTime: '09:00',
@@ -514,6 +522,202 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   }
 }
 
+async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const plan = buildCampaignPlan(draft, options);
+  if (!file || getUploadMediaType(file) !== 'video') {
+    const error = new Error('Campaign Mode requires one MP4, MOV, or WebM video.');
+    error.code = 'CAMPAIGN_VIDEO_REQUIRED';
+    error.status = 400;
+    throw error;
+  }
+
+  const accounts = await Promise.all(plan.jobs.map((job) => getTikTokAccount(ownerId, job.accountId)));
+  validateCampaignAccounts(plan.jobs, accounts, options);
+
+  const existingPosts = await getPosts(ownerId);
+  const occupiedMinutes = new Set(existingPosts
+    .filter((post) => ['scheduled', 'processing'].includes(String(post.status || '').toLowerCase()))
+    .map((post) => minuteKey(post.scheduledAt))
+    .filter(Boolean));
+  const collision = plan.jobs.find((job) => occupiedMinutes.has(minuteKey(job.scheduledAt)));
+  if (collision) {
+    const error = new Error(
+      `Another post is already scheduled for ${new Date(collision.scheduledAt).toLocaleString()}. Choose a different base time.`
+    );
+    error.code = 'CAMPAIGN_SCHEDULE_COLLISION';
+    error.status = 409;
+    throw error;
+  }
+
+  let uploaded = null;
+  let committed = false;
+  try {
+    uploaded = await saveUploadToCloudinary(file);
+    const campaignId = randomUUID();
+    const campaignRef = campaignsCollection().doc(campaignId);
+    const childRefs = plan.jobs.map(() => postsCollection().doc(randomUUID()));
+    const childJobIds = childRefs.map((ref) => ref.id);
+    const now = Timestamp.now();
+    const db = getFirestore();
+    const batch = db.batch();
+    const orderByAccount = new Map();
+
+    for (const account of accounts) {
+      const maxOrder = existingPosts
+        .filter((post) => post.accountId === account.accountId)
+        .reduce((max, post) => Math.max(max, Number(post.order || 0)), 0);
+      orderByAccount.set(account.accountId, maxOrder + 1);
+    }
+
+    const childJobs = plan.jobs.map((job, index) => {
+      const account = accounts[index];
+      const scheduledAt = Timestamp.fromDate(new Date(job.scheduledAt));
+      const tokenReference = `tiktokAccounts/${tiktokAccountDocId(account.accountId)}`;
+      const data = {
+        userId: ownerId,
+        platform: 'tiktok',
+        campaignId,
+        campaign_id: campaignId,
+        campaignJobStatus: 'queued',
+        campaign_job_status: 'queued',
+        accountId: account.accountId,
+        account_id: account.accountId,
+        tiktokOpenId: account.open_id || account.accountId,
+        username: account.username || account.displayName || account.accountId,
+        tokenReference,
+        token_ref: tokenReference,
+        originalName: file.originalname || file.filename || 'campaign-video',
+        fileName: getStoredFileName(file),
+        mimeType: file.mimetype || 'video/mp4',
+        mediaType: 'video',
+        mediaUrl: uploaded.mediaUrl,
+        mediaPath: uploaded.mediaUrl,
+        mediaStoragePath: '',
+        cloudinaryPublicId: uploaded.publicId,
+        cloudinaryResourceType: uploaded.resourceType,
+        videoPath: uploaded.mediaUrl,
+        imagePath: '',
+        publicMediaUrl: uploaded.mediaUrl,
+        publicImageUrl: '',
+        mediaSource: 'cloudinary',
+        storageFallback: false,
+        autoMusicApplied: false,
+        caption: job.caption,
+        hashtags: job.hashtags,
+        privacyLevel: String(draft.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
+        scheduledAt,
+        scheduled_at: scheduledAt,
+        status: 'scheduled',
+        order: orderByAccount.get(account.accountId),
+        createdAt: now,
+        updatedAt: now,
+        postedAt: null,
+        readyAt: null,
+        failedAt: null,
+        errorMessage: null,
+        errorEvidence: null,
+        error_evidence: null,
+        lastResult: null,
+        lastInstagramResult: null,
+        disableComment: false,
+        disableDuet: false,
+        disableStitch: false,
+        contentDisclosure: false,
+        yourBrand: false,
+        brandedContent: false,
+        lockedAt: null,
+        lockedBy: null,
+        claimAttempts: 0
+      };
+      batch.set(childRefs[index], data);
+      return { ref: childRefs[index], data };
+    });
+
+    const mediaReference = {
+      mediaUrl: uploaded.mediaUrl,
+      cloudinaryPublicId: uploaded.publicId,
+      cloudinaryResourceType: uploaded.resourceType,
+      originalName: file.originalname || file.filename || 'campaign-video',
+      mimeType: file.mimetype || 'video/mp4',
+      mediaType: 'video'
+    };
+    const scheduleBaseTime = Timestamp.fromDate(new Date(plan.baseScheduledAt));
+    const campaignData = {
+      userId: ownerId,
+      platform: 'tiktok',
+      campaignId,
+      campaign_id: campaignId,
+      mediaReference,
+      media_reference: mediaReference,
+      createdAt: now,
+      created_at: now,
+      campaignStatus: 'queued',
+      campaign_status: 'queued',
+      selectedAccountIds: plan.jobs.map((job) => job.accountId),
+      selected_account_ids: plan.jobs.map((job) => job.accountId),
+      scheduleBaseTime,
+      schedule_base_time: scheduleBaseTime,
+      staggerMinutes: plan.staggerMinutes,
+      childJobIds,
+      created_child_job_ids: childJobIds,
+      updatedAt: now
+    };
+    batch.set(campaignRef, campaignData);
+
+    await batch.commit();
+    committed = true;
+    return campaignFromData(campaignId, campaignData, childJobs.map(({ ref, data }) => (
+      postFromDoc({ id: ref.id, data: () => data })
+    )));
+  } finally {
+    cleanupLocalUpload(file);
+    if (!committed && uploaded && uploaded.publicId) {
+      await destroyMediaAsset(uploaded.publicId, uploaded.resourceType);
+    }
+  }
+}
+
+async function getCampaigns(userId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const snapshot = await campaignsCollection().where('userId', '==', ownerId).get();
+  const campaigns = await Promise.all(snapshot.docs.map(async (doc) => {
+    const data = doc.data() || {};
+    const childJobIds = data.childJobIds || data.created_child_job_ids || [];
+    const childSnapshots = await Promise.all(childJobIds.map((id) => postsCollection().doc(id).get()));
+    const childJobs = childSnapshots.filter((child) => child.exists).map(postFromDoc);
+    return campaignFromData(doc.id, data, childJobs);
+  }));
+
+  return campaigns.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+}
+
+function campaignFromData(id, data, childJobs) {
+  const jobs = Array.isArray(childJobs) ? childJobs.map((job) => ({
+    ...job,
+    campaignJobStatus: campaignJobStatus(job)
+  })) : [];
+  return {
+    id,
+    campaignId: data.campaignId || data.campaign_id || id,
+    mediaReference: data.mediaReference || data.media_reference || {},
+    createdAt: timestampToIso(data.createdAt || data.created_at),
+    campaignStatus: deriveCampaignStatus(jobs),
+    selectedAccountIds: data.selectedAccountIds || data.selected_account_ids || [],
+    scheduleBaseTime: timestampToIso(data.scheduleBaseTime || data.schedule_base_time),
+    staggerMinutes: Number(data.staggerMinutes || 0),
+    childJobIds: data.childJobIds || data.created_child_job_ids || [],
+    childJobs: jobs
+  };
+}
+
+function timestampToIso(value) {
+  if (!value) return null;
+  if (typeof value.toDate === 'function') return value.toDate().toISOString();
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 async function updatePost(userId, id, patch, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
   const ref = postsCollection().doc(id);
@@ -778,6 +982,8 @@ module.exports = {
   saveInstagramAuth,
   clearInstagramAuth,
   addUploadedPosts,
+  createTikTokCampaign,
+  getCampaigns,
   updatePost,
   deletePost,
   movePost,

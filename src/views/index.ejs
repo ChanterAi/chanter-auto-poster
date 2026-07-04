@@ -427,6 +427,36 @@
       .history-card .queue-thumb { width: 90px; aspect-ratio: 1; }
       .history-empty { padding: 36px; text-align: center; color: var(--text3); font-size: 13px; }
 
+      /* Campaign Mode */
+      .campaign-mode { margin-bottom: 42px; }
+      .campaign-layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(300px, .7fr); gap: 20px; }
+      .campaign-form { display: grid; gap: 16px; }
+      .campaign-intake { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      .campaign-video { grid-column: 1 / -1; }
+      .campaign-account-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      .campaign-account-card { display: grid; gap: 12px; padding: 15px; border: 1px solid var(--border); border-radius: 14px; background: rgba(0,0,0,.18); }
+      .campaign-account-card h3 { font-size: 13px; color: var(--text2); }
+      .campaign-account-card textarea { min-height: 76px; }
+      .campaign-preview { display: grid; align-content: start; gap: 11px; padding: 15px; border: 1px solid rgba(37,244,238,.16); border-radius: 14px; background: rgba(37,244,238,.035); }
+      .campaign-preview h3 { font-size: 13px; }
+      .campaign-preview-note { color: var(--text3); font-size: 11px; line-height: 1.5; }
+      .campaign-preview-card { display: grid; gap: 5px; padding: 12px; border: 1px solid var(--border); border-radius: 11px; background: rgba(0,0,0,.22); }
+      .campaign-preview-card strong { font-size: 12px; }
+      .campaign-preview-card span { color: var(--text3); font: 500 10px 'DM Mono', monospace; }
+      .campaign-history { display: grid; gap: 12px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
+      .campaign-history-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .campaign-history-head h3 { font-size: 15px; }
+      .campaign-group { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: rgba(0,0,0,.16); }
+      .campaign-group-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+      .campaign-group-head strong { display: block; font-size: 13px; }
+      .campaign-group-head small { color: var(--text3); font-size: 10px; }
+      .campaign-status { padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--text2); font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+      .campaign-job-list { display: grid; gap: 8px; }
+      .campaign-job { display: grid; grid-template-columns: minmax(120px,.55fr) 1fr auto; align-items: center; gap: 12px; padding: 10px; border-radius: 10px; background: rgba(255,255,255,.025); }
+      .campaign-job strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .campaign-job-copy { overflow: hidden; color: var(--text3); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+      .campaign-job time { color: var(--text3); font: 500 9px 'DM Mono', monospace; white-space: nowrap; }
+
       /* ─── Divider ─── */
       .divider { height: 1px; background: var(--border); margin: 12px 0; }
 
@@ -439,6 +469,7 @@
       /* ─── Responsive ─── */
       @media (max-width: 860px) {
         .dashboard-grid { grid-template-columns: 1fr; }
+        .campaign-layout { grid-template-columns: 1fr; }
         .queue-card { grid-template-columns: 1fr; }
         .queue-thumb { width: 100%; aspect-ratio: 16/9; }
         .schedule-row { grid-template-columns: 1fr; }
@@ -462,6 +493,9 @@
         .panel { padding: 20px; }
         .panel-head-rich { gap: 12px; }
         .form-grid { grid-template-columns: 1fr; }
+        .campaign-intake, .campaign-account-grid { grid-template-columns: 1fr; }
+        .campaign-video { grid-column: auto; }
+        .campaign-job { grid-template-columns: 1fr; gap: 4px; }
         .form-grid .wide { grid-column: auto; }
         .upload-actions { justify-content: stretch; }
         .btn-create { width: 100%; }
@@ -619,6 +653,108 @@
       </section>
 
       <!-- ─── Dashboard Grid ─── -->
+      <%
+        const connectedCampaignAccounts = tiktokAccounts.filter(function(account) { return account.connected; });
+        const campaignHistory = Array.isArray(campaigns) ? campaigns : [];
+      %>
+      <section class="panel campaign-mode" aria-labelledby="campaign-mode-heading">
+        <div class="panel-head panel-head-rich">
+          <div>
+            <span class="panel-kicker">TikTok only / v0.1</span>
+            <h2 id="campaign-mode-heading">Campaign Mode</h2>
+            <p>Schedule one video for up to two TikTok accounts with account-specific copy and a guarded 15-minute stagger.</p>
+          </div>
+          <span class="panel-step">CM</span>
+        </div>
+
+        <div class="campaign-layout">
+          <form class="campaign-form" action="/campaigns" method="post" enctype="multipart/form-data" data-campaign-form>
+            <div class="campaign-intake">
+              <label class="campaign-video upload-zone">
+                <span class="field-heading">Campaign video</span>
+                <span class="field-note">One MP4, MOV, or WebM video. It is uploaded once and referenced by both child jobs.</span>
+                <input type="file" name="campaignVideo" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" required data-campaign-video />
+              </label>
+              <label>
+                Base schedule time
+                <span class="field-note">Account 2 is automatically scheduled 15 minutes later.</span>
+                <input type="datetime-local" name="campaignBaseScheduledAt" required data-campaign-base-time />
+              </label>
+              <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
+            </div>
+
+            <div class="campaign-account-grid">
+              <% [1, 2].forEach(function(slot) { %>
+                <article class="campaign-account-card" data-campaign-slot="<%= slot %>">
+                  <h3>Account <%= slot %><%= slot === 2 ? ' (optional)' : '' %></h3>
+                  <label>
+                    TikTok account
+                    <select name="campaignAccountId<%= slot %>" <%= slot === 1 ? 'required' : '' %> data-campaign-account>
+                      <option value=""><%= slot === 1 ? 'Select an account' : 'No second account' %></option>
+                      <% connectedCampaignAccounts.forEach(function(account) { %>
+                        <option value="<%= account.accountId %>"><%= account.username ? `@${account.username}` : (account.displayName || `TikTok ${account.accountId.slice(0, 8)}`) %></option>
+                      <% }); %>
+                    </select>
+                  </label>
+                  <label>
+                    Caption
+                    <textarea name="campaignCaption<%= slot %>" placeholder="Account-specific caption" data-campaign-caption></textarea>
+                  </label>
+                  <label>
+                    Hashtags
+                    <textarea name="campaignHashtags<%= slot %>" placeholder="#accountSpecific #campaign" data-campaign-hashtags></textarea>
+                  </label>
+                </article>
+              <% }); %>
+            </div>
+
+            <div class="actions upload-actions">
+              <button type="submit" class="btn btn-primary btn-create" <%= connectedCampaignAccounts.length === 0 ? 'disabled' : '' %>>Create campaign</button>
+            </div>
+          </form>
+
+          <aside class="campaign-preview" aria-live="polite">
+            <span class="section-kicker">Generated child jobs</span>
+            <h3>Schedule preview</h3>
+            <p class="campaign-preview-note">Token checks run before upload. Each job remains independent if the other account fails.</p>
+            <div data-campaign-preview>
+              <p class="campaign-preview-note">Select an account and base time to preview the jobs.</p>
+            </div>
+          </aside>
+        </div>
+
+        <div class="campaign-history" aria-label="Campaign history">
+          <div class="campaign-history-head">
+            <h3>Campaign history</h3>
+            <span class="count"><%= campaignHistory.length %> campaigns</span>
+          </div>
+          <% if (campaignHistory.length === 0) { %>
+            <p class="campaign-preview-note">No campaigns have been created yet.</p>
+          <% } %>
+          <% campaignHistory.forEach(function(campaign) { %>
+            <article class="campaign-group">
+              <header class="campaign-group-head">
+                <div>
+                  <strong>Campaign <%= campaign.campaignId.slice(0, 8) %></strong>
+                  <small><%= helpers.formatDateTime(campaign.scheduleBaseTime) %> / <%= campaign.childJobs.length %> child job<%= campaign.childJobs.length === 1 ? '' : 's' %></small>
+                </div>
+                <span class="campaign-status"><%= campaign.campaignStatus.replaceAll('_', ' ') %></span>
+              </header>
+              <div class="campaign-job-list">
+                <% campaign.childJobs.forEach(function(job) { %>
+                  <% const campaignAccount = tiktokAccounts.find(function(account) { return account.accountId === job.accountId; }); %>
+                  <div class="campaign-job">
+                    <strong><%= campaignAccount && campaignAccount.username ? `@${campaignAccount.username}` : (campaignAccount && campaignAccount.displayName) || job.username || job.accountId %></strong>
+                    <span class="campaign-job-copy"><%= job.caption %> / <%= job.hashtags %></span>
+                    <time datetime="<%= job.scheduledAt %>"><%= helpers.formatDateTime(job.scheduledAt) %> / <%= job.campaignJobStatus.replaceAll('_', ' ') %></time>
+                  </div>
+                <% }); %>
+              </div>
+            </article>
+          <% }); %>
+        </div>
+      </section>
+
       <div class="dashboard-grid" aria-label="Poster controls">
         <section class="panel panel-upload">
           <div class="panel-head panel-head-rich">
@@ -1295,6 +1431,102 @@
             captionInput.focus();
           }
         });
+      });
+
+      // Campaign Mode preview and client-side safety checks
+      document.querySelectorAll('[data-campaign-form]').forEach(form => {
+        const videoInput = form.querySelector('[data-campaign-video]');
+        const baseTimeInput = form.querySelector('[data-campaign-base-time]');
+        const slots = Array.from(form.querySelectorAll('[data-campaign-slot]'));
+        const preview = document.querySelector('[data-campaign-preview]');
+        if (!videoInput || !baseTimeInput || slots.length !== 2 || !preview) return;
+
+        const toLocalInput = date => {
+          const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+          return local.toISOString().slice(0, 16);
+        };
+        const minTime = new Date(Date.now() + 60000);
+        minTime.setSeconds(0, 0);
+        baseTimeInput.min = toLocalInput(minTime);
+        if (!baseTimeInput.value) {
+          const defaultTime = new Date(Date.now() + 10 * 60000);
+          defaultTime.setSeconds(0, 0);
+          baseTimeInput.value = toLocalInput(defaultTime);
+        }
+
+        const normalize = value => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+        const controls = slots.map(slot => ({
+          account: slot.querySelector('[data-campaign-account]'),
+          caption: slot.querySelector('[data-campaign-caption]'),
+          hashtags: slot.querySelector('[data-campaign-hashtags]')
+        }));
+
+        const validate = () => {
+          const selected = controls.filter(control => control.account.value);
+          controls.forEach(control => {
+            const active = Boolean(control.account.value);
+            control.caption.required = active;
+            control.hashtags.required = active;
+            control.account.setCustomValidity('');
+            control.caption.setCustomValidity('');
+            control.hashtags.setCustomValidity('');
+          });
+
+          const file = videoInput.files && videoInput.files[0];
+          const validVideo = file && getFileKind(file) === 'video' && /\.(mp4|mov|webm)$/i.test(file.name);
+          videoInput.setCustomValidity(file && !validVideo ? 'Use one MP4, MOV, or WebM video.' : '');
+          if (selected.length === 2) {
+            if (selected[0].account.value === selected[1].account.value) {
+              selected[1].account.setCustomValidity('Select a different TikTok account.');
+            }
+            if (normalize(selected[0].caption.value) && normalize(selected[0].caption.value) === normalize(selected[1].caption.value)) {
+              selected[1].caption.setCustomValidity('Use a different caption for each account.');
+            }
+            if (normalize(selected[0].hashtags.value) && normalize(selected[0].hashtags.value) === normalize(selected[1].hashtags.value)) {
+              selected[1].hashtags.setCustomValidity('Use a different hashtag set for each account.');
+            }
+          }
+          return form.checkValidity();
+        };
+
+        const renderPreview = () => {
+          preview.replaceChildren();
+          const baseTime = new Date(baseTimeInput.value);
+          const selected = controls.filter(control => control.account.value);
+          if (selected.length === 0 || Number.isNaN(baseTime.getTime())) {
+            const empty = document.createElement('p');
+            empty.className = 'campaign-preview-note';
+            empty.textContent = 'Select an account and base time to preview the jobs.';
+            preview.append(empty);
+            return;
+          }
+
+          selected.forEach((control, index) => {
+            const scheduledAt = new Date(baseTime.getTime() + index * 15 * 60000);
+            const card = document.createElement('div');
+            card.className = 'campaign-preview-card';
+            const account = document.createElement('strong');
+            account.textContent = control.account.options[control.account.selectedIndex].textContent;
+            const time = document.createElement('span');
+            time.textContent = scheduledAt.toLocaleString();
+            const copy = document.createElement('p');
+            copy.className = 'campaign-preview-note';
+            copy.textContent = [control.caption.value.trim(), control.hashtags.value.trim()].filter(Boolean).join(' / ') || 'Add account-specific copy.';
+            card.append(account, time, copy);
+            preview.append(card);
+          });
+        };
+
+        [videoInput, baseTimeInput, ...controls.flatMap(control => Object.values(control))].forEach(control => {
+          control.addEventListener('input', () => { validate(); renderPreview(); });
+          control.addEventListener('change', () => { validate(); renderPreview(); });
+        });
+        form.addEventListener('submit', event => {
+          if (validate()) return;
+          event.preventDefault();
+          form.querySelector(':invalid')?.reportValidity();
+        });
+        renderPreview();
       });
 
       // Edit form: public media URL validation

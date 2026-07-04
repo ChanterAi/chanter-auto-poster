@@ -99,6 +99,33 @@ async function getTikTokAuthStatus(accountId, userId) {
   };
 }
 
+async function validateTikTokAccount(accountId, userId) {
+  const normalizedAccountId = String(accountId || '').trim();
+  if (!normalizedAccountId || normalizedAccountId === 'legacy') {
+    return { ok: false, accountId: normalizedAccountId, reason: 'Select a connected TikTok account.' };
+  }
+
+  try {
+    const creatorInfo = await queryCreatorInfo(normalizedAccountId, userId);
+    return {
+      ok: true,
+      accountId: normalizedAccountId,
+      username: creatorInfo.creator_username || '',
+      displayName: creatorInfo.creator_nickname || ''
+    };
+  } catch (error) {
+    console.warn('[tiktok] campaign account validation failed', redactSensitive({
+      accountId: normalizedAccountId,
+      error: error.message
+    }));
+    return {
+      ok: false,
+      accountId: normalizedAccountId,
+      reason: 'TikTok could not validate this account token. Reconnect the account and try again.'
+    };
+  }
+}
+
 async function refreshTikTokToken(accountId, userId) {
   const auth = await storage.getTikTokAccount(userId, accountId);
   if (!auth || !auth.connected || !auth.refresh_token) {
@@ -893,6 +920,7 @@ module.exports = {
   buildTikTokAuthUrl,
   exchangeCodeForToken,
   getTikTokAuthStatus,
+  validateTikTokAccount,
   refreshTikTokToken,
   queryCreatorInfo,
   publishPhotoPost,

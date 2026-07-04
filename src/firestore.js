@@ -84,6 +84,10 @@ function tiktokAccountsCollection() {
   return getFirestore().collection('tiktokAccounts');
 }
 
+function campaignsCollection() {
+  return getFirestore().collection('campaigns');
+}
+
 function configDoc(name) {
   return getFirestore().collection('config').doc(name);
 }
@@ -95,6 +99,7 @@ module.exports = {
   getFirestore,
   postsCollection,
   tiktokAccountsCollection,
+  campaignsCollection,
   configDoc,
   // Static namespaces — safe to read without an initialized app.
   Timestamp: admin.firestore.Timestamp,
