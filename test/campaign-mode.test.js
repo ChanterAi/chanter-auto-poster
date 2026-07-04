@@ -258,10 +258,21 @@ test('campaign storage uploads once and atomically creates one parent plus two c
     userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'pending',
     createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
   });
-  await assert.rejects(() => storage.updatePost('owner', 'single-post', {
+  const crossAccountSchedule = await storage.updatePost('owner', 'single-post', {
     scheduledAt: '2026-07-04T10:15:00.000Z'
-  }, 'account-a'), /already scheduled/i);
+  }, 'account-a');
+  assert.equal(crossAccountSchedule.status, 'scheduled', 'different accounts may use the same minute');
+  assert.equal(scheduleSlots.size, 3);
   assert.equal(await storage.deletePost('owner', 'single-post', 'account-a'), true);
+
+  posts.set('same-account-collision', {
+    userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'pending',
+    createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  await assert.rejects(() => storage.updatePost('owner', 'same-account-collision', {
+    scheduledAt: '2026-07-04T10:00:00.000Z'
+  }, 'account-a'), /already scheduled/i);
+  assert.equal(await storage.deletePost('owner', 'same-account-collision', 'account-a'), true);
 
   assert.equal(await storage.deletePost('owner', firstChild.id, firstChild.accountId), true);
   assert.equal(posts.has(secondChild.id), true);
@@ -298,6 +309,88 @@ test('campaign storage uploads once and atomically creates one parent plus two c
   assert.equal(await storage.reschedulePendingQueue('owner', 'account-a'), 1);
   assert.equal(scheduleSlots.size, 1, 'single-post rescheduling must keep exactly one reservation');
   assert.equal(await storage.deletePost('owner', 'single-schedule', 'account-a'), true);
+  assert.equal(scheduleSlots.size, 0);
+
+  posts.set('auto-schedule-a', {
+    userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'pending',
+    order: 1, createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  posts.set('auto-schedule-b', {
+    userId: 'owner', accountId: 'account-b', tiktokOpenId: 'account-b', status: 'pending',
+    order: 1, createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  assert.equal(await storage.autoSchedulePosts('owner', ['auto-schedule-a'], 'account-a'), 1);
+  assert.equal(await storage.autoSchedulePosts('owner', ['auto-schedule-b'], 'account-b'), 1);
+  assert.equal(
+    posts.get('auto-schedule-a').scheduledAt.toMillis(),
+    posts.get('auto-schedule-b').scheduledAt.toMillis(),
+    'independent account auto-scheduling keeps the existing account-local daily time'
+  );
+  assert.equal(scheduleSlots.size, 2);
+  assert.equal(await storage.deletePost('owner', 'auto-schedule-a', 'account-a'), true);
+  assert.equal(await storage.deletePost('owner', 'auto-schedule-b', 'account-b'), true);
+  assert.equal(scheduleSlots.size, 0);
+
+  posts.set('independent-a', {
+    userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'pending',
+    createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  posts.set('independent-b', {
+    userId: 'owner', accountId: 'account-b', tiktokOpenId: 'account-b', status: 'pending',
+    createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  posts.set('independent-a-collision', {
+    userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'pending',
+    createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  await storage.updatePost('owner', 'independent-a', { scheduledAt: '2026-07-04T13:00:00.000Z' }, 'account-a');
+  await storage.updatePost('owner', 'independent-b', { scheduledAt: '2026-07-04T13:00:00.000Z' }, 'account-b');
+  assert.equal(scheduleSlots.size, 2, 'independent accounts receive distinct reservations for one minute');
+  await assert.rejects(() => storage.updatePost('owner', 'independent-a-collision', {
+    scheduledAt: '2026-07-04T13:00:00.000Z'
+  }, 'account-a'), /already scheduled/i);
+  for (const [id, accountId] of [
+    ['independent-a', 'account-a'],
+    ['independent-b', 'account-b'],
+    ['independent-a-collision', 'account-a']
+  ]) {
+    assert.equal(await storage.deletePost('owner', id, accountId), true);
+  }
+  assert.equal(scheduleSlots.size, 0);
+
+  posts.set('legacy-scheduled', {
+    userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'scheduled',
+    scheduledAt: timestamp('2026-07-04T14:00:00.000Z'), createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  posts.set('legacy-collision', {
+    userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'pending',
+    createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  await assert.rejects(() => storage.updatePost('owner', 'legacy-collision', {
+    scheduledAt: '2026-07-04T14:00:00.000Z'
+  }, 'account-a'), /already scheduled/i);
+  assert.ok(posts.get('legacy-scheduled').scheduleSlotId, 'legacy scheduled jobs are backfilled before collision checks');
+  assert.equal(scheduleSlots.size, 1);
+  assert.equal(await storage.deletePost('owner', 'legacy-collision', 'account-a'), true);
+  assert.equal(await storage.deletePost('owner', 'legacy-scheduled', 'account-a'), true);
+  assert.equal(scheduleSlots.size, 0);
+
+  posts.set('legacy-campaign-blocker', {
+    userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'scheduled',
+    scheduledAt: timestamp('2026-07-04T15:00:00.000Z'), createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  await assert.rejects(() => storage.createTikTokCampaign('owner', {
+    originalname: 'legacy-collision.mp4', filename: 'legacy-collision.mp4', mimetype: 'video/mp4', size: 1024
+  }, {
+    baseScheduledAt: '2026-07-04T15:00:00.000Z',
+    jobs: [
+      { accountId: 'account-a', caption: 'Legacy collision A', hashtags: '#legacyA' },
+      { accountId: 'account-b', caption: 'Legacy collision B', hashtags: '#legacyB' }
+    ]
+  }, { now: fixedNow }), /already scheduled/i);
+  assert.equal(uploadCalls, 1, 'legacy collisions must be blocked before uploading campaign media');
+  assert.ok(posts.get('legacy-campaign-blocker').scheduleSlotId);
+  assert.equal(await storage.deletePost('owner', 'legacy-campaign-blocker', 'account-a'), true);
   assert.equal(scheduleSlots.size, 0);
 
   const concurrentDraft = {

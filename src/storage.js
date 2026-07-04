@@ -320,7 +320,16 @@ function getStoredFileName(file) {
   return file.filename || `${Date.now()}-${randomUUID()}${defaultExtension(file)}`;
 }
 
-function scheduleSlotId(userId, scheduledAt) {
+function scheduleSlotId(userId, accountId, scheduledAt) {
+  const minute = minuteKey(scheduledAt);
+  const normalizedAccountId = String(accountId || '').trim();
+  if (!minute || !normalizedAccountId || normalizedAccountId === 'legacy') return '';
+  return [userId || DEFAULT_USER_ID, normalizedAccountId, minute]
+    .map((value) => encodeURIComponent(String(value)))
+    .join('--');
+}
+
+function legacyScheduleSlotId(userId, scheduledAt) {
   const minute = minuteKey(scheduledAt);
   if (!minute) return '';
   return `${encodeURIComponent(String(userId || DEFAULT_USER_ID))}--${encodeURIComponent(minute)}`;
@@ -331,22 +340,93 @@ function campaignScheduleCollisionError(scheduledAt) {
     ? scheduledAt.toDate()
     : new Date(scheduledAt);
   const error = new Error(
-    `Another post is already scheduled for ${date.toLocaleString()}. Choose a different base time.`
+    `Another post for this TikTok account is already scheduled for ${date.toLocaleString()}. Choose a different time.`
   );
   error.code = 'CAMPAIGN_SCHEDULE_COLLISION';
   error.status = 409;
   return error;
 }
 
-function scheduleSlotData(userId, postId, campaignId, scheduledAt) {
+function scheduleSlotData(userId, accountId, postId, campaignId, scheduledAt) {
   return {
     userId,
+    accountId,
     postId,
     campaignId: campaignId || '',
     scheduledAt,
     minute: minuteKey(scheduledAt),
     updatedAt: FieldValue.serverTimestamp()
   };
+}
+
+function occupiesScheduleSlot(post) {
+  return Boolean(
+    post
+    && post.scheduledAt
+    && ['pending', 'scheduled', 'processing'].includes(String(post.status || '').toLowerCase())
+  );
+}
+
+async function backfillScheduleReservations(ownerId, posts, accountIds = []) {
+  const allowedAccounts = new Set((Array.isArray(accountIds) ? accountIds : [])
+    .map((accountId) => String(accountId || '').trim())
+    .filter(Boolean));
+  const candidates = (Array.isArray(posts) ? posts : []).filter((post) => (
+    occupiesScheduleSlot(post)
+    && post.accountId
+    && post.accountId !== 'legacy'
+    && (allowedAccounts.size === 0 || allowedAccounts.has(post.accountId))
+  ));
+
+  for (const post of candidates) {
+    await backfillScheduleReservation(ownerId, post.id);
+  }
+}
+
+async function backfillScheduleReservation(ownerId, postId) {
+  const postRef = postsCollection().doc(postId);
+  await getFirestore().runTransaction(async (tx) => {
+    const snapshot = await tx.get(postRef);
+    if (!snapshot.exists) return;
+    const data = snapshot.data() || {};
+    if ((data.userId || DEFAULT_USER_ID) !== ownerId) return;
+
+    const accountId = String(data.accountId || data.tiktokOpenId || '').trim();
+    const scheduledAt = data.scheduledAt || data.scheduledTimeUTC;
+    if (!accountId || accountId === 'legacy' || !occupiesScheduleSlot({
+      status: data.status,
+      scheduledAt
+    })) return;
+
+    const desiredSlotId = scheduleSlotId(ownerId, accountId, scheduledAt);
+    const currentSlotId = data.scheduleSlotId || legacyScheduleSlotId(ownerId, scheduledAt);
+    const desiredSlotRef = scheduleSlotsCollection().doc(desiredSlotId);
+    const currentSlotRef = currentSlotId && currentSlotId !== desiredSlotId
+      ? scheduleSlotsCollection().doc(currentSlotId)
+      : null;
+    const desiredSlotSnapshot = await tx.get(desiredSlotRef);
+    const currentSlotSnapshot = currentSlotRef ? await tx.get(currentSlotRef) : null;
+
+    if (desiredSlotSnapshot.exists && (desiredSlotSnapshot.data() || {}).postId !== postId) {
+      return;
+    }
+
+    tx.set(desiredSlotRef, scheduleSlotData(ownerId, accountId, postId, data.campaignId || data.campaign_id, scheduledAt));
+    if (data.scheduleSlotId !== desiredSlotId) {
+      tx.update(postRef, {
+        scheduleSlotId: desiredSlotId,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    }
+    if (
+      currentSlotRef
+      && currentSlotSnapshot
+      && currentSlotSnapshot.exists
+      && (currentSlotSnapshot.data() || {}).postId === postId
+    ) {
+      tx.delete(currentSlotRef);
+    }
+  });
 }
 
 async function saveUploadToCloudinary(file) {
@@ -566,11 +646,14 @@ async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
   validateCampaignAccounts(plan.jobs, accounts, options);
 
   const existingPosts = await getPosts(ownerId);
-  const occupiedMinutes = new Set(existingPosts
-    .filter((post) => ['scheduled', 'processing'].includes(String(post.status || '').toLowerCase()))
-    .map((post) => minuteKey(post.scheduledAt))
+  await backfillScheduleReservations(ownerId, existingPosts, plan.jobs.map((job) => job.accountId));
+  const occupiedSlots = new Set(existingPosts
+    .filter(occupiesScheduleSlot)
+    .map((post) => scheduleSlotId(ownerId, post.accountId, post.scheduledAt))
     .filter(Boolean));
-  const collision = plan.jobs.find((job) => occupiedMinutes.has(minuteKey(job.scheduledAt)));
+  const collision = plan.jobs.find((job) => (
+    occupiedSlots.has(scheduleSlotId(ownerId, job.accountId, job.scheduledAt))
+  ));
   if (collision) {
     throw campaignScheduleCollisionError(collision.scheduledAt);
   }
@@ -583,7 +666,7 @@ async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
     const campaignRef = campaignsCollection().doc(campaignId);
     const childRefs = plan.jobs.map(() => postsCollection().doc(randomUUID()));
     const childJobIds = childRefs.map((ref) => ref.id);
-    const scheduleSlotIds = plan.jobs.map((job) => scheduleSlotId(ownerId, job.scheduledAt));
+    const scheduleSlotIds = plan.jobs.map((job) => scheduleSlotId(ownerId, job.accountId, job.scheduledAt));
     const scheduleSlotRefs = scheduleSlotIds.map((id) => scheduleSlotsCollection().doc(id));
     const now = Timestamp.now();
     const db = getFirestore();
@@ -702,6 +785,7 @@ async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
       tx.set(campaignRef, campaignData);
       scheduleSlotRefs.forEach((ref, index) => tx.set(ref, {
         userId: ownerId,
+        accountId: plan.jobs[index].accountId,
         campaignId,
         postId: childJobIds[index],
         scheduledAt: childJobs[index].data.scheduledAt,
@@ -824,8 +908,13 @@ async function updatePost(userId, id, patch, accountId) {
   if (accountId && postFromDoc(snap).accountId !== accountId) return null;
 
   const currentData = snap.data();
+  const currentPost = postFromDoc(snap);
   const campaignId = currentData.campaignId || currentData.campaign_id || '';
   const firestorePatch = mapPatchToFirestore(patch);
+  if ('scheduledAt' in firestorePatch) {
+    const accountPosts = await getPosts(ownerId, currentPost.accountId);
+    await backfillScheduleReservations(ownerId, accountPosts, [currentPost.accountId]);
+  }
   if (
     currentData.publishId
     && ['pending', 'scheduled'].includes(String(firestorePatch.status || '').toLowerCase())
@@ -858,9 +947,14 @@ async function updatePost(userId, id, patch, accountId) {
     firestorePatch.campaign_job_status = nextCampaignStatus;
   }
   if ('scheduledAt' in firestorePatch) {
-    const desiredSlotId = firestorePatch.scheduledAt ? scheduleSlotId(ownerId, firestorePatch.scheduledAt) : '';
-    const currentSlotId = currentData.scheduleSlotId
-      || scheduleSlotId(ownerId, currentData.scheduledAt || currentData.scheduled_at);
+    const desiredSlotId = firestorePatch.scheduledAt
+      ? scheduleSlotId(ownerId, currentPost.accountId, firestorePatch.scheduledAt)
+      : '';
+    const currentSlotId = scheduleSlotId(
+      ownerId,
+      currentPost.accountId,
+      currentData.scheduledAt || currentData.scheduled_at
+    ) || currentData.scheduleSlotId;
     const desiredSlotRef = desiredSlotId ? scheduleSlotsCollection().doc(desiredSlotId) : null;
     const currentSlotRef = currentSlotId ? scheduleSlotsCollection().doc(currentSlotId) : null;
 
@@ -886,7 +980,13 @@ async function updatePost(userId, id, patch, accountId) {
         updatedAt: FieldValue.serverTimestamp()
       });
       if (desiredSlotRef) {
-        tx.set(desiredSlotRef, scheduleSlotData(ownerId, id, campaignId, firestorePatch.scheduledAt));
+        tx.set(desiredSlotRef, scheduleSlotData(
+          ownerId,
+          currentPost.accountId,
+          id,
+          campaignId,
+          firestorePatch.scheduledAt
+        ));
       }
       if (
         currentSlotRef
@@ -919,10 +1019,12 @@ async function deletePost(userId, id, accountId) {
   const cloudinaryPublicId = data.cloudinaryPublicId;
   const cloudinaryResourceType = data.cloudinaryResourceType;
   const campaignId = data.campaignId || data.campaign_id || '';
+  const scheduleAccountId = data.accountId || data.tiktokOpenId || '';
 
   if (campaignId) {
     const campaignRef = campaignsCollection().doc(campaignId);
-    const storedScheduleSlotId = data.scheduleSlotId || scheduleSlotId(ownerId, data.scheduledAt || data.scheduled_at);
+    const storedScheduleSlotId = data.scheduleSlotId
+      || scheduleSlotId(ownerId, scheduleAccountId, data.scheduledAt || data.scheduled_at);
     const scheduleSlotRef = storedScheduleSlotId ? scheduleSlotsCollection().doc(storedScheduleSlotId) : null;
     await getFirestore().runTransaction(async (tx) => {
       const campaignSnapshot = await tx.get(campaignRef);
@@ -957,7 +1059,8 @@ async function deletePost(userId, id, accountId) {
       }
     });
   } else {
-    const storedScheduleSlotId = data.scheduleSlotId || scheduleSlotId(ownerId, data.scheduledAt || data.scheduled_at);
+    const storedScheduleSlotId = data.scheduleSlotId
+      || scheduleSlotId(ownerId, scheduleAccountId, data.scheduledAt || data.scheduled_at);
     if (storedScheduleSlotId) {
       const scheduleSlotRef = scheduleSlotsCollection().doc(storedScheduleSlotId);
       await getFirestore().runTransaction(async (tx) => {
@@ -1027,6 +1130,7 @@ async function autoSchedulePosts(userId, postIds, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
   const idSet = new Set(postIds);
   const posts = await getPosts(ownerId, accountId);
+  await backfillScheduleReservations(ownerId, posts, [accountId]);
   const settings = await getSettings();
   let nextDate = getNextAvailableDate(posts, settings.dailyPostTime, idSet);
 
@@ -1045,6 +1149,7 @@ async function autoSchedulePosts(userId, postIds, accountId) {
 async function reschedulePendingQueue(userId, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
   const posts = await getPosts(ownerId, accountId);
+  await backfillScheduleReservations(ownerId, posts, [accountId]);
   const settings = await getSettings();
   let nextDate = tomorrowAtTime(settings.dailyPostTime);
 
@@ -1064,8 +1169,9 @@ async function reschedulePendingQueue(userId, accountId) {
 async function reserveScheduledAssignments(ownerId, assignments) {
   const planned = assignments.map(({ post, scheduledAt }) => {
     const timestamp = Timestamp.fromDate(scheduledAt);
-    const newSlotId = scheduleSlotId(ownerId, timestamp);
-    const oldSlotId = post.scheduleSlotId || scheduleSlotId(ownerId, post.scheduledAt);
+    const newSlotId = scheduleSlotId(ownerId, post.accountId, timestamp);
+    const oldSlotId = scheduleSlotId(ownerId, post.accountId, post.scheduledAt)
+      || post.scheduleSlotId;
     return {
       post,
       timestamp,
@@ -1101,6 +1207,7 @@ async function reserveScheduledAssignments(ownerId, assignments) {
       });
       tx.set(entry.newSlotRef, scheduleSlotData(
         ownerId,
+        entry.post.accountId,
         entry.post.id,
         entry.post.campaignId,
         entry.timestamp

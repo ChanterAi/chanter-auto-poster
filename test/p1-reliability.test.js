@@ -173,7 +173,7 @@ function getQueryName(filters) {
   return 'other';
 }
 
-test('stale locked job is recovered to scheduled status on next tick', async () => {
+test('stale processing attempt becomes unknown and is not retried automatically', async () => {
   const staleTime = new Date('2026-06-20T11:30:00.000Z'); // 30 min before fixedNow
   const records = new Map([['stale-job', {
     userId: 'owner', platform: 'tiktok', accountId: 'acc-1', tiktokOpenId: 'acc-1',
@@ -186,27 +186,26 @@ test('stale locked job is recovered to scheduled status on next tick', async () 
     updatedAt: { toDate: () => new Date(), toMillis: () => Date.now() }
   }]]);
 
+  let publishCalled = false;
   const { fixedNow, cleanup } = setupMocks({ records });
+  require.cache[require.resolve('../src/tiktok')].exports.publishPhotoPost = async () => {
+    publishCalled = true;
+    return { ok: true };
+  };
   const scheduler = require('../src/scheduler');
   await scheduler.runSchedulerTick({ now: fixedNow });
 
   const stored = records.get('stale-job');
-  // The stale lock should have been recovered: the job transitioned from
-  // 'processing' (stale) back to 'scheduled', then was picked up and
-  // accepted by the mocked API. The key assertion is that it didn't stay
-  // stuck in 'processing' with the old lock.
-  assert.notEqual(stored.status, 'processing',
-    'stale processing job should not remain in processing');
+  assert.equal(publishCalled, false, 'ambiguous stale jobs must never call TikTok again');
+  assert.equal(stored.status, 'unknown');
   assert.equal(stored.lockedBy, null, 'old lock should be cleared');
-  // API acceptance is intentionally not treated as final posted success.
-  assert.equal(stored.status, 'accepted',
-    'recovered job should record API acceptance after recovery');
-  assert.ok(stored.publishId, 'recovered job should have a publishId');
+  assert.equal(stored.lastResult.code, 'RECOVERY_ATTEMPT_OUTCOME_UNKNOWN');
+  assert.match(stored.errorMessage, /may have accepted|automatic retry was blocked/i);
 
   cleanup();
 });
 
-test('stale locked job that exceeded maxClaimAttempts is marked failed', async () => {
+test('stale processing attempt remains unknown even after max claim attempts', async () => {
   const staleTime = new Date('2026-06-20T11:30:00.000Z');
   const records = new Map([['poison-job', {
     userId: 'owner', platform: 'tiktok', accountId: 'acc-1', tiktokOpenId: 'acc-1',
@@ -219,16 +218,21 @@ test('stale locked job that exceeded maxClaimAttempts is marked failed', async (
     updatedAt: { toDate: () => new Date(), toMillis: () => Date.now() }
   }]]);
 
+  let publishCalled = false;
   const { fixedNow, cleanup } = setupMocks({ records });
+  require.cache[require.resolve('../src/tiktok')].exports.publishPhotoPost = async () => {
+    publishCalled = true;
+    return { ok: true };
+  };
   const scheduler = require('../src/scheduler');
   await scheduler.runSchedulerTick({ now: fixedNow });
 
   const stored = records.get('poison-job');
-  assert.equal(stored.status, 'failed',
-    'job exceeding maxClaimAttempts should be marked failed');
+  assert.equal(publishCalled, false);
+  assert.equal(stored.status, 'unknown');
   assert.equal(stored.lockedAt, null);
   assert.equal(stored.lockedBy, null);
-  assert.ok(stored.errorMessage, 'errorMessage should be set');
+  assert.equal(stored.lastResult.code, 'RECOVERY_ATTEMPT_OUTCOME_UNKNOWN');
 
   cleanup();
 });

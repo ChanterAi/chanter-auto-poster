@@ -9,7 +9,6 @@ const instagram = require('./instagram');
 const { syncCampaignParentStatus } = require('./storage');
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
-const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
 const HEARTBEAT_DOC = 'schedulerHeartbeat';
 const HEARTBEAT_STALE_AFTER_MS = 5 * 60 * 1000;
 
@@ -447,83 +446,33 @@ async function reclaimOne(ref, nowDate) {
     const staleBeforeMillis = nowDate.getTime() - STALE_LOCK_MS;
     if (Number.isFinite(lockedAtMillis) && lockedAtMillis > staleBeforeMillis) return;
 
-    if (data.publishId) {
-      const reason = 'A remote publish identifier already exists. Automatic retry was blocked; verify the provider result before changing this job.';
-      tx.update(ref, {
-        status: 'unknown',
-        ...(data.campaignId || data.campaign_id ? {
-          campaignJobStatus: 'unknown',
-          campaign_job_status: 'unknown'
-        } : {}),
-        lockedAt: null,
-        lockedBy: null,
-        unknownAt: FieldValue.serverTimestamp(),
-        errorMessage: reason,
-        lastResult: {
-          ok: false,
-          mode: 'recovery',
-          code: 'RECOVERY_REMOTE_STATE_UNKNOWN',
-          reason,
-          completedAt: nowDate.toISOString()
-        },
-        updatedAt: FieldValue.serverTimestamp()
-      });
-      return data.campaignId || data.campaign_id || '';
-    }
+    const lockIsInvalid = !Number.isFinite(lockedAtMillis);
+    const code = data.publishId
+      ? 'RECOVERY_REMOTE_STATE_UNKNOWN'
+      : (lockIsInvalid ? 'RECOVERY_LOCK_INVALID' : 'RECOVERY_ATTEMPT_OUTCOME_UNKNOWN');
+    const reason = data.publishId
+      ? 'A remote publish identifier already exists. Automatic retry was blocked; verify the provider result before changing this job.'
+      : (lockIsInvalid
+        ? 'Processing lock is missing or invalid. Automatic retry was blocked to prevent duplicate publishing.'
+        : 'The publish worker stopped after claiming this job. TikTok may have accepted the request, so automatic retry was blocked to prevent a duplicate post.');
 
-    if (!Number.isFinite(lockedAtMillis)) {
-      const reason = 'Processing lock is missing or invalid. Automatic retry was blocked to prevent duplicate publishing.';
-      tx.update(ref, {
-        status: 'unknown',
-        ...(data.campaignId || data.campaign_id ? {
-          campaignJobStatus: 'unknown',
-          campaign_job_status: 'unknown'
-        } : {}),
-        lockedAt: null,
-        lockedBy: null,
-        unknownAt: FieldValue.serverTimestamp(),
-        errorMessage: reason,
-        lastResult: {
-          ok: false,
-          mode: 'recovery',
-          code: 'RECOVERY_LOCK_INVALID',
-          reason,
-          completedAt: nowDate.toISOString()
-        },
-        updatedAt: FieldValue.serverTimestamp()
-      });
-      return data.campaignId || data.campaign_id || '';
-    }
-
-    const attempts = Number(data.claimAttempts || 0);
-    if (attempts >= MAX_CLAIM_ATTEMPTS) {
-      const reason = `Publish worker stopped during ${attempts} attempts`;
-      tx.update(ref, {
-        status: 'failed',
-        ...(data.campaignId || data.campaign_id ? {
-          campaignJobStatus: 'retry_required',
-          campaign_job_status: 'retry_required'
-        } : {}),
-        lockedAt: null,
-        lockedBy: null,
-        failedAt: FieldValue.serverTimestamp(),
-        errorMessage: reason,
-        updatedAt: FieldValue.serverTimestamp(),
-        lastResult: { ok: false, mode: 'api', reason, completedAt: nowDate.toISOString() }
-      });
-      return data.campaignId || data.campaign_id || '';
-    }
-
-    const scheduledAt = data.scheduledAt || data.scheduledTimeUTC || Timestamp.now();
     tx.update(ref, {
-      status: 'scheduled',
+      status: 'unknown',
       ...(data.campaignId || data.campaign_id ? {
-        campaignJobStatus: 'queued',
-        campaign_job_status: 'queued'
+        campaignJobStatus: 'unknown',
+        campaign_job_status: 'unknown'
       } : {}),
-      scheduledAt,
       lockedAt: null,
       lockedBy: null,
+      unknownAt: FieldValue.serverTimestamp(),
+      errorMessage: reason,
+      lastResult: {
+        ok: false,
+        mode: 'recovery',
+        code,
+        reason,
+        completedAt: nowDate.toISOString()
+      },
       updatedAt: FieldValue.serverTimestamp()
     });
     return data.campaignId || data.campaign_id || '';

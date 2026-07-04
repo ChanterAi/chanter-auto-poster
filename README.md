@@ -257,7 +257,7 @@ tokens, or secrets. `/health` exposes this under
 older-than-five-minute heartbeats as degraded while preserving the existing
 HTTP status contract.
 
-There is no in-process timer. Firestore is the source of truth, so a sleeping or restarted web service recovers overdue `scheduled` jobs on the next external tick. Each job is atomically changed to `processing` before TikTok publishing. A successful TikTok API response becomes `accepted`, not `posted`; `posted` is reserved for a separately confirmed or manually confirmed final state. Recovery ambiguity is recorded as `unknown` and is not retried automatically.
+There is no in-process timer. Firestore is the source of truth, so a sleeping or restarted web service recovers overdue `scheduled` jobs on the next external tick. Each job is atomically changed to `processing` before TikTok publishing. A successful TikTok API response becomes `accepted`, not `posted`; `posted` is reserved for a separately confirmed or manually confirmed final state. Any stale `processing` attempt is treated as remotely ambiguous, recorded as `unknown`, and blocked from automatic retry pending operator review.
 
 Deploy the required Firestore indexes before enabling the cron job:
 
@@ -302,7 +302,7 @@ Campaign Mode is TikTok-only and uses the existing Firestore scheduler. Instagra
 6. Inspect `/api/debug/jobs` or Firestore and confirm both children share `campaignId` and one media reference, use different account/copy fields, and have distinct `scheduledAt` minutes.
 7. Only in an approved controlled TikTok test environment, let the cron tick run. Confirm API success becomes `accepted`, not `posted`, and that a failed child keeps its error evidence without changing its sibling. Final posting still requires separate verification.
 
-Implemented guards: more than two accounts, duplicate account selection, matching captions, matching hashtag sets, expired/disconnected tokens, past times, and occupied schedule minutes are rejected before campaign jobs are committed. Schedule-minute reservations are committed transactionally, campaign child schedule times cannot be changed through generic edit/reschedule actions, and shared Cloudinary media is retained until no job references it.
+Implemented guards: more than two accounts, duplicate account selection, matching captions, matching hashtag sets, expired/disconnected tokens, past times, and occupied schedule minutes are rejected before campaign jobs are committed. Schedule-minute reservations are committed transactionally and scoped by user, TikTok account, and minute: independent accounts may use the same minute, while the same account cannot. Older scheduled jobs are backfilled into that reservation index before new scheduling checks. Campaign child schedule times cannot be changed through generic edit/reschedule actions, and shared Cloudinary media is retained until no job references it.
 
 Campaign Mode v0.1 does not poll TikTok for final publication status. `accepted` and `unknown` therefore require operator verification; neither state is presented as final posted success.
 
