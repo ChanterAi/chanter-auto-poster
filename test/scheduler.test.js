@@ -215,6 +215,212 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
   }
 });
 
+function createSchedulerHarness(t, { record, publishResult }) {
+  const firestorePath = require.resolve('../src/firestore');
+  const tiktokPath = require.resolve('../src/tiktok');
+  const instagramPath = require.resolve('../src/instagram');
+  const mapperPath = require.resolve('../src/postsMapper');
+  const schedulerPath = require.resolve('../src/scheduler');
+  for (const modulePath of [firestorePath, tiktokPath, instagramPath, mapperPath, schedulerPath]) {
+    delete require.cache[modulePath];
+  }
+
+  const timestamp = (value) => ({
+    toDate: () => new Date(value),
+    toMillis: () => new Date(value).getTime()
+  });
+  const serverTimestamp = timestamp(new Date());
+  const records = new Map([['job-1', record]]);
+  const publishCalls = [];
+
+  const document = (id) => ({
+    id,
+    get exists() { return records.has(id); },
+    data: () => records.get(id)
+  });
+  const applyUpdate = (id, patch) => {
+    const current = records.get(id);
+    const next = { ...current };
+    for (const [key, value] of Object.entries(patch)) {
+      next[key] = value && value.__increment ? Number(next[key] || 0) + value.__increment : value;
+    }
+    records.set(id, next);
+  };
+
+  require.cache[firestorePath] = {
+    id: firestorePath,
+    filename: firestorePath,
+    loaded: true,
+    exports: {
+      postsCollection: () => ({ doc: (id) => ({ id }) }),
+      getFirestore: () => ({
+        runTransaction: async (callback) => callback({
+          get: async (documentRef) => document(documentRef.id),
+          update: (documentRef, patch) => applyUpdate(documentRef.id, patch)
+        })
+      }),
+      Timestamp: {
+        now: () => serverTimestamp,
+        fromDate: timestamp,
+        fromMillis: (value) => timestamp(new Date(value))
+      },
+      FieldValue: {
+        serverTimestamp: () => serverTimestamp,
+        increment: (value) => ({ __increment: value })
+      }
+    }
+  };
+  require.cache[tiktokPath] = {
+    id: tiktokPath,
+    filename: tiktokPath,
+    loaded: true,
+    exports: {
+      publishPhotoPost: async (job) => {
+        publishCalls.push(job);
+        return publishResult;
+      }
+    }
+  };
+  require.cache[instagramPath] = {
+    id: instagramPath,
+    filename: instagramPath,
+    loaded: true,
+    exports: {
+      getInstagramHealth: async () => ({ configured: false, canPublish: false }),
+      publishInstagramMedia: async () => {
+        throw new Error('Instagram must not be called in this test');
+      }
+    }
+  };
+
+  t.after(() => {
+    for (const modulePath of [firestorePath, tiktokPath, instagramPath, mapperPath, schedulerPath]) {
+      delete require.cache[modulePath];
+    }
+  });
+
+  return { scheduler: require('../src/scheduler'), records, publishCalls };
+}
+
+function dueTikTokRecord(overrides = {}) {
+  const timestamp = (value) => ({
+    toDate: () => new Date(value),
+    toMillis: () => new Date(value).getTime()
+  });
+  return {
+    userId: 'owner',
+    platform: 'tiktok',
+    accountId: 'account-a',
+    tiktokOpenId: 'account-a',
+    username: 'account_a',
+    originalName: 'due.jpg',
+    mediaType: 'photo',
+    mediaUrl: 'https://res.cloudinary.com/test/image/upload/due.jpg',
+    status: 'scheduled',
+    scheduledAt: timestamp('2026-06-20T11:59:00.000Z'),
+    createdAt: timestamp('2026-06-20T10:00:00.000Z'),
+    updatedAt: timestamp('2026-06-20T10:00:00.000Z'),
+    claimAttempts: 0,
+    ...overrides
+  };
+}
+
+test('transient publish failure reschedules with bounded backoff instead of failing', async (t) => {
+  const { scheduler, records } = createSchedulerHarness(t, {
+    record: dueTikTokRecord(),
+    publishResult: { ok: false, mode: 'api', reason: 'TikTok video init returned HTTP 503' }
+  });
+
+  const before = Date.now();
+  const result = await scheduler.processPost('job-1', { now: new Date('2026-06-20T12:00:00.000Z') });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.retryScheduled, true);
+  const record = records.get('job-1');
+  assert.equal(record.status, 'scheduled');
+  assert.equal(record.lockedAt, null);
+  assert.equal(record.lockedBy, null);
+  assert.equal(record.failedAt, null);
+  assert.equal(record.claimAttempts, 1);
+  assert.equal(record.lastResult.willRetry, true);
+  // First retry backs off by exactly one minute (deterministic schedule).
+  const delayMs = record.scheduledAt.toMillis() - before;
+  assert.ok(delayMs >= 60_000 && delayMs <= 61_000, `unexpected backoff delay ${delayMs}`);
+});
+
+test('non-retryable publish failure is still marked failed', async (t) => {
+  const { scheduler, records } = createSchedulerHarness(t, {
+    record: dueTikTokRecord(),
+    publishResult: { ok: false, mode: 'api', reason: 'TikTok video init returned HTTP 400' }
+  });
+
+  const result = await scheduler.processPost('job-1', { now: new Date('2026-06-20T12:00:00.000Z') });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.retryScheduled, undefined);
+  const record = records.get('job-1');
+  assert.equal(record.status, 'failed');
+  assert.ok(record.failedAt);
+  assert.equal(record.errorMessage, 'TikTok video init returned HTTP 400');
+});
+
+test('transient failure at max claim attempts becomes terminal failed', async (t) => {
+  const { scheduler, records } = createSchedulerHarness(t, {
+    record: dueTikTokRecord({ claimAttempts: 4 }),
+    publishResult: { ok: false, mode: 'api', reason: 'TikTok video init returned HTTP 503' }
+  });
+
+  const result = await scheduler.processPost('job-1', { now: new Date('2026-06-20T12:00:00.000Z') });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.retryScheduled, undefined);
+  const record = records.get('job-1');
+  // claim incremented 4 -> 5 = SCHEDULER_MAX_CLAIM_ATTEMPTS default
+  assert.equal(record.claimAttempts, 5);
+  assert.equal(record.status, 'failed');
+  assert.ok(record.failedAt);
+});
+
+test('duplicate-publish protection still refuses jobs with a durable publishId', async (t) => {
+  const { scheduler, records, publishCalls } = createSchedulerHarness(t, {
+    record: dueTikTokRecord({ status: 'posted', publishId: 'publish-123' }),
+    publishResult: { ok: true, mode: 'api', response: { data: { publish_id: 'publish-456' } } }
+  });
+
+  const result = await scheduler.processPost('job-1', {
+    force: true,
+    now: new Date('2026-06-20T12:00:00.000Z')
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, 'skipped');
+  assert.equal(publishCalls.length, 0);
+  assert.equal(records.get('job-1').status, 'posted');
+  assert.equal(records.get('job-1').publishId, 'publish-123');
+});
+
+test('failure classification separates transient from terminal errors', () => {
+  const { isTransientPublishFailure, retryBackoffMs } = require('../src/scheduler')._private;
+
+  assert.equal(isTransientPublishFailure({ ok: false, reason: 'TikTok video upload returned HTTP 502' }), true);
+  assert.equal(isTransientPublishFailure({ ok: false, reason: 'fetch failed' }), true);
+  assert.equal(isTransientPublishFailure({ ok: false, reason: 'The operation timed out', code: 'ETIMEDOUT' }), true);
+  assert.equal(isTransientPublishFailure({ ok: false, reason: 'TikTok API rate limit exceeded' }), true);
+
+  assert.equal(isTransientPublishFailure({ ok: false, reason: 'TikTok photo publish returned HTTP 400' }), false);
+  assert.equal(isTransientPublishFailure({ ok: false, reason: 'TikTok account is unassigned for this job; publishing was blocked.' }), false);
+  assert.equal(isTransientPublishFailure({ ok: false, reason: 'Instagram publishing is not configured.', code: 'INSTAGRAM_NOT_CONFIGURED' }), false);
+  assert.equal(isTransientPublishFailure({ ok: false, reason: 'Token was issued before app approval. Please click Disconnect then reconnect TikTok to get a fresh production token.' }), false);
+  assert.equal(isTransientPublishFailure({ ok: false, reason: 'Some unknown error' }), false);
+  assert.equal(isTransientPublishFailure({ ok: true }), false);
+
+  assert.equal(retryBackoffMs(1), 60_000);
+  assert.equal(retryBackoffMs(2), 5 * 60_000);
+  assert.equal(retryBackoffMs(3), 15 * 60_000);
+  assert.equal(retryBackoffMs(4), 60 * 60_000);
+  assert.equal(retryBackoffMs(99), 60 * 60_000);
+});
+
 test('Firestore index failures expose the generated console link', () => {
   const scheduler = require('../src/scheduler');
   const url = 'https://console.firebase.google.com/v1/r/project/test/firestore/indexes?create_composite=abc';

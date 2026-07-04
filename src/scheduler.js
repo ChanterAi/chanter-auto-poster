@@ -10,6 +10,83 @@ const instagram = require('./instagram');
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
 
+// Deterministic, bounded backoff schedule (minutes) for transient publish
+// failures. Indexed by claim attempt number; the last entry caps the delay.
+const RETRY_BACKOFF_MINUTES = [1, 5, 15, 60];
+
+const NON_RETRYABLE_CODES = new Set([
+  'INSTAGRAM_NOT_CONFIGURED',
+  'INSTAGRAM_LIVE_DISABLED'
+]);
+
+const NON_RETRYABLE_REASON_PATTERNS = [
+  /unassigned/i,
+  /not configured/i,
+  /disabled/i,
+  /token/i,
+  /authoriz/i,
+  /authentication/i,
+  /permission/i,
+  /forbidden/i,
+  /invalid/i,
+  /missing/i,
+  /must be/i,
+  /bad request/i,
+  /approval/i,
+  /returned http 4(?!29)\d\d/i
+];
+
+const TRANSIENT_ERROR_CODES = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
+  'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT',
+  'ABORT_ERR', 'TIMEOUT_ERR'
+]);
+
+const TRANSIENT_REASON_PATTERNS = [
+  /returned http 5\d\d/i,
+  /returned http 429/i,
+  /\btimed? ?out\b/i,
+  /timeout/i,
+  /aborted/i,
+  /fetch failed/i,
+  /socket hang ?up/i,
+  /network/i,
+  /rate limit/i,
+  /temporarily unavailable/i,
+  /service unavailable/i,
+  /internal server error/i,
+  /try again/i,
+  /econn/i,
+  /eai_again/i,
+  /enotfound/i,
+  /etimedout/i
+];
+
+/**
+ * Classifies a failed publish result. Only clearly transient failures
+ * (network errors, timeouts, 5xx/429-style API responses) are retryable;
+ * validation, auth, configuration, and other 4xx-style failures — and
+ * anything ambiguous — are terminal.
+ */
+function isTransientPublishFailure(result) {
+  if (!result || result.ok) return false;
+
+  const code = String(result.code || '').toUpperCase();
+  if (NON_RETRYABLE_CODES.has(code)) return false;
+
+  const reason = String(result.reason || '');
+  if (NON_RETRYABLE_REASON_PATTERNS.some((pattern) => pattern.test(reason))) return false;
+
+  if (TRANSIENT_ERROR_CODES.has(code)) return true;
+  return TRANSIENT_REASON_PATTERNS.some((pattern) => pattern.test(reason));
+}
+
+function retryBackoffMs(attempts) {
+  const index = Math.min(Math.max(attempts, 1), RETRY_BACKOFF_MINUTES.length) - 1;
+  return RETRY_BACKOFF_MINUTES[index] * 60 * 1000;
+}
+
 // Track the last successful tick time for health monitoring.
 // This is in-memory only — it resets on restart, which is exactly what
 // we want: if the process just booted, we don't know when the last tick
@@ -357,6 +434,7 @@ async function finalize(id, workerId, result) {
   const completedAt = new Date().toISOString();
   const reason = result.reason || 'TikTok publish failed';
   let applied = false;
+  let retryScheduled = false;
 
   // Extract a durable publish identifier from the TikTok API response
   // so we can guard against duplicate publishing on retry.
@@ -393,15 +471,34 @@ async function finalize(id, workerId, result) {
         completedAt
       };
       if (result.code) safeResult.code = result.code;
-      tx.update(ref, {
-        status: 'failed',
-        failedAt: Timestamp.now(),
-        errorMessage: reason,
-        lockedAt: null,
-        lockedBy: null,
-        lastResult: safeResult,
-        updatedAt: FieldValue.serverTimestamp()
-      });
+
+      const attempts = Number(data.claimAttempts || 0);
+      const shouldRetry = isTransientPublishFailure(result) && attempts < MAX_CLAIM_ATTEMPTS;
+
+      if (shouldRetry) {
+        const nextAttemptAt = Timestamp.fromMillis(Date.now() + retryBackoffMs(attempts));
+        retryScheduled = true;
+        tx.update(ref, {
+          status: 'scheduled',
+          scheduledAt: nextAttemptAt,
+          failedAt: null,
+          errorMessage: reason,
+          lockedAt: null,
+          lockedBy: null,
+          lastResult: { ...safeResult, willRetry: true, attempts },
+          updatedAt: FieldValue.serverTimestamp()
+        });
+      } else {
+        tx.update(ref, {
+          status: 'failed',
+          failedAt: Timestamp.now(),
+          errorMessage: reason,
+          lockedAt: null,
+          lockedBy: null,
+          lastResult: safeResult,
+          updatedAt: FieldValue.serverTimestamp()
+        });
+      }
     }
     applied = true;
   });
@@ -410,6 +507,10 @@ async function finalize(id, workerId, result) {
     return { ok: false, mode: 'skipped', postId: id, reason: 'Job lock changed before completion.' };
   }
   if (result.ok) return { ok: true, mode: result.mode || 'api', postId: id };
+  if (retryScheduled) {
+    console.warn(`[POST_RETRY_SCHEDULED] id=${id} reason=${reason}`);
+    return { ok: false, mode: result.mode || 'api', postId: id, reason, retryScheduled: true };
+  }
   return { ok: false, mode: result.mode || 'api', postId: id, reason };
 }
 
@@ -476,6 +577,8 @@ module.exports = {
   _private: {
     claimPost,
     findDueJobs,
+    isTransientPublishFailure,
+    retryBackoffMs,
     describeQueryError,
     safeTikTokSummary,
     extractPublishId,
