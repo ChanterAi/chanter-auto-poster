@@ -2,11 +2,11 @@
 
 const { randomUUID } = require('crypto');
 const config = require('./config');
-const { postsCollection, campaignsCollection, configDoc, getFirestore, Timestamp, FieldValue } = require('./firestore');
+const { postsCollection, configDoc, getFirestore, Timestamp, FieldValue } = require('./firestore');
 const { postFromDoc, toTimestampOrNull } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
-const { deriveCampaignStatus } = require('./campaigns');
+const { syncCampaignParentStatus } = require('./storage');
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
@@ -261,12 +261,14 @@ function unavailableDurableHeartbeat() {
 
 function sanitizeHeartbeatSummary(summary) {
   if (!summary || typeof summary !== 'object') return null;
-  return {
+  const sanitized = {
     checked: safeCount(summary.checked),
     due: safeCount(summary.due),
     posted: safeCount(summary.posted),
     failed: safeCount(summary.failed)
   };
+  if (Object.hasOwn(summary, 'accepted')) sanitized.accepted = safeCount(summary.accepted);
+  return sanitized;
 }
 
 function safeCount(value) {
@@ -310,6 +312,7 @@ async function runSchedulerTick({ now = new Date() } = {}) {
     now: nowDate.toISOString(),
     checked: 0,
     due: 0,
+    accepted: 0,
     posted: 0,
     failed: 0,
     errors: []
@@ -348,7 +351,8 @@ async function runSchedulerTick({ now = new Date() } = {}) {
     try {
       const result = await processPost(job.id, { force: false, workerId, now: nowDate });
       if (result.ok) {
-        summary.posted += 1;
+        if (result.state === 'accepted') summary.accepted += 1;
+        else summary.posted += 1;
       } else if (result.mode !== 'skipped') {
         summary.failed += 1;
         summary.errors.push({ id: job.id, error: result.reason || 'Unknown publish error' });
@@ -432,7 +436,7 @@ async function reclaimStaleLocks(nowDate) {
 }
 
 async function reclaimOne(ref, nowDate) {
-  await getFirestore().runTransaction(async (tx) => {
+  const campaignId = await getFirestore().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) return;
 
@@ -446,14 +450,14 @@ async function reclaimOne(ref, nowDate) {
     if (data.publishId) {
       const reason = 'A remote publish identifier already exists. Automatic retry was blocked; verify the provider result before changing this job.';
       tx.update(ref, {
-        status: 'failed',
+        status: 'unknown',
         ...(data.campaignId || data.campaign_id ? {
-          campaignJobStatus: 'retry_required',
-          campaign_job_status: 'retry_required'
+          campaignJobStatus: 'unknown',
+          campaign_job_status: 'unknown'
         } : {}),
         lockedAt: null,
         lockedBy: null,
-        failedAt: FieldValue.serverTimestamp(),
+        unknownAt: FieldValue.serverTimestamp(),
         errorMessage: reason,
         lastResult: {
           ok: false,
@@ -464,20 +468,20 @@ async function reclaimOne(ref, nowDate) {
         },
         updatedAt: FieldValue.serverTimestamp()
       });
-      return;
+      return data.campaignId || data.campaign_id || '';
     }
 
     if (!Number.isFinite(lockedAtMillis)) {
       const reason = 'Processing lock is missing or invalid. Automatic retry was blocked to prevent duplicate publishing.';
       tx.update(ref, {
-        status: 'failed',
+        status: 'unknown',
         ...(data.campaignId || data.campaign_id ? {
-          campaignJobStatus: 'retry_required',
-          campaign_job_status: 'retry_required'
+          campaignJobStatus: 'unknown',
+          campaign_job_status: 'unknown'
         } : {}),
         lockedAt: null,
         lockedBy: null,
-        failedAt: FieldValue.serverTimestamp(),
+        unknownAt: FieldValue.serverTimestamp(),
         errorMessage: reason,
         lastResult: {
           ok: false,
@@ -488,7 +492,7 @@ async function reclaimOne(ref, nowDate) {
         },
         updatedAt: FieldValue.serverTimestamp()
       });
-      return;
+      return data.campaignId || data.campaign_id || '';
     }
 
     const attempts = Number(data.claimAttempts || 0);
@@ -507,7 +511,7 @@ async function reclaimOne(ref, nowDate) {
         updatedAt: FieldValue.serverTimestamp(),
         lastResult: { ok: false, mode: 'api', reason, completedAt: nowDate.toISOString() }
       });
-      return;
+      return data.campaignId || data.campaign_id || '';
     }
 
     const scheduledAt = data.scheduledAt || data.scheduledTimeUTC || Timestamp.now();
@@ -522,24 +526,24 @@ async function reclaimOne(ref, nowDate) {
       lockedBy: null,
       updatedAt: FieldValue.serverTimestamp()
     });
+    return data.campaignId || data.campaign_id || '';
   });
+  if (campaignId) await syncCampaignParentStatus(campaignId);
 }
 
 async function claimPost(id, { force, workerId, now = new Date() }) {
   const ref = postsCollection().doc(id);
 
-  return getFirestore().runTransaction(async (tx) => {
+  const claimed = await getFirestore().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) return null;
 
     const data = snap.data();
     if (data.status === 'processing') return null;
 
-    // Duplicate-post guard: if this job already has a durable publish
-    // identifier and a terminal success status, never publish again.
-    // This prevents duplicates when reclaimStaleLocks retries a post
-    // that TikTok actually accepted before the crash.
-    if (data.status === 'posted' && data.publishId) {
+    // A durable remote identifier means TikTok accepted the request or the
+    // final post was confirmed. Never automatically submit it again.
+    if (['accepted', 'posted', 'unknown'].includes(data.status) && data.publishId) {
       return null;
     }
 
@@ -555,8 +559,7 @@ async function claimPost(id, { force, workerId, now = new Date() }) {
       return null;
     }
 
-    // Even in force mode, refuse to re-publish a job that already has
-    // a durable publish identifier — the content is already on TikTok.
+    // Even in force mode, acceptance is enough to block a duplicate submit.
     if (data.publishId) {
       return null;
     }
@@ -577,6 +580,8 @@ async function claimPost(id, { force, workerId, now = new Date() }) {
     claimed.status = 'processing';
     return claimed;
   });
+  if (claimed && claimed.campaignId) await syncCampaignParentStatus(claimed.campaignId);
+  return claimed;
 }
 
 async function processPost(id, {
@@ -619,7 +624,8 @@ async function processPost(id, {
 
   const finalized = await finalize(id, workerId, result);
   if (finalized.ok) {
-    console.log(`[POST_SUCCESS] id=${id} tiktokResponse=${JSON.stringify(safeTikTokSummary(result))}`);
+    const event = finalized.state === 'accepted' ? 'POST_ACCEPTED' : 'POST_SUCCESS';
+    console.log(`[${event}] id=${id} tiktokResponse=${JSON.stringify(safeTikTokSummary(result))}`);
   } else {
     console.error(`[POST_FAILED] id=${id} error=${finalized.reason || 'Unknown publish error'}`);
   }
@@ -658,6 +664,7 @@ async function finalize(id, workerId, result) {
   const reason = result.reason || 'TikTok publish failed';
   let applied = false;
   let campaignId = '';
+  let finalState = '';
 
   // Extract a durable publish identifier from the TikTok API response
   // so we can guard against duplicate publishing on retry.
@@ -671,13 +678,16 @@ async function finalize(id, workerId, result) {
     campaignId = data.campaignId || data.campaign_id || '';
 
     if (result.ok) {
+      const isTikTokAcceptance = String(data.platform || 'tiktok').toLowerCase() !== 'instagram';
+      finalState = isTikTokAcceptance ? 'accepted' : 'posted';
       const update = {
-        status: 'posted',
+        status: finalState,
         ...(campaignId ? {
-          campaignJobStatus: 'posted',
-          campaign_job_status: 'posted'
+          campaignJobStatus: finalState,
+          campaign_job_status: finalState
         } : {}),
-        postedAt: Timestamp.now(),
+        acceptedAt: isTikTokAcceptance ? Timestamp.now() : null,
+        postedAt: isTikTokAcceptance ? null : Timestamp.now(),
         readyAt: null,
         failedAt: null,
         errorMessage: null,
@@ -729,25 +739,8 @@ async function finalize(id, workerId, result) {
   if (!applied) {
     return { ok: false, mode: 'skipped', postId: id, reason: 'Job lock changed before completion.' };
   }
-  if (result.ok) return { ok: true, mode: result.mode || 'api', postId: id };
+  if (result.ok) return { ok: true, mode: result.mode || 'api', state: finalState, postId: id };
   return { ok: false, mode: result.mode || 'api', postId: id, reason };
-}
-
-async function syncCampaignParentStatus(campaignId) {
-  const ref = campaignsCollection().doc(campaignId);
-  const snapshot = await ref.get();
-  if (!snapshot.exists) return;
-  const data = snapshot.data() || {};
-  const childJobIds = data.childJobIds || data.created_child_job_ids || [];
-  const children = await Promise.all(childJobIds.map((id) => postsCollection().doc(id).get()));
-  const campaignStatus = deriveCampaignStatus(
-    children.filter((child) => child.exists).map((child) => child.data() || {})
-  );
-  await ref.update({
-    campaignStatus,
-    campaign_status: campaignStatus,
-    updatedAt: FieldValue.serverTimestamp()
-  });
 }
 
 function normalizeTimestamp(value) {

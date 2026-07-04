@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-test('one campaign child failure does not change the posted state of its sibling', async (t) => {
+test('API acceptance is not final posted state and a sibling failure remains isolated', async (t) => {
   const firestorePath = require.resolve('../src/firestore');
   const mapperPath = require.resolve('../src/postsMapper');
   const tiktokPath = require.resolve('../src/tiktok');
@@ -100,12 +100,19 @@ test('one campaign child failure does not change the posted state of its sibling
 
   const scheduler = require('../src/scheduler');
   const success = await scheduler.processPost('job-a', { force: true, workerId: 'worker-a', now });
+  assert.equal(success.state, 'accepted');
+  assert.equal(records.get('job-a').status, 'accepted');
+  assert.equal(records.get('job-a').campaignJobStatus, 'accepted');
+  assert.ok(records.get('job-a').acceptedAt);
+  assert.equal(records.get('job-a').postedAt, null);
+  assert.equal(campaign.campaignStatus, 'in_progress');
+
   const failure = await scheduler.processPost('job-b', { force: true, workerId: 'worker-b', now });
 
   assert.equal(success.ok, true);
   assert.equal(failure.ok, false);
-  assert.equal(records.get('job-a').status, 'posted');
-  assert.equal(records.get('job-a').campaignJobStatus, 'posted');
+  assert.equal(records.get('job-a').status, 'accepted');
+  assert.equal(records.get('job-a').campaignJobStatus, 'accepted');
   assert.equal(records.get('job-b').status, 'failed');
   assert.equal(records.get('job-b').campaignJobStatus, 'failed');
   assert.match(records.get('job-b').errorMessage, /account B/i);

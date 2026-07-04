@@ -264,6 +264,7 @@ router.get('/api/debug/jobs', asyncRoute(async (req, res) => {
       errorMessage: job.errorMessage || summarizeLastResult(job.lastResult).reason || '',
       lastAttempt: summarizeLastResult(job.lastResult),
       createdAt: job.createdAt,
+      acceptedAt: job.acceptedAt,
       postedAt: job.postedAt,
       updatedAt: job.updatedAt
     }))
@@ -841,7 +842,7 @@ function accountLabel(account) {
 }
 
 function emptyPostCounts() {
-  return { total: 0, pending: 0, scheduled: 0, processing: 0, ready: 0, posted: 0, failed: 0 };
+  return { total: 0, pending: 0, scheduled: 0, processing: 0, accepted: 0, unknown: 0, ready: 0, posted: 0, failed: 0 };
 }
 
 function redirectWithNotice(res, notice) {
@@ -1038,6 +1039,12 @@ function buildPostResultView(post) {
   if (status === 'processing') {
     stateLabel = 'Publishing'; tone = 'publishing';
     message = 'Publishing to TikTok. Large videos can take a moment.';
+  } else if (status === 'accepted') {
+    stateLabel = 'API accepted'; tone = 'verification';
+    message = 'TikTok accepted the publish request. Final posting is not confirmed; verify the remote result before marking it posted.';
+  } else if (status === 'unknown') {
+    stateLabel = 'Remote state unknown'; tone = 'verification';
+    message = (lastResult && lastResult.reason) || 'The remote publish state could not be confirmed. Automatic retry is blocked to prevent duplicates.';
   } else if (status === 'failed' || (lastResult && lastResult.ok === false && lastResult.mode !== 'manual')) {
     stateLabel = 'Failed'; tone = 'failed';
     const rawReason = (lastResult && lastResult.reason) || '';
@@ -1049,12 +1056,9 @@ function buildPostResultView(post) {
   } else if (status === 'ready' || (lastResult && lastResult.mode === 'manual' && status !== 'posted')) {
     stateLabel = 'Needs manual verification'; tone = 'verification';
     message = (lastResult && lastResult.reason) || 'Open the media and verify or post inside TikTok.';
-  } else if (status === 'posted' && isApiAccepted) {
-    stateLabel = 'Posted / API accepted'; tone = shareUrl ? 'accepted' : 'verification';
-    message = shareUrl ? 'TikTok returned a public post URL.' : 'TikTok accepted the publish request, but no public post URL was returned. Please verify inside TikTok.';
   } else if (status === 'posted') {
-    stateLabel = 'Posted manually'; tone = 'accepted';
-    message = (lastResult && lastResult.reason) || 'This item was marked posted manually.';
+    stateLabel = isApiAccepted ? 'Posted' : 'Posted manually'; tone = 'accepted';
+    message = (lastResult && lastResult.reason) || 'This item was confirmed as posted.';
   }
 
   return { stateLabel, tone, message, metadata, shareUrl, publishId, debugJson, hasDebug: Boolean(debugJson), hasAttempt: Boolean(lastResult), statusCheckAvailable: false };
@@ -1122,7 +1126,7 @@ function getDebugJson(post) { return post && post.lastResult ? JSON.stringify(po
 function getInstagramDebugJson(post) { return post && post.lastInstagramResult ? JSON.stringify(post.lastInstagramResult, null, 2) : ''; }
 
 function statusLabel(status) {
-  const labels = { pending: 'Unscheduled', scheduled: 'Scheduled', processing: 'Publishing', ready: 'Needs manual verification', posted: 'Posted', failed: 'Failed' };
+  const labels = { pending: 'Unscheduled', scheduled: 'Scheduled', processing: 'Publishing', accepted: 'API accepted', unknown: 'Remote state unknown', ready: 'Needs manual verification', posted: 'Posted', failed: 'Failed' };
   const v = String(status || 'pending').toLowerCase();
   return labels[v] || `${v.charAt(0).toUpperCase()}${v.slice(1)}`;
 }

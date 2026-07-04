@@ -5,8 +5,11 @@ const CAMPAIGN_STAGGER_MINUTES = 15;
 const CAMPAIGN_JOB_STATUSES = new Set([
   'queued',
   'posting',
+  'accepted',
   'posted',
   'failed',
+  'unknown',
+  'cancelled',
   'retry_required'
 ]);
 
@@ -22,7 +25,9 @@ function normalizedCopy(value) {
 }
 
 function minuteKey(value) {
-  const date = value instanceof Date ? value : new Date(value);
+  const date = value && typeof value.toDate === 'function'
+    ? value.toDate()
+    : (value instanceof Date ? new Date(value) : new Date(value));
   if (Number.isNaN(date.getTime())) return '';
   date.setUTCSeconds(0, 0);
   return date.toISOString();
@@ -142,6 +147,8 @@ function campaignJobStatus(job) {
   ).toLowerCase();
 
   if (canonicalStatus === 'posted') return 'posted';
+  if (canonicalStatus === 'accepted') return 'accepted';
+  if (canonicalStatus === 'unknown') return 'unknown';
   if (canonicalStatus === 'processing') return 'posting';
   if (['scheduled', 'pending', 'ready'].includes(canonicalStatus)) return 'queued';
   if (canonicalStatus === 'failed') {
@@ -153,12 +160,18 @@ function campaignJobStatus(job) {
 
 function deriveCampaignStatus(jobs) {
   const statuses = (Array.isArray(jobs) ? jobs : []).map(campaignJobStatus);
-  if (statuses.length === 0) return 'queued';
+  if (statuses.length === 0) return 'cancelled';
   if (statuses.every((status) => status === 'posted')) return 'posted';
   if (statuses.some((status) => status === 'posting')) return 'posting';
   if (statuses.some((status) => status === 'retry_required')) return 'retry_required';
+  if (statuses.some((status) => status === 'unknown')) return 'unknown';
   if (statuses.every((status) => status === 'failed')) return 'failed';
   if (statuses.some((status) => status === 'failed')) return 'partial_failure';
+  if (
+    statuses.some((status) => status === 'accepted')
+    && statuses.every((status) => ['accepted', 'posted'].includes(status))
+  ) return 'accepted';
+  if (statuses.some((status) => ['accepted', 'posted'].includes(status))) return 'in_progress';
   return 'queued';
 }
 

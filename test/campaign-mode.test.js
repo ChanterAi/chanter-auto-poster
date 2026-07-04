@@ -76,7 +76,7 @@ test('campaign status reports a partial failure without changing child states', 
   assert.equal(deriveCampaignStatus([
     { status: 'scheduled', campaignJobStatus: 'failed' },
     { status: 'posted', campaignJobStatus: 'posted' }
-  ]), 'queued', 'canonical requeue state must supersede stale campaign metadata');
+  ]), 'in_progress', 'canonical child states must supersede stale campaign metadata');
 });
 
 test('campaign storage uploads once and atomically creates one parent plus two child jobs', async (t) => {
@@ -88,11 +88,13 @@ test('campaign storage uploads once and atomically creates one parent plus two c
 
   const posts = new Map();
   const campaigns = new Map();
+  const scheduleSlots = new Map();
   const accounts = new Map([
     ['account-a', { userId: 'owner', accountId: 'account-a', open_id: 'account-a', connected: true, access_token: 'token-a', username: 'alpha' }],
     ['account-b', { userId: 'owner', accountId: 'account-b', open_id: 'account-b', connected: true, access_token: 'token-b', username: 'beta' }]
   ]);
   let uploadCalls = 0;
+  const destroyedAssets = [];
 
   const timestamp = (value) => {
     const date = value instanceof Date ? new Date(value) : new Date(value || fixedNow);
@@ -109,7 +111,8 @@ test('campaign storage uploads once and atomically creates one parent plus two c
       kind,
       get: async () => snapshot(id, map),
       set: async (data, options = {}) => map.set(id, options.merge ? { ...(map.get(id) || {}), ...data } : data),
-      update: async (data) => map.set(id, { ...(map.get(id) || {}), ...data })
+      update: async (data) => map.set(id, { ...(map.get(id) || {}), ...data }),
+      delete: async () => map.delete(id)
     }),
     where: (field, operator, value) => ({
       get: async () => ({
@@ -120,17 +123,37 @@ test('campaign storage uploads once and atomically creates one parent plus two c
   const postsCollection = collection(posts, 'posts');
   const campaignsCollection = collection(campaigns, 'campaigns');
   const accountsCollection = collection(accounts, 'accounts');
+  const scheduleSlotsCollection = collection(scheduleSlots, 'scheduleSlots');
+  const mapForRef = (ref) => {
+    if (ref.kind === 'campaigns') return campaigns;
+    if (ref.kind === 'scheduleSlots') return scheduleSlots;
+    return posts;
+  };
+  const applySet = (ref, data) => mapForRef(ref).set(ref.id, data);
+  let transactionQueue = Promise.resolve();
   const db = {
     batch: () => {
       const writes = [];
       return {
         set: (ref, data) => writes.push({ ref, data }),
+        update: (ref, data) => writes.push({ ref, data: { ...(mapForRef(ref).get(ref.id) || {}), ...data } }),
         commit: async () => {
           for (const { ref, data } of writes) {
-            (ref.kind === 'campaigns' ? campaigns : posts).set(ref.id, data);
+            applySet(ref, data);
           }
         }
       };
+    },
+    runTransaction: async (work) => {
+      const execute = () => work({
+        get: (ref) => ref.get(),
+        set: (ref, data) => applySet(ref, data),
+        update: (ref, data) => applySet(ref, { ...(mapForRef(ref).get(ref.id) || {}), ...data }),
+        delete: (ref) => mapForRef(ref).delete(ref.id)
+      });
+      const result = transactionQueue.then(execute, execute);
+      transactionQueue = result.then(() => undefined, () => undefined);
+      return result;
     }
   };
 
@@ -142,6 +165,7 @@ test('campaign storage uploads once and atomically creates one parent plus two c
       postsCollection: () => postsCollection,
       tiktokAccountsCollection: () => accountsCollection,
       campaignsCollection: () => campaignsCollection,
+      scheduleSlotsCollection: () => scheduleSlotsCollection,
       configDoc: () => ({ get: async () => ({ exists: false, data: () => ({}) }) }),
       getFirestore: () => db,
       Timestamp: { now: () => timestamp(fixedNow), fromDate: (date) => timestamp(date) },
@@ -155,9 +179,13 @@ test('campaign storage uploads once and atomically creates one parent plus two c
     exports: {
       uploadMediaFile: async () => {
         uploadCalls += 1;
-        return { mediaUrl: 'https://cdn.example.com/campaign.mp4', publicId: 'campaign-public-id', resourceType: 'video' };
+        return {
+          mediaUrl: `https://cdn.example.com/campaign-${uploadCalls}.mp4`,
+          publicId: `campaign-public-id-${uploadCalls}`,
+          resourceType: 'video'
+        };
       },
-      destroyMediaAsset: async () => {},
+      destroyMediaAsset: async (publicId) => destroyedAssets.push(publicId),
       checkCloudinaryHealth: async () => ({ ok: true })
     }
   };
@@ -180,6 +208,7 @@ test('campaign storage uploads once and atomically creates one parent plus two c
   assert.equal(uploadCalls, 1);
   assert.equal(campaigns.size, 1);
   assert.equal(posts.size, 2);
+  assert.equal(scheduleSlots.size, 2);
   assert.equal(result.childJobs.length, 2);
   const children = [...posts.values()];
   assert.equal(children[0].campaignId, children[1].campaignId);
@@ -216,4 +245,80 @@ test('campaign storage uploads once and atomically creates one parent plus two c
     ]
   }, { now: fixedNow }), /already scheduled/i);
   assert.equal(uploadCalls, 1, 'same-minute collision must be blocked before durable media upload');
+
+  const firstChild = result.childJobs[0];
+  const secondChild = result.childJobs[1];
+  await assert.rejects(() => storage.updatePost('owner', firstChild.id, {
+    scheduledAt: '2026-07-04T10:05:00.000Z'
+  }, firstChild.accountId), /schedule times are fixed/i);
+  assert.equal(await storage.reschedulePendingQueue('owner', firstChild.accountId), 0);
+  assert.equal(posts.get(firstChild.id).scheduledAt.toMillis(), Date.parse('2026-07-04T10:00:00.000Z'));
+
+  posts.set('single-post', {
+    userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'pending',
+    createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  await assert.rejects(() => storage.updatePost('owner', 'single-post', {
+    scheduledAt: '2026-07-04T10:15:00.000Z'
+  }, 'account-a'), /already scheduled/i);
+  assert.equal(await storage.deletePost('owner', 'single-post', 'account-a'), true);
+
+  assert.equal(await storage.deletePost('owner', firstChild.id, firstChild.accountId), true);
+  assert.equal(posts.has(secondChild.id), true);
+  assert.equal(destroyedAssets.length, 0, 'shared media must remain while a sibling references it');
+  assert.equal(scheduleSlots.size, 1);
+  assert.deepEqual([...campaigns.values()][0].childJobIds, [secondChild.id]);
+  assert.equal([...campaigns.values()][0].scheduleSlotIds.length, 1);
+
+  await storage.updatePost('owner', secondChild.id, { status: 'failed' }, secondChild.accountId);
+  assert.equal([...campaigns.values()][0].campaignStatus, 'failed');
+  await storage.updatePost('owner', secondChild.id, { status: 'posted' }, secondChild.accountId);
+  assert.equal([...campaigns.values()][0].campaignStatus, 'posted');
+  [...campaigns.values()][0].campaignStatus = 'queued';
+  [...campaigns.values()][0].campaign_status = 'queued';
+  const reconciledCampaigns = await storage.getCampaigns('owner');
+  assert.equal(reconciledCampaigns[0].campaignStatus, 'posted');
+  assert.equal([...campaigns.values()][0].campaignStatus, 'posted', 'campaign reads repair stale parent state');
+
+  assert.equal(await storage.deletePost('owner', secondChild.id, secondChild.accountId), true);
+  assert.deepEqual(destroyedAssets, ['campaign-public-id-1']);
+  assert.equal([...campaigns.values()][0].campaignStatus, 'cancelled');
+  assert.deepEqual([...campaigns.values()][0].scheduleSlotIds, []);
+  assert.deepEqual([...campaigns.values()][0].mediaReference, {});
+  assert.equal(scheduleSlots.size, 0);
+
+  posts.set('single-schedule', {
+    userId: 'owner', accountId: 'account-a', tiktokOpenId: 'account-a', status: 'pending',
+    order: 1, createdAt: timestamp(fixedNow), updatedAt: timestamp(fixedNow)
+  });
+  assert.equal(await storage.autoSchedulePosts('owner', ['single-schedule'], 'account-a'), 1);
+  assert.equal(posts.get('single-schedule').status, 'scheduled');
+  assert.ok(posts.get('single-schedule').scheduleSlotId);
+  assert.equal(scheduleSlots.size, 1);
+  assert.equal(await storage.reschedulePendingQueue('owner', 'account-a'), 1);
+  assert.equal(scheduleSlots.size, 1, 'single-post rescheduling must keep exactly one reservation');
+  assert.equal(await storage.deletePost('owner', 'single-schedule', 'account-a'), true);
+  assert.equal(scheduleSlots.size, 0);
+
+  const concurrentDraft = {
+    baseScheduledAt: '2026-07-04T12:00:00.000Z',
+    jobs: [
+      { accountId: 'account-a', caption: 'Concurrent A', hashtags: '#concurrentA' },
+      { accountId: 'account-b', caption: 'Concurrent B', hashtags: '#concurrentB' }
+    ]
+  };
+  const concurrentResults = await Promise.allSettled([
+    storage.createTikTokCampaign('owner', {
+      originalname: 'concurrent-a.mp4', filename: 'concurrent-a.mp4', mimetype: 'video/mp4', size: 1024
+    }, concurrentDraft, { now: fixedNow }),
+    storage.createTikTokCampaign('owner', {
+      originalname: 'concurrent-b.mp4', filename: 'concurrent-b.mp4', mimetype: 'video/mp4', size: 1024
+    }, concurrentDraft, { now: fixedNow })
+  ]);
+  assert.deepEqual(concurrentResults.map((entry) => entry.status).sort(), ['fulfilled', 'rejected']);
+  assert.match(concurrentResults.find((entry) => entry.status === 'rejected').reason.message, /already scheduled/i);
+  assert.equal(posts.size, 2);
+  assert.equal(scheduleSlots.size, 2);
+  assert.equal(campaigns.size, 2);
+  assert.equal(destroyedAssets.length, 2, 'the losing concurrent upload must be cleaned up');
 });

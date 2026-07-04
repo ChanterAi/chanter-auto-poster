@@ -7,6 +7,7 @@ const {
   postsCollection,
   tiktokAccountsCollection,
   campaignsCollection,
+  scheduleSlotsCollection,
   configDoc,
   getFirestore,
   Timestamp,
@@ -319,6 +320,35 @@ function getStoredFileName(file) {
   return file.filename || `${Date.now()}-${randomUUID()}${defaultExtension(file)}`;
 }
 
+function scheduleSlotId(userId, scheduledAt) {
+  const minute = minuteKey(scheduledAt);
+  if (!minute) return '';
+  return `${encodeURIComponent(String(userId || DEFAULT_USER_ID))}--${encodeURIComponent(minute)}`;
+}
+
+function campaignScheduleCollisionError(scheduledAt) {
+  const date = scheduledAt && typeof scheduledAt.toDate === 'function'
+    ? scheduledAt.toDate()
+    : new Date(scheduledAt);
+  const error = new Error(
+    `Another post is already scheduled for ${date.toLocaleString()}. Choose a different base time.`
+  );
+  error.code = 'CAMPAIGN_SCHEDULE_COLLISION';
+  error.status = 409;
+  return error;
+}
+
+function scheduleSlotData(userId, postId, campaignId, scheduledAt) {
+  return {
+    userId,
+    postId,
+    campaignId: campaignId || '',
+    scheduledAt,
+    minute: minuteKey(scheduledAt),
+    updatedAt: FieldValue.serverTimestamp()
+  };
+}
+
 async function saveUploadToCloudinary(file) {
   return uploadMediaFile(file);
 }
@@ -542,12 +572,7 @@ async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
     .filter(Boolean));
   const collision = plan.jobs.find((job) => occupiedMinutes.has(minuteKey(job.scheduledAt)));
   if (collision) {
-    const error = new Error(
-      `Another post is already scheduled for ${new Date(collision.scheduledAt).toLocaleString()}. Choose a different base time.`
-    );
-    error.code = 'CAMPAIGN_SCHEDULE_COLLISION';
-    error.status = 409;
-    throw error;
+    throw campaignScheduleCollisionError(collision.scheduledAt);
   }
 
   let uploaded = null;
@@ -558,9 +583,10 @@ async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
     const campaignRef = campaignsCollection().doc(campaignId);
     const childRefs = plan.jobs.map(() => postsCollection().doc(randomUUID()));
     const childJobIds = childRefs.map((ref) => ref.id);
+    const scheduleSlotIds = plan.jobs.map((job) => scheduleSlotId(ownerId, job.scheduledAt));
+    const scheduleSlotRefs = scheduleSlotIds.map((id) => scheduleSlotsCollection().doc(id));
     const now = Timestamp.now();
     const db = getFirestore();
-    const batch = db.batch();
     const orderByAccount = new Map();
 
     for (const account of accounts) {
@@ -587,6 +613,7 @@ async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
         username: account.username || account.displayName || account.accountId,
         tokenReference,
         token_ref: tokenReference,
+        scheduleSlotId: scheduleSlotIds[index],
         originalName: file.originalname || file.filename || 'campaign-video',
         fileName: getStoredFileName(file),
         mimeType: file.mimetype || 'video/mp4',
@@ -630,7 +657,6 @@ async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
         lockedBy: null,
         claimAttempts: 0
       };
-      batch.set(childRefs[index], data);
       return { ref: childRefs[index], data };
     });
 
@@ -661,11 +687,28 @@ async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
       staggerMinutes: plan.staggerMinutes,
       childJobIds,
       created_child_job_ids: childJobIds,
+      scheduleSlotIds,
       updatedAt: now
     };
-    batch.set(campaignRef, campaignData);
 
-    await batch.commit();
+    await db.runTransaction(async (tx) => {
+      const slotSnapshots = await Promise.all(scheduleSlotRefs.map((ref) => tx.get(ref)));
+      const occupiedIndex = slotSnapshots.findIndex((snapshot) => snapshot.exists);
+      if (occupiedIndex >= 0) {
+        throw campaignScheduleCollisionError(plan.jobs[occupiedIndex].scheduledAt);
+      }
+
+      childJobs.forEach(({ ref, data }) => tx.set(ref, data));
+      tx.set(campaignRef, campaignData);
+      scheduleSlotRefs.forEach((ref, index) => tx.set(ref, {
+        userId: ownerId,
+        campaignId,
+        postId: childJobIds[index],
+        scheduledAt: childJobs[index].data.scheduledAt,
+        minute: minuteKey(plan.jobs[index].scheduledAt),
+        createdAt: now
+      }));
+    });
     committed = true;
     return campaignFromData(campaignId, campaignData, childJobs.map(({ ref, data }) => (
       postFromDoc({ id: ref.id, data: () => data })
@@ -685,11 +728,64 @@ async function getCampaigns(userId) {
     const data = doc.data() || {};
     const childJobIds = data.childJobIds || data.created_child_job_ids || [];
     const childSnapshots = await Promise.all(childJobIds.map((id) => postsCollection().doc(id).get()));
-    const childJobs = childSnapshots.filter((child) => child.exists).map(postFromDoc);
-    return campaignFromData(doc.id, data, childJobs);
+    const existingChildren = childSnapshots.filter((child) => child.exists);
+    const childJobs = existingChildren.map(postFromDoc);
+    const campaignStatus = await reconcileCampaignParent(
+      doc.ref || campaignsCollection().doc(doc.id),
+      data,
+      existingChildren
+    );
+    return campaignFromData(doc.id, {
+      ...data,
+      campaignStatus,
+      childJobIds: existingChildren.map((child) => child.id),
+      selectedAccountIds: childJobs.map((job) => job.accountId).filter(Boolean),
+      scheduleSlotIds: childJobs.map((job) => job.scheduleSlotId).filter(Boolean)
+    }, childJobs);
   }));
 
   return campaigns.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+}
+
+async function syncCampaignParentStatus(campaignId) {
+  const normalizedCampaignId = String(campaignId || '').trim();
+  if (!normalizedCampaignId) return null;
+  const ref = campaignsCollection().doc(normalizedCampaignId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) return null;
+  const data = snapshot.data() || {};
+  const childJobIds = data.childJobIds || data.created_child_job_ids || [];
+  const childSnapshots = await Promise.all(childJobIds.map((id) => postsCollection().doc(id).get()));
+  return reconcileCampaignParent(ref, data, childSnapshots.filter((child) => child.exists));
+}
+
+async function reconcileCampaignParent(ref, data, childSnapshots) {
+  const childJobs = childSnapshots.map(postFromDoc);
+  const childJobIds = childSnapshots.map((child) => child.id);
+  const selectedAccountIds = childJobs.map((job) => job.accountId).filter(Boolean);
+  const scheduleSlotIds = childJobs.map((job) => job.scheduleSlotId).filter(Boolean);
+  const campaignStatus = deriveCampaignStatus(childJobs);
+  const storedChildIds = data.childJobIds || data.created_child_job_ids || [];
+  const storedAccountIds = data.selectedAccountIds || data.selected_account_ids || [];
+  const storedScheduleSlotIds = data.scheduleSlotIds || [];
+  const needsUpdate = String(data.campaignStatus || data.campaign_status || '') !== campaignStatus
+    || JSON.stringify(storedChildIds) !== JSON.stringify(childJobIds)
+    || JSON.stringify(storedAccountIds) !== JSON.stringify(selectedAccountIds)
+    || JSON.stringify(storedScheduleSlotIds) !== JSON.stringify(scheduleSlotIds);
+
+  if (needsUpdate) {
+    await ref.update({
+      campaignStatus,
+      campaign_status: campaignStatus,
+      childJobIds,
+      created_child_job_ids: childJobIds,
+      selectedAccountIds,
+      selected_account_ids: selectedAccountIds,
+      scheduleSlotIds,
+      updatedAt: FieldValue.serverTimestamp()
+    });
+  }
+  return campaignStatus;
 }
 
 function campaignFromData(id, data, childJobs) {
@@ -707,6 +803,7 @@ function campaignFromData(id, data, childJobs) {
     scheduleBaseTime: timestampToIso(data.scheduleBaseTime || data.schedule_base_time),
     staggerMinutes: Number(data.staggerMinutes || 0),
     childJobIds: data.childJobIds || data.created_child_job_ids || [],
+    scheduleSlotIds: data.scheduleSlotIds || [],
     childJobs: jobs
   };
 }
@@ -726,11 +823,85 @@ async function updatePost(userId, id, patch, accountId) {
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
   if (accountId && postFromDoc(snap).accountId !== accountId) return null;
 
+  const currentData = snap.data();
+  const campaignId = currentData.campaignId || currentData.campaign_id || '';
   const firestorePatch = mapPatchToFirestore(patch);
-  if ('scheduledAt' in firestorePatch && !['processing', 'posted'].includes(snap.data().status)) {
+  if (
+    currentData.publishId
+    && ['pending', 'scheduled'].includes(String(firestorePatch.status || '').toLowerCase())
+  ) {
+    const error = new Error('This job already has a remote publish identifier and cannot be requeued automatically. Verify TikTok before changing its final state.');
+    error.code = 'REMOTE_PUBLISH_REQUEUE_BLOCKED';
+    error.status = 409;
+    throw error;
+  }
+  if (campaignId && 'scheduledAt' in firestorePatch) {
+    const currentSchedule = timestampMillis(currentData.scheduledAt || currentData.scheduled_at);
+    const requestedSchedule = timestampMillis(firestorePatch.scheduledAt);
+    if (currentSchedule !== requestedSchedule) {
+      const error = new Error('Campaign child schedule times are fixed. Create a new campaign to change the staggered schedule.');
+      error.code = 'CAMPAIGN_SCHEDULE_IMMUTABLE';
+      error.status = 409;
+      throw error;
+    }
+  }
+  if ('scheduledAt' in firestorePatch && !['processing', 'accepted', 'posted', 'unknown'].includes(currentData.status)) {
     firestorePatch.status = firestorePatch.scheduledAt ? 'scheduled' : 'pending';
   }
-  await ref.update({ ...firestorePatch, updatedAt: FieldValue.serverTimestamp() });
+  if (campaignId && 'status' in firestorePatch) {
+    const nextCampaignStatus = campaignJobStatus({
+      ...currentData,
+      ...firestorePatch,
+      status: firestorePatch.status
+    });
+    firestorePatch.campaignJobStatus = nextCampaignStatus;
+    firestorePatch.campaign_job_status = nextCampaignStatus;
+  }
+  if ('scheduledAt' in firestorePatch) {
+    const desiredSlotId = firestorePatch.scheduledAt ? scheduleSlotId(ownerId, firestorePatch.scheduledAt) : '';
+    const currentSlotId = currentData.scheduleSlotId
+      || scheduleSlotId(ownerId, currentData.scheduledAt || currentData.scheduled_at);
+    const desiredSlotRef = desiredSlotId ? scheduleSlotsCollection().doc(desiredSlotId) : null;
+    const currentSlotRef = currentSlotId ? scheduleSlotsCollection().doc(currentSlotId) : null;
+
+    await getFirestore().runTransaction(async (tx) => {
+      const freshSnapshot = await tx.get(ref);
+      if (!freshSnapshot.exists) throw new Error('Post not found.');
+      const freshData = freshSnapshot.data() || {};
+      if ((freshData.userId || DEFAULT_USER_ID) !== ownerId) throw new Error('Post not found.');
+      if (accountId && postFromDoc(freshSnapshot).accountId !== accountId) throw new Error('Post not found.');
+
+      const desiredSlotSnapshot = desiredSlotRef ? await tx.get(desiredSlotRef) : null;
+      const currentSlotSnapshot = currentSlotRef && currentSlotId !== desiredSlotId
+        ? await tx.get(currentSlotRef)
+        : null;
+      if (desiredSlotSnapshot && desiredSlotSnapshot.exists) {
+        const reservation = desiredSlotSnapshot.data() || {};
+        if (reservation.postId !== id) throw campaignScheduleCollisionError(firestorePatch.scheduledAt);
+      }
+
+      tx.update(ref, {
+        ...firestorePatch,
+        scheduleSlotId: desiredSlotId || null,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+      if (desiredSlotRef) {
+        tx.set(desiredSlotRef, scheduleSlotData(ownerId, id, campaignId, firestorePatch.scheduledAt));
+      }
+      if (
+        currentSlotRef
+        && currentSlotId !== desiredSlotId
+        && currentSlotSnapshot
+        && currentSlotSnapshot.exists
+        && (currentSlotSnapshot.data() || {}).postId === id
+      ) {
+        tx.delete(currentSlotRef);
+      }
+    });
+  } else {
+    await ref.update({ ...firestorePatch, updatedAt: FieldValue.serverTimestamp() });
+  }
+  if (campaignId) await syncCampaignParentStatus(campaignId);
   const updated = await ref.get();
   return postFromDoc(updated);
 }
@@ -747,8 +918,63 @@ async function deletePost(userId, id, accountId) {
   const fileName = data.fileName;
   const cloudinaryPublicId = data.cloudinaryPublicId;
   const cloudinaryResourceType = data.cloudinaryResourceType;
-  await ref.delete();
-  await destroyMediaAsset(cloudinaryPublicId, cloudinaryResourceType);
+  const campaignId = data.campaignId || data.campaign_id || '';
+
+  if (campaignId) {
+    const campaignRef = campaignsCollection().doc(campaignId);
+    const storedScheduleSlotId = data.scheduleSlotId || scheduleSlotId(ownerId, data.scheduledAt || data.scheduled_at);
+    const scheduleSlotRef = storedScheduleSlotId ? scheduleSlotsCollection().doc(storedScheduleSlotId) : null;
+    await getFirestore().runTransaction(async (tx) => {
+      const campaignSnapshot = await tx.get(campaignRef);
+      const campaignData = campaignSnapshot.exists ? campaignSnapshot.data() || {} : {};
+      const siblingIds = (campaignData.childJobIds || campaignData.created_child_job_ids || [])
+        .filter((childId) => childId !== id);
+      const siblingSnapshots = await Promise.all(siblingIds.map((childId) => tx.get(postsCollection().doc(childId))));
+      const existingSiblings = siblingSnapshots.filter((child) => child.exists);
+      const siblingJobs = existingSiblings.map(postFromDoc);
+      const remainingIds = existingSiblings.map((child) => child.id);
+      const selectedAccountIds = siblingJobs.map((job) => job.accountId).filter(Boolean);
+      const remainingScheduleSlotIds = siblingJobs.map((job) => job.scheduleSlotId).filter(Boolean);
+
+      tx.delete(ref);
+      if (scheduleSlotRef) tx.delete(scheduleSlotRef);
+      if (campaignSnapshot.exists) {
+        const campaignStatus = deriveCampaignStatus(siblingJobs);
+        tx.update(campaignRef, {
+          campaignStatus,
+          campaign_status: campaignStatus,
+          childJobIds: remainingIds,
+          created_child_job_ids: remainingIds,
+          selectedAccountIds,
+          selected_account_ids: selectedAccountIds,
+          scheduleSlotIds: remainingScheduleSlotIds,
+          ...(remainingIds.length === 0 ? {
+            mediaReference: {},
+            media_reference: {}
+          } : {}),
+          updatedAt: FieldValue.serverTimestamp()
+        });
+      }
+    });
+  } else {
+    const storedScheduleSlotId = data.scheduleSlotId || scheduleSlotId(ownerId, data.scheduledAt || data.scheduled_at);
+    if (storedScheduleSlotId) {
+      const scheduleSlotRef = scheduleSlotsCollection().doc(storedScheduleSlotId);
+      await getFirestore().runTransaction(async (tx) => {
+        const slotSnapshot = await tx.get(scheduleSlotRef);
+        tx.delete(ref);
+        if (slotSnapshot.exists && (slotSnapshot.data() || {}).postId === id) {
+          tx.delete(scheduleSlotRef);
+        }
+      });
+    } else {
+      await ref.delete();
+    }
+  }
+
+  if (cloudinaryPublicId && !(await hasCloudinaryMediaReferences(cloudinaryPublicId))) {
+    await destroyMediaAsset(cloudinaryPublicId, cloudinaryResourceType);
+  }
 
   if (fileName) {
     const uploadPath = path.resolve(config.uploadsDir, fileName);
@@ -763,6 +989,19 @@ async function deletePost(userId, id, accountId) {
   }
 
   return true;
+}
+
+async function hasCloudinaryMediaReferences(publicId) {
+  try {
+    const snapshot = await postsCollection().where('cloudinaryPublicId', '==', publicId).get();
+    return snapshot.docs.length > 0;
+  } catch (error) {
+    console.warn('[storage] media reference check failed; shared asset cleanup skipped', {
+      publicId,
+      message: error.message
+    });
+    return true;
+  }
 }
 
 async function movePost(userId, id, direction, accountId) {
@@ -791,23 +1030,16 @@ async function autoSchedulePosts(userId, postIds, accountId) {
   const settings = await getSettings();
   let nextDate = getNextAvailableDate(posts, settings.dailyPostTime, idSet);
 
-  const db = getFirestore();
-  const batch = db.batch();
-  let count = 0;
+  const assignments = [];
 
   for (const post of posts) {
     if (!idSet.has(post.id) || post.status !== 'pending') continue;
-    batch.update(postsCollection().doc(post.id), {
-      scheduledAt: Timestamp.fromDate(nextDate),
-      status: 'scheduled',
-      updatedAt: FieldValue.serverTimestamp()
-    });
+    assignments.push({ post, scheduledAt: new Date(nextDate) });
     nextDate = addDaysAtTime(nextDate, 1, settings.dailyPostTime);
-    count += 1;
   }
 
-  if (count > 0) await batch.commit();
-  return count;
+  if (assignments.length > 0) await reserveScheduledAssignments(ownerId, assignments);
+  return assignments.length;
 }
 
 async function reschedulePendingQueue(userId, accountId) {
@@ -816,23 +1048,69 @@ async function reschedulePendingQueue(userId, accountId) {
   const settings = await getSettings();
   let nextDate = tomorrowAtTime(settings.dailyPostTime);
 
-  const db = getFirestore();
-  const batch = db.batch();
-  let count = 0;
+  const assignments = [];
 
   for (const post of posts) {
     if (!['pending', 'scheduled'].includes(post.status)) continue;
-    batch.update(postsCollection().doc(post.id), {
-      scheduledAt: Timestamp.fromDate(nextDate),
-      status: 'scheduled',
-      updatedAt: FieldValue.serverTimestamp()
-    });
+    if (post.campaignId) continue;
+    assignments.push({ post, scheduledAt: new Date(nextDate) });
     nextDate = addDaysAtTime(nextDate, 1, settings.dailyPostTime);
-    count += 1;
   }
 
-  if (count > 0) await batch.commit();
-  return count;
+  if (assignments.length > 0) await reserveScheduledAssignments(ownerId, assignments);
+  return assignments.length;
+}
+
+async function reserveScheduledAssignments(ownerId, assignments) {
+  const planned = assignments.map(({ post, scheduledAt }) => {
+    const timestamp = Timestamp.fromDate(scheduledAt);
+    const newSlotId = scheduleSlotId(ownerId, timestamp);
+    const oldSlotId = post.scheduleSlotId || scheduleSlotId(ownerId, post.scheduledAt);
+    return {
+      post,
+      timestamp,
+      newSlotId,
+      oldSlotId,
+      newSlotRef: scheduleSlotsCollection().doc(newSlotId),
+      oldSlotRef: oldSlotId ? scheduleSlotsCollection().doc(oldSlotId) : null
+    };
+  });
+
+  if (new Set(planned.map((entry) => entry.newSlotId)).size !== planned.length) {
+    throw campaignScheduleCollisionError(planned[0].timestamp);
+  }
+
+  await getFirestore().runTransaction(async (tx) => {
+    const newSlotSnapshots = await Promise.all(planned.map((entry) => tx.get(entry.newSlotRef)));
+    const oldSlotSnapshots = await Promise.all(planned.map((entry) => (
+      entry.oldSlotRef && entry.oldSlotId !== entry.newSlotId ? tx.get(entry.oldSlotRef) : null
+    )));
+
+    newSlotSnapshots.forEach((snapshot, index) => {
+      if (snapshot.exists && (snapshot.data() || {}).postId !== planned[index].post.id) {
+        throw campaignScheduleCollisionError(planned[index].timestamp);
+      }
+    });
+
+    planned.forEach((entry, index) => {
+      tx.update(postsCollection().doc(entry.post.id), {
+        scheduledAt: entry.timestamp,
+        status: 'scheduled',
+        scheduleSlotId: entry.newSlotId,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+      tx.set(entry.newSlotRef, scheduleSlotData(
+        ownerId,
+        entry.post.id,
+        entry.post.campaignId,
+        entry.timestamp
+      ));
+      const oldSnapshot = oldSlotSnapshots[index];
+      if (oldSnapshot && oldSnapshot.exists && (oldSnapshot.data() || {}).postId === entry.post.id) {
+        tx.delete(entry.oldSlotRef);
+      }
+    });
+  });
 }
 
 function getNextAvailableDate(posts, dailyPostTime, newlyCreatedIds) {
@@ -893,7 +1171,7 @@ async function getCounts(userId, accountId) {
       counts[post.status] = (counts[post.status] || 0) + 1;
       return counts;
     },
-    { total: 0, pending: 0, scheduled: 0, processing: 0, ready: 0, posted: 0, failed: 0 }
+    { total: 0, pending: 0, scheduled: 0, processing: 0, accepted: 0, unknown: 0, ready: 0, posted: 0, failed: 0 }
   );
 }
 
@@ -984,6 +1262,7 @@ module.exports = {
   addUploadedPosts,
   createTikTokCampaign,
   getCampaigns,
+  syncCampaignParentStatus,
   updatePost,
   deletePost,
   movePost,

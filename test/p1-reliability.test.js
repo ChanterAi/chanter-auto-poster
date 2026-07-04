@@ -193,14 +193,14 @@ test('stale locked job is recovered to scheduled status on next tick', async () 
   const stored = records.get('stale-job');
   // The stale lock should have been recovered: the job transitioned from
   // 'processing' (stale) back to 'scheduled', then was picked up and
-  // published successfully. The key assertion is that it didn't stay
+  // accepted by the mocked API. The key assertion is that it didn't stay
   // stuck in 'processing' with the old lock.
   assert.notEqual(stored.status, 'processing',
     'stale processing job should not remain in processing');
   assert.equal(stored.lockedBy, null, 'old lock should be cleared');
-  // The job should have been successfully republished (mock returns ok)
-  assert.equal(stored.status, 'posted',
-    'recovered job should be successfully published after recovery');
+  // API acceptance is intentionally not treated as final posted success.
+  assert.equal(stored.status, 'accepted',
+    'recovered job should record API acceptance after recovery');
   assert.ok(stored.publishId, 'recovered job should have a publishId');
 
   cleanup();
@@ -284,7 +284,7 @@ test('processing job with missing lock metadata fails closed without publishing'
 
   assert.equal(result.ok, true);
   assert.equal(publishCalled, false);
-  assert.equal(stored.status, 'failed');
+  assert.equal(stored.status, 'unknown');
   assert.equal(stored.lockedAt, null);
   assert.equal(stored.lockedBy, null);
   assert.equal(stored.lastResult.code, 'RECOVERY_LOCK_INVALID');
@@ -317,7 +317,7 @@ test('stale processing job with a publishId is not resubmitted', async () => {
   const stored = records.get('accepted-before-crash');
 
   assert.equal(publishCalled, false);
-  assert.equal(stored.status, 'failed');
+  assert.equal(stored.status, 'unknown');
   assert.equal(stored.publishId, 'remote-publish-123');
   assert.equal(stored.lastResult.code, 'RECOVERY_REMOTE_STATE_UNKNOWN');
   assert.match(stored.errorMessage, /verify the provider result/i);
@@ -390,7 +390,7 @@ test('scheduler tick records a durable token-free heartbeat without due jobs', a
   assert.equal(getHeartbeatWriteCount(), 1);
   assert.equal(heartbeat.schemaVersion, 1);
   assert.equal(heartbeat.ok, true);
-  assert.deepEqual(heartbeat.summary, { checked: 0, due: 0, posted: 0, failed: 0 });
+  assert.deepEqual(heartbeat.summary, { checked: 0, due: 0, posted: 0, failed: 0, accepted: 0 });
   assert.ok(heartbeat.completedAt);
   assert.ok(heartbeat.updatedAt);
   assert.deepEqual(Object.keys(heartbeat).sort(), ['completedAt', 'ok', 'schemaVersion', 'summary', 'updatedAt']);

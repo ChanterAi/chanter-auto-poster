@@ -250,14 +250,14 @@ If TikTok API credentials or a public image URL are not configured, the schedule
 
 Each completed cron tick also writes a token-free heartbeat to the dedicated
 `config/schedulerHeartbeat` Firestore document. The write contains only the
-completion time, success state, and aggregate checked/due/posted/failed counts;
+completion time, success state, and aggregate checked/due/accepted/posted/failed counts;
 it does not call a social provider or store provider responses, job details,
 tokens, or secrets. `/health` exposes this under
 `schedulerHealth.durableHeartbeat` and marks missing, failed, unavailable, or
 older-than-five-minute heartbeats as degraded while preserving the existing
 HTTP status contract.
 
-There is no in-process timer. Firestore is the source of truth, so a sleeping or restarted web service recovers overdue `scheduled` jobs on the next external tick. Each job is atomically changed to `processing` before TikTok publishing, then to `posted` or `failed`.
+There is no in-process timer. Firestore is the source of truth, so a sleeping or restarted web service recovers overdue `scheduled` jobs on the next external tick. Each job is atomically changed to `processing` before TikTok publishing. A successful TikTok API response becomes `accepted`, not `posted`; `posted` is reserved for a separately confirmed or manually confirmed final state. Recovery ambiguity is recorded as `unknown` and is not retried automatically.
 
 Deploy the required Firestore indexes before enabling the cron job:
 
@@ -272,7 +272,7 @@ curl -H "x-cron-secret: $CRON_SECRET" "$APP_URL/api/cron/tick"
 curl -H "x-cron-secret: $CRON_SECRET" "$APP_URL/api/debug/jobs"
 ```
 
-The tick response reports `now`, `checked`, `due`, `posted`, `failed`, and `errors`. Render logs include `[CRON_TICK]`, `[CRON_QUERY]`, `[JOB_FOUND]`, `[JOB_DUE]`, `[POST_START]`, and either `[POST_SUCCESS]` or `[POST_FAILED]`.
+The tick response reports `now`, `checked`, `due`, `accepted`, `posted`, `failed`, and `errors`. Render logs include `[CRON_TICK]`, `[CRON_QUERY]`, `[JOB_FOUND]`, `[JOB_DUE]`, `[POST_START]`, and one of `[POST_ACCEPTED]`, `[POST_SUCCESS]`, or `[POST_FAILED]`.
 
 ## Data Storage
 
@@ -300,9 +300,11 @@ Campaign Mode is TikTok-only and uses the existing Firestore scheduler. Instagra
 4. Confirm the preview shows exactly two jobs, with account 2 scheduled 15 minutes after account 1.
 5. Create the campaign and confirm Campaign history groups both child jobs under one campaign ID.
 6. Inspect `/api/debug/jobs` or Firestore and confirm both children share `campaignId` and one media reference, use different account/copy fields, and have distinct `scheduledAt` minutes.
-7. Let the cron tick run. Confirm each child transitions independently and a failed child keeps its error evidence without changing the sibling's queued or posted state.
+7. Only in an approved controlled TikTok test environment, let the cron tick run. Confirm API success becomes `accepted`, not `posted`, and that a failed child keeps its error evidence without changing its sibling. Final posting still requires separate verification.
 
-Expected guards: more than two accounts, duplicate account selection, matching captions, matching hashtag sets, expired/disconnected tokens, past times, and occupied schedule minutes are rejected before campaign jobs are committed.
+Implemented guards: more than two accounts, duplicate account selection, matching captions, matching hashtag sets, expired/disconnected tokens, past times, and occupied schedule minutes are rejected before campaign jobs are committed. Schedule-minute reservations are committed transactionally, campaign child schedule times cannot be changed through generic edit/reschedule actions, and shared Cloudinary media is retained until no job references it.
+
+Campaign Mode v0.1 does not poll TikTok for final publication status. `accepted` and `unknown` therefore require operator verification; neither state is presented as final posted success.
 
 ## Project Structure
 

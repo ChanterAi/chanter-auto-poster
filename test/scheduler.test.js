@@ -181,7 +181,8 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
     now: fixedNow.toISOString(),
     checked: 3,
     due: 3,
-    posted: 1,
+    accepted: 1,
+    posted: 0,
     failed: 2,
     errors: [
       {
@@ -194,7 +195,8 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
       }
     ]
   });
-  assert.equal(records.get('due-job').status, 'posted');
+  assert.equal(records.get('due-job').status, 'accepted');
+  assert.equal(records.get('due-job').postedAt, null);
   assert.equal(records.get('due-job').lockedBy, null);
   assert.equal(records.get('due-job').claimAttempts, 1);
   assert.equal(records.get('legacy-job').status, 'failed');
@@ -211,7 +213,7 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
     query.filters.some((filter) => filter.field === 'scheduledAt' && filter.operator === '<=') &&
     query.orderField === 'scheduledAt'
   ));
-  for (const marker of ['[CRON_TICK]', '[CRON_QUERY]', '[JOB_FOUND]', '[JOB_DUE]', '[POST_START]', '[POST_SUCCESS]']) {
+  for (const marker of ['[CRON_TICK]', '[CRON_QUERY]', '[JOB_FOUND]', '[JOB_DUE]', '[POST_START]', '[POST_ACCEPTED]']) {
     assert.ok(logs.some((line) => line.includes(marker)), `missing log marker ${marker}`);
   }
 });

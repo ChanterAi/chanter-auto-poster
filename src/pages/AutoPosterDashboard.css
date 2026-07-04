@@ -345,6 +345,8 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
 .status-badge::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 2px rgba(255,255,255,.65); }
 .status-scheduled { border-color: #b2ddff; background: #eff8ff; color: #175cd3; }
 .status-processing { border-color: #fedf89; background: #fffaeb; color: #b54708; }
+.status-accepted { border-color: #b2ddff; background: #eff8ff; color: #175cd3; }
+.status-unknown { border-color: #e9d7fe; background: #f9f5ff; color: #6941c6; }
 .status-posted { border-color: #abefc6; background: #ecfdf3; color: #067647; }
 .status-failed { border-color: #fecdca; background: #fef3f2; color: #b42318; }
 .status-cancelled { border-color: #d0d5dd; background: #f2f4f7; color: #344054; }

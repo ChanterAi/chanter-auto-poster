@@ -7,7 +7,7 @@ import {
   UNASSIGNED_ACCOUNT_ID
 } from './dashboard-accounting.mjs';
 
-const STATUS_FILTERS = ['all', 'scheduled', 'processing', 'posted', 'failed'];
+const STATUS_FILTERS = ['all', 'scheduled', 'processing', 'accepted', 'unknown', 'posted', 'failed'];
 const STATUS_ALIASES = {
   queued: 'scheduled',
   publishing: 'processing',
@@ -420,7 +420,7 @@ export default function AutoPosterDashboard() {
 
       {!loading && !error && (
         <section className="metric-grid" aria-label="Job status overview">
-          {['all', 'scheduled', 'processing', 'posted', 'failed'].map((status) => (
+          {STATUS_FILTERS.map((status) => (
             <button
               type="button"
               className={statusFilter === status ? 'metric-card active' : 'metric-card'}

@@ -117,7 +117,7 @@ function setupMocks({ records = new Map(), tiktokResult = null } = {}) {
   };
 }
 
-test('successful publish stores publishId as a durable top-level field', async () => {
+test('API acceptance stores publishId without claiming final posted state', async () => {
   const records = new Map([['job-success', {
     userId: 'owner', platform: 'tiktok', accountId: 'acc-1', tiktokOpenId: 'acc-1',
     status: 'scheduled',
@@ -132,10 +132,13 @@ test('successful publish stores publishId as a durable top-level field', async (
   const result = await scheduler.runSchedulerTick({ now: fixedNow });
 
   const stored = records.get('job-success');
-  assert.equal(stored.status, 'posted');
+  assert.equal(stored.status, 'accepted');
   assert.equal(stored.publishId, 'tiktok_pub_abc123',
-    'publishId should be stored as a top-level field on success');
-  assert.ok(stored.postedAt, 'postedAt should be set');
+    'publishId should be stored as a top-level field on acceptance');
+  assert.ok(stored.acceptedAt, 'acceptedAt should be set');
+  assert.equal(stored.postedAt, null, 'postedAt must remain empty until final confirmation');
+  assert.equal(result.accepted, 1);
+  assert.equal(result.posted, 0);
   assert.ok(stored.lastResult, 'lastResult should be stored');
   assert.ok(stored.lastResult.completedAt, 'lastResult should have completedAt');
 
