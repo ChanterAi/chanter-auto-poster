@@ -805,6 +805,96 @@ async function createTikTokCampaign(userId, file, draft = {}, options = {}) {
   }
 }
 
+// Dry-run preview of createTikTokCampaign: runs the same plan, account, and
+// collision validation against live state, but never uploads media, never
+// writes jobs or reservations, and collects every issue instead of throwing
+// on the first one. The create transaction remains the enqueue authority.
+async function previewTikTokCampaign(userId, draft = {}, options = {}) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const errors = [];
+  const warnings = [];
+
+  let plan = null;
+  try {
+    plan = buildCampaignPlan(draft, options);
+  } catch (error) {
+    errors.push(previewIssue(error));
+  }
+
+  const childJobs = [];
+  if (plan) {
+    const accounts = await Promise.all(plan.jobs.map((job) => getTikTokAccount(ownerId, job.accountId)));
+    const existingPosts = await getPosts(ownerId);
+    // Unlike createTikTokCampaign this must stay read-only, so occupied
+    // minutes are computed from the posts themselves instead of backfilling
+    // reservation docs first.
+    const occupiedSlots = new Set(existingPosts
+      .filter(occupiesScheduleSlot)
+      .map((post) => scheduleSlotId(ownerId, post.accountId, post.scheduledAt))
+      .filter(Boolean));
+
+    plan.jobs.forEach((job, index) => {
+      const account = accounts[index];
+      const issues = [];
+      try {
+        validateCampaignAccounts([job], account ? [account] : [], options);
+      } catch (error) {
+        issues.push(previewIssue(error));
+      }
+
+      const scheduleCollision = occupiedSlots.has(scheduleSlotId(ownerId, job.accountId, job.scheduledAt));
+      if (scheduleCollision) issues.push(previewIssue(campaignScheduleCollisionError(job.scheduledAt)));
+      errors.push(...issues);
+
+      const expiresAtMillis = account && account.expires_at ? new Date(account.expires_at).getTime() : NaN;
+      if (issues.length === 0 && Number.isFinite(expiresAtMillis) && expiresAtMillis <= Date.parse(job.scheduledAt)) {
+        warnings.push({
+          code: 'CAMPAIGN_TOKEN_EXPIRES_BEFORE_POST',
+          message: `TikTok account ${job.accountId} has a token that expires before its scheduled post. It refreshes automatically, but reconnect the account if refreshes have been failing.`
+        });
+      }
+
+      childJobs.push({
+        accountId: job.accountId,
+        accountLabel: account
+          ? String(account.username || account.displayName || job.accountId)
+          : job.accountId,
+        caption: job.caption,
+        hashtags: job.hashtags,
+        scheduledAt: job.scheduledAt,
+        scheduleCollision,
+        issues
+      });
+    });
+  }
+
+  warnings.push({
+    code: 'CAMPAIGN_MEDIA_VALIDATED_AT_CREATE',
+    message: 'The campaign video is validated when the campaign is created. The preview checks accounts and scheduling only.'
+  });
+
+  return {
+    mode: 'preview',
+    safeToEnqueue: errors.length === 0,
+    campaign: plan ? {
+      platform: 'tiktok',
+      baseScheduledAt: plan.baseScheduledAt,
+      staggerMinutes: plan.staggerMinutes,
+      selectedAccountIds: plan.jobs.map((job) => job.accountId)
+    } : null,
+    childJobs,
+    errors,
+    warnings
+  };
+}
+
+function previewIssue(error) {
+  return {
+    code: String(error.code || 'CAMPAIGN_INVALID'),
+    message: error.message || 'Campaign draft is invalid.'
+  };
+}
+
 async function getCampaigns(userId) {
   const ownerId = userId || DEFAULT_USER_ID;
   const snapshot = await campaignsCollection().where('userId', '==', ownerId).get();
@@ -1368,6 +1458,7 @@ module.exports = {
   clearInstagramAuth,
   addUploadedPosts,
   createTikTokCampaign,
+  previewTikTokCampaign,
   getCampaigns,
   syncCampaignParentStatus,
   updatePost,

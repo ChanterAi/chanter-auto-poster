@@ -627,6 +627,41 @@ router.post(
   })
 );
 
+// Dry-run preview of a campaign draft. Validates the plan, accounts, and
+// schedule collisions against live state and reports the exact child jobs
+// that would be created — without uploading media or writing anything.
+// Accepts either a jobs array or the same slot fields the create form posts.
+router.post(
+  '/api/campaigns/preview',
+  requireAdminApi,
+  express.json({ limit: '1mb' }),
+  asyncRoute(async (req, res) => {
+    const userId = resolveUserId(req);
+    const body = req.body || {};
+    const draftJobs = (Array.isArray(body.jobs) && body.jobs.length > 0
+      ? body.jobs
+      : [1, 2].map((slot) => ({
+        accountId: body[`campaignAccountId${slot}`],
+        caption: body[`campaignCaption${slot}`],
+        hashtags: body[`campaignHashtags${slot}`]
+      })))
+      .map((job) => ({
+        accountId: String((job && job.accountId) || '').trim(),
+        caption: String((job && job.caption) || '').trim(),
+        hashtags: String((job && job.hashtags) || '').trim()
+      }))
+      .filter((job) => job.accountId);
+    const baseScheduledAt = body.baseScheduledAt
+      || parseDateTimeLocal(body.campaignBaseScheduledAt, body.timezoneOffsetMinutes);
+
+    const preview = await storage.previewTikTokCampaign(userId, {
+      baseScheduledAt,
+      jobs: draftJobs
+    });
+    res.json(preview);
+  })
+);
+
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
   const dailyPostTime = String(req.body.dailyPostTime || '').trim();
   if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dailyPostTime)) { redirectWithNotice(res, 'Use a valid daily posting time.'); return; }
