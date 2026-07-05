@@ -5,7 +5,9 @@ const test = require('node:test');
 const {
   buildCampaignPlan,
   validateCampaignAccounts,
-  deriveCampaignStatus
+  deriveCampaignStatus,
+  campaignJobStatus,
+  classifyCampaignChildFailure
 } = require('../src/campaigns');
 
 const fixedNow = new Date('2026-07-04T09:00:00.000Z');
@@ -77,6 +79,43 @@ test('campaign status reports a partial failure without changing child states', 
     { status: 'scheduled', campaignJobStatus: 'failed' },
     { status: 'posted', campaignJobStatus: 'posted' }
   ]), 'in_progress', 'canonical child states must supersede stale campaign metadata');
+});
+
+test('campaign child failures separate transient rejections from terminal failures', () => {
+  // Definitive transient rejections from TikTok are safe to requeue.
+  assert.equal(classifyCampaignChildFailure({
+    ok: false,
+    reason: 'Rate limit exceeded',
+    response: { error: { code: 'rate_limit_exceeded', message: 'Rate limit exceeded' } }
+  }), 'retry_required');
+  assert.equal(classifyCampaignChildFailure({
+    ok: false,
+    reason: 'Posting blocked',
+    response: { error: { code: 'spam_risk_too_many_posts' } }
+  }), 'retry_required');
+  assert.equal(classifyCampaignChildFailure({ ok: false, reason: 'TikTok video init returned HTTP 500' }), 'retry_required');
+  assert.equal(classifyCampaignChildFailure({ ok: false, reason: 'TikTok photo init returned HTTP 429' }), 'retry_required');
+
+  // Auth and permission problems are terminal until the operator reconnects.
+  assert.equal(classifyCampaignChildFailure({ ok: false, code: 'TOKEN_REVOKED', reason: 'TikTok rejected the token.' }), 'failed');
+  assert.equal(classifyCampaignChildFailure({ ok: false, reason: 'TikTok video init returned HTTP 403' }), 'failed');
+
+  // Ambiguous outcomes stay terminal — the request may have reached TikTok,
+  // so advertising a retry could produce a duplicate post.
+  assert.equal(classifyCampaignChildFailure({ ok: false, reason: 'The operation was aborted' }), 'failed');
+  assert.equal(classifyCampaignChildFailure({ ok: false, reason: 'fetch failed' }), 'failed');
+  assert.equal(classifyCampaignChildFailure({}), 'failed');
+});
+
+test('retry_required child state flows through job and campaign status derivation', () => {
+  assert.equal(campaignJobStatus({ status: 'failed', campaignJobStatus: 'retry_required' }), 'retry_required');
+  assert.equal(campaignJobStatus({ status: 'failed', campaignJobStatus: 'failed' }), 'failed');
+  assert.equal(deriveCampaignStatus([
+    { status: 'accepted', campaignJobStatus: 'accepted' },
+    { status: 'failed', campaignJobStatus: 'retry_required' }
+  ]), 'retry_required');
+  // Requeuing the child resets it to queued via the canonical status.
+  assert.equal(campaignJobStatus({ status: 'scheduled', campaignJobStatus: 'retry_required' }), 'queued');
 });
 
 test('campaign storage uploads once and atomically creates one parent plus two child jobs', async (t) => {

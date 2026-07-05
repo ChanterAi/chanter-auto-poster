@@ -7,6 +7,7 @@ const { postFromDoc, toTimestampOrNull } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
 const { syncCampaignParentStatus } = require('./storage');
+const { classifyCampaignChildFailure } = require('./campaigns');
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const HEARTBEAT_DOC = 'schedulerHeartbeat';
@@ -658,11 +659,17 @@ async function finalize(id, workerId, result) {
         completedAt
       };
       if (result.code) safeResult.code = result.code;
+      // Campaign children distinguish transient provider rejections
+      // (retry_required) from terminal failures so the parent campaign can
+      // surface which children are safe to requeue. The canonical status
+      // stays 'failed' either way — nothing is retried automatically.
+      const campaignFailureState = campaignId ? classifyCampaignChildFailure(result) : '';
+      if (campaignId) safeResult.retryable = campaignFailureState === 'retry_required';
       tx.update(ref, {
         status: 'failed',
         ...(campaignId ? {
-          campaignJobStatus: 'failed',
-          campaign_job_status: 'failed',
+          campaignJobStatus: campaignFailureState,
+          campaign_job_status: campaignFailureState,
           errorEvidence: safeResult,
           error_evidence: safeResult
         } : {}),

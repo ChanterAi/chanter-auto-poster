@@ -140,6 +140,39 @@ function validateCampaignAccounts(plannedJobs, accounts, { now = new Date() } = 
   });
 }
 
+// Only failures where TikTok definitively rejected the request for a
+// transient reason are safe to advertise as retryable. Ambiguous outcomes
+// (timeouts, dropped connections) stay terminal 'failed' because the post
+// may still exist remotely and a retry could duplicate it.
+const RETRYABLE_TIKTOK_ERROR_CODES = new Set([
+  'rate_limit_exceeded',
+  'spam_risk_too_many_posts'
+]);
+
+const RETRYABLE_FAILURE_REASONS = [
+  /returned http (429|5\d\d)\b/i,
+  /rate limit/i,
+  /too many requests/i
+];
+
+function collectFailureCodes(value, found = [], depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 4) return found;
+  if (['string', 'number'].includes(typeof value.code)) {
+    found.push(String(value.code).toLowerCase());
+  }
+  for (const child of Object.values(value)) collectFailureCodes(child, found, depth + 1);
+  return found;
+}
+
+function classifyCampaignChildFailure(result = {}) {
+  const codes = collectFailureCodes({ code: result.code, response: result.response });
+  if (codes.some((code) => RETRYABLE_TIKTOK_ERROR_CODES.has(code))) return 'retry_required';
+  if (RETRYABLE_FAILURE_REASONS.some((pattern) => pattern.test(String(result.reason || '')))) {
+    return 'retry_required';
+  }
+  return 'failed';
+}
+
 function campaignJobStatus(job) {
   const canonicalStatus = String(job && job.status || '').toLowerCase();
   const storedCampaignStatus = String(
@@ -181,6 +214,7 @@ module.exports = {
   buildCampaignPlan,
   validateCampaignAccounts,
   campaignJobStatus,
+  classifyCampaignChildFailure,
   deriveCampaignStatus,
   minuteKey
 };
