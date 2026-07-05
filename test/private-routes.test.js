@@ -312,6 +312,11 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /account-a-history\.jpg/);
   assert.doesNotMatch(autoPosterHtml, /account-b-queue\.jpg/);
   assert.match(autoPosterHtml, /Switch \/ Connect another/);
+
+  // P1.4 luxury console: real monogram asset in the brand lockup + subtitle.
+  assert.match(autoPosterHtml, /class="brand-mark" src="\/assets\/chanter-logo\.png" alt="CHANTER monogram"/);
+  assert.match(autoPosterHtml, /AI-assisted publishing/);
+
   assert.match(autoPosterHtml, /data-campaign-verdict/);
   assert.match(autoPosterHtml, /\/api\/campaigns\/preview/);
 
@@ -352,16 +357,20 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.doesNotMatch(autoPosterHtml, /upload_token/);
 
   // P1.2 Campaign Oracle: deterministic local review renders next to the
-  // evidence block with verdict, counts, blocked reason, and next action.
-  assert.match(autoPosterHtml, /Oracle review — local, deterministic \(no AI call\)/);
+  // evidence block with verdict, counts, blocked reason, and next action
+  // (details are collapsed for clients but stay in the markup).
+  assert.match(autoPosterHtml, /Campaign review/);
+  assert.match(autoPosterHtml, /Local, deterministic review — no AI call\./);
   assert.match(autoPosterHtml, /verdict: PARTIAL_SUCCESS/);
   assert.match(autoPosterHtml, /1 of 2 child job\(s\) posted or accepted; 1 blocked \(1 retry-safe, 0 terminal\)\./);
   assert.match(autoPosterHtml, /Blocked: Transient provider rejection: Rate limit exceeded/);
   assert.match(autoPosterHtml, /Next: Requeue only the retry-safe child jobs; leave the posted and accepted jobs untouched\./);
   assert.match(autoPosterHtml, /evidence confidence HIGH/);
 
-  // P1.1 scheduler evidence strip: durable cron heartbeat is readable.
-  assert.match(autoPosterHtml, /Scheduler evidence/);
+  // P1.1 scheduler evidence strip: durable cron heartbeat is readable
+  // (client-facing summary line, audit lines inside collapsed details).
+  assert.match(autoPosterHtml, /System status/);
+  assert.match(autoPosterHtml, /Scheduler last ran/);
   assert.match(autoPosterHtml, /last durable tick:/);
   assert.match(autoPosterHtml, /\(42s ago\) — completed OK/);
   assert.match(autoPosterHtml, /last tick: checked 2 \/ posted 1 \/ accepted 1 \/ failed 1/);
