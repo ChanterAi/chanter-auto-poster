@@ -351,6 +351,15 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.doesNotMatch(autoPosterHtml, /raw-response-must-not-render/);
   assert.doesNotMatch(autoPosterHtml, /upload_token/);
 
+  // P1.2 Campaign Oracle: deterministic local review renders next to the
+  // evidence block with verdict, counts, blocked reason, and next action.
+  assert.match(autoPosterHtml, /Oracle review — local, deterministic \(no AI call\)/);
+  assert.match(autoPosterHtml, /verdict: PARTIAL_SUCCESS/);
+  assert.match(autoPosterHtml, /1 of 2 child job\(s\) posted or accepted; 1 blocked \(1 retry-safe, 0 terminal\)\./);
+  assert.match(autoPosterHtml, /Blocked: Transient provider rejection: Rate limit exceeded/);
+  assert.match(autoPosterHtml, /Next: Requeue only the retry-safe child jobs; leave the posted and accepted jobs untouched\./);
+  assert.match(autoPosterHtml, /evidence confidence HIGH/);
+
   // P1.1 scheduler evidence strip: durable cron heartbeat is readable.
   assert.match(autoPosterHtml, /Scheduler evidence/);
   assert.match(autoPosterHtml, /last durable tick:/);

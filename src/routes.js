@@ -11,6 +11,7 @@ const autoMusic = require('./autoMusic');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
 const { buildCampaignEvidenceSummary } = require('./campaigns');
+const { reviewCampaign } = require('./campaignOracle');
 const {
   clearAdminSessionCookie,
   requireAdminApi,
@@ -1049,7 +1050,8 @@ const viewHelpers = {
   },
   fullCaption(post) { return tiktok.buildCaption(post); },
   statusLabel(status) { return statusLabel(status); },
-  campaignEvidence(campaign) { return buildCampaignEvidenceSummary(campaign); }
+  campaignEvidence(campaign) { return buildCampaignEvidenceSummary(campaign); },
+  campaignReview(campaign, schedulerEvidence) { return reviewCampaign(campaign, { schedulerEvidence }); }
 };
 
 function getPostMediaType(post) {

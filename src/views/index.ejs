@@ -469,6 +469,12 @@
       .campaign-job-error { grid-column: 1 / -1; padding: 6px 8px; border: 1px solid rgba(239,68,68,.18); border-radius: 8px; background: var(--danger-bg); color: #fca5a5; font-size: 10px; line-height: 1.5; }
       .campaign-no-live-note { border: 1px dashed var(--border); border-radius: 8px; padding: 8px; }
       .campaign-copy-btn { justify-self: start; padding: 6px 10px; font-size: 10px; }
+      .campaign-oracle { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.02); }
+      .campaign-oracle-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .campaign-oracle-head strong { font-size: 11px; color: var(--text2); }
+      .campaign-oracle p { margin: 0; color: var(--text3); font-size: 11px; line-height: 1.5; }
+      .campaign-oracle-blocked { color: #fca5a5 !important; }
+      .campaign-oracle ul { margin: 0; padding-left: 16px; display: grid; gap: 3px; color: var(--text3); font-size: 10px; line-height: 1.5; }
       .campaign-evidence { display: grid; gap: 8px; }
       .campaign-evidence summary { cursor: pointer; color: var(--text2); font-size: 11px; font-weight: 700; }
       .campaign-evidence-text { margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: rgba(0,0,0,.3); color: var(--text2); font: 500 10px 'DM Mono', monospace; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -809,6 +815,26 @@
                     <% } %>
                   </div>
                 <% }); %>
+              </div>
+              <% const oracleReview = helpers.campaignReview(campaign, schedulerEvidence); %>
+              <div class="campaign-oracle" data-campaign-oracle>
+                <div class="campaign-oracle-head">
+                  <strong>Oracle review — local, deterministic (no AI call)</strong>
+                  <span class="campaign-status">verdict: <%= oracleReview.verdict %></span>
+                </div>
+                <p><%= oracleReview.summary %></p>
+                <span class="scheduler-evidence-line">posted <%= oracleReview.postedCount %> / accepted <%= oracleReview.acceptedCount %> / retry required <%= oracleReview.retryRequiredCount %> / failed <%= oracleReview.failedCount %> — evidence confidence <%= oracleReview.evidenceConfidence %></span>
+                <% if (oracleReview.blockedReason) { %>
+                  <p class="campaign-oracle-blocked">Blocked: <%= oracleReview.blockedReason %></p>
+                <% } %>
+                <p>Next: <%= oracleReview.recommendedNextAction %></p>
+                <% if (oracleReview.riskNotes.length > 0) { %>
+                  <ul>
+                    <% oracleReview.riskNotes.forEach(function(note) { %>
+                      <li><%= note %></li>
+                    <% }); %>
+                  </ul>
+                <% } %>
               </div>
               <details class="campaign-evidence">
                 <summary>Evidence summary</summary>
