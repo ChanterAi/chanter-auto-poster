@@ -242,6 +242,8 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /account-a-history\.jpg/);
   assert.doesNotMatch(autoPosterHtml, /account-b-queue\.jpg/);
   assert.match(autoPosterHtml, /Switch \/ Connect another/);
+  assert.match(autoPosterHtml, /data-campaign-verdict/);
+  assert.match(autoPosterHtml, /\/api\/campaigns\/preview/);
   assert.match(autoPosterHtml, /Instagram: Not configured/);
   assert.match(autoPosterHtml, /Dry-run mode active/);
   assert.match(autoPosterHtml, /Add Meta API keys to enable Instagram publishing/);
@@ -366,6 +368,58 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   const accountBHtml = await accountBResponse.text();
   assert.match(accountBHtml, /account-b-queue\.jpg/);
   assert.doesNotMatch(accountBHtml, /account-a-history\.jpg/);
+
+  // Campaign dry-run preview API: admin-gated passthrough that maps the
+  // create form's slot fields onto the preview draft without writing anything.
+  const unauthorizedPreview = await fetch(`${baseUrl}/api/campaigns/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ campaignAccountId1: 'account-a' })
+  });
+  assert.equal(unauthorizedPreview.status, 401);
+
+  let previewedUserId = null;
+  let previewedDraft = null;
+  const previewDocument = {
+    mode: 'preview',
+    safeToEnqueue: false,
+    campaign: {
+      platform: 'tiktok',
+      baseScheduledAt: '2026-07-04T10:00:00.000Z',
+      staggerMinutes: 15,
+      selectedAccountIds: ['account-a', 'account-b']
+    },
+    childJobs: [],
+    errors: [{ code: 'CAMPAIGN_SCHEDULE_COLLISION', message: 'Another post for this TikTok account is already scheduled.' }],
+    warnings: []
+  };
+  storage.previewTikTokCampaign = async (userId, draft) => {
+    previewedUserId = userId;
+    previewedDraft = draft;
+    return previewDocument;
+  };
+  const previewResponse = await fetch(`${baseUrl}/api/campaigns/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+    body: JSON.stringify({
+      campaignBaseScheduledAt: '2026-07-04T10:00',
+      timezoneOffsetMinutes: '0',
+      campaignAccountId1: ' account-a ',
+      campaignCaption1: 'Caption A',
+      campaignHashtags1: '#alpha',
+      campaignAccountId2: 'account-b',
+      campaignCaption2: 'Caption B',
+      campaignHashtags2: '#beta'
+    })
+  });
+  assert.equal(previewResponse.status, 200);
+  assert.deepEqual(await previewResponse.json(), previewDocument);
+  assert.ok(previewedUserId, 'preview must run as the authenticated admin user');
+  assert.equal(previewedDraft.baseScheduledAt, '2026-07-04T10:00:00.000Z');
+  assert.deepEqual(previewedDraft.jobs, [
+    { accountId: 'account-a', caption: 'Caption A', hashtags: '#alpha' },
+    { accountId: 'account-b', caption: 'Caption B', hashtags: '#beta' }
+  ]);
 
   let savedPatch = null;
   let savedAccountId = null;

@@ -443,6 +443,10 @@
       .campaign-preview-card { display: grid; gap: 5px; padding: 12px; border: 1px solid var(--border); border-radius: 11px; background: rgba(0,0,0,.22); }
       .campaign-preview-card strong { font-size: 12px; }
       .campaign-preview-card span { color: var(--text3); font: 500 10px 'DM Mono', monospace; }
+      .campaign-preview-verdict { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 11px; font-size: 12px; color: var(--text2); }
+      .campaign-preview-verdict.is-safe { border-color: rgba(37,244,238,.35); background: rgba(37,244,238,.05); }
+      .campaign-preview-verdict.is-blocked { border-color: rgba(239,68,68,.3); background: var(--danger-bg); }
+      .campaign-preview-verdict ul { margin: 0; padding-left: 16px; display: grid; gap: 4px; color: var(--text3); }
       .campaign-history { display: grid; gap: 12px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
       .campaign-history-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
       .campaign-history-head h3 { font-size: 15px; }
@@ -716,7 +720,8 @@
           <aside class="campaign-preview" aria-live="polite">
             <span class="section-kicker">Generated child jobs</span>
             <h3>Schedule preview</h3>
-            <p class="campaign-preview-note">Token checks run before upload. Each job remains independent if the other account fails.</p>
+            <p class="campaign-preview-note">A live dry-run checks accounts and schedule conflicts before any upload. Each job remains independent if the other account fails.</p>
+            <div class="campaign-preview-verdict" data-campaign-verdict hidden></div>
             <div data-campaign-preview>
               <p class="campaign-preview-note">Select an account and base time to preview the jobs.</p>
             </div>
@@ -1439,6 +1444,7 @@
         const baseTimeInput = form.querySelector('[data-campaign-base-time]');
         const slots = Array.from(form.querySelectorAll('[data-campaign-slot]'));
         const preview = document.querySelector('[data-campaign-preview]');
+        const verdict = document.querySelector('[data-campaign-verdict]');
         if (!videoInput || !baseTimeInput || slots.length !== 2 || !preview) return;
 
         const toLocalInput = date => {
@@ -1517,9 +1523,85 @@
           });
         };
 
+        // Server dry-run: asks /api/campaigns/preview (read-only, nothing is
+        // written or uploaded) whether the draft is safe to enqueue and shows
+        // the verdict plus any account/schedule issues found against live state.
+        let serverPreviewTimer = null;
+        let serverPreviewSequence = 0;
+
+        const renderServerVerdict = result => {
+          verdict.replaceChildren();
+          verdict.className = `campaign-preview-verdict ${result.safeToEnqueue ? 'is-safe' : 'is-blocked'}`;
+          const headline = document.createElement('strong');
+          headline.textContent = result.safeToEnqueue
+            ? 'Safe to enqueue — dry-run checks passed.'
+            : 'Blocked — resolve these before creating the campaign.';
+          verdict.append(headline);
+          const messages = [...new Set([
+            ...(Array.isArray(result.errors) ? result.errors : []).map(issue => issue.message),
+            ...(Array.isArray(result.warnings) ? result.warnings : [])
+              .filter(warning => warning.code !== 'CAMPAIGN_MEDIA_VALIDATED_AT_CREATE')
+              .map(warning => `Warning: ${warning.message}`)
+          ].filter(Boolean))];
+          if (messages.length > 0) {
+            const list = document.createElement('ul');
+            messages.forEach(message => {
+              const item = document.createElement('li');
+              item.textContent = message;
+              list.append(item);
+            });
+            verdict.append(list);
+          }
+        };
+
+        const runServerPreview = async () => {
+          if (!verdict) return;
+          const selected = controls.filter(control => control.account.value);
+          const baseTime = new Date(baseTimeInput.value);
+          if (selected.length === 0 || Number.isNaN(baseTime.getTime())) {
+            verdict.hidden = true;
+            return;
+          }
+
+          const sequence = ++serverPreviewSequence;
+          verdict.hidden = false;
+          verdict.className = 'campaign-preview-verdict';
+          verdict.textContent = 'Running dry-run checks…';
+          const body = {
+            campaignBaseScheduledAt: baseTimeInput.value,
+            timezoneOffsetMinutes: String(new Date().getTimezoneOffset())
+          };
+          controls.forEach((control, index) => {
+            body[`campaignAccountId${index + 1}`] = control.account.value;
+            body[`campaignCaption${index + 1}`] = control.caption.value;
+            body[`campaignHashtags${index + 1}`] = control.hashtags.value;
+          });
+
+          try {
+            const response = await fetch('/api/campaigns/preview', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+              body: JSON.stringify(body)
+            });
+            if (!response.ok) throw new Error(`Preview returned HTTP ${response.status}`);
+            const result = await response.json();
+            if (sequence !== serverPreviewSequence) return;
+            renderServerVerdict(result);
+          } catch (error) {
+            if (sequence !== serverPreviewSequence) return;
+            verdict.className = 'campaign-preview-verdict is-blocked';
+            verdict.textContent = 'Dry-run check unavailable right now. The create step still validates everything before upload.';
+          }
+        };
+
+        const requestServerPreview = () => {
+          clearTimeout(serverPreviewTimer);
+          serverPreviewTimer = setTimeout(runServerPreview, 500);
+        };
+
         [videoInput, baseTimeInput, ...controls.flatMap(control => Object.values(control))].forEach(control => {
-          control.addEventListener('input', () => { validate(); renderPreview(); });
-          control.addEventListener('change', () => { validate(); renderPreview(); });
+          control.addEventListener('input', () => { validate(); renderPreview(); requestServerPreview(); });
+          control.addEventListener('change', () => { validate(); renderPreview(); requestServerPreview(); });
         });
         form.addEventListener('submit', event => {
           if (validate()) return;
@@ -1527,6 +1609,7 @@
           form.querySelector(':invalid')?.reportValidity();
         });
         renderPreview();
+        runServerPreview();
       });
 
       // Edit form: public media URL validation
