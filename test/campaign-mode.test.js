@@ -322,8 +322,33 @@ test('campaign storage uploads once and atomically creates one parent plus two c
 
   await storage.updatePost('owner', secondChild.id, { status: 'failed' }, secondChild.accountId);
   assert.equal([...campaigns.values()][0].campaignStatus, 'failed');
+
+  // Campaign history exposes per-child failure visibility fields.
+  posts.set(secondChild.id, {
+    ...posts.get(secondChild.id),
+    campaignJobStatus: 'retry_required',
+    campaign_job_status: 'retry_required',
+    errorMessage: 'Rate limit exceeded',
+    errorEvidence: { ok: false, retryable: true, reason: 'Rate limit exceeded' }
+  });
+  const retryHistory = await storage.getCampaigns('owner');
+  const retryChild = retryHistory[0].childJobs.find((job) => job.id === secondChild.id);
+  assert.equal(retryChild.campaignJobStatus, 'retry_required');
+  assert.equal(retryChild.errorMessage, 'Rate limit exceeded');
+  assert.equal(retryChild.errorEvidence.retryable, true);
+  assert.equal(retryChild.accountId, secondChild.accountId);
+  assert.ok(retryChild.scheduledAt);
+  assert.equal(retryHistory[0].campaignStatus, 'retry_required');
+
   await storage.updatePost('owner', secondChild.id, { status: 'posted' }, secondChild.accountId);
   assert.equal([...campaigns.values()][0].campaignStatus, 'posted');
+
+  // A stored publish id is exposed through campaign history.
+  posts.set(secondChild.id, { ...posts.get(secondChild.id), publishId: 'publish-abc-123' });
+  const publishedHistory = await storage.getCampaigns('owner');
+  const publishedChild = publishedHistory[0].childJobs.find((job) => job.id === secondChild.id);
+  assert.equal(publishedChild.publishId, 'publish-abc-123');
+  assert.equal(publishedChild.campaignJobStatus, 'posted');
   [...campaigns.values()][0].campaignStatus = 'queued';
   [...campaigns.values()][0].campaign_status = 'queued';
   const reconciledCampaigns = await storage.getCampaigns('owner');

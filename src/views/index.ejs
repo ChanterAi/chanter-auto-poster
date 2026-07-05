@@ -460,6 +460,8 @@
       .campaign-job strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
       .campaign-job-copy { overflow: hidden; color: var(--text3); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
       .campaign-job time { color: var(--text3); font: 500 9px 'DM Mono', monospace; white-space: nowrap; }
+      .campaign-job-meta { grid-column: 1 / -1; color: var(--text3); font: 500 9px 'DM Mono', monospace; overflow-wrap: anywhere; }
+      .campaign-job-error { grid-column: 1 / -1; padding: 6px 8px; border: 1px solid rgba(239,68,68,.18); border-radius: 8px; background: var(--danger-bg); color: #fca5a5; font-size: 10px; line-height: 1.5; }
 
       /* ─── Divider ─── */
       .divider { height: 1px; background: var(--border); margin: 12px 0; }
@@ -748,10 +750,16 @@
               <div class="campaign-job-list">
                 <% campaign.childJobs.forEach(function(job) { %>
                   <% const campaignAccount = tiktokAccounts.find(function(account) { return account.accountId === job.accountId; }); %>
+                  <% const childError = job.errorMessage || (job.errorEvidence && job.errorEvidence.reason) || ''; %>
+                  <% const childRetryable = Boolean(job.errorEvidence && job.errorEvidence.retryable); %>
                   <div class="campaign-job">
                     <strong><%= campaignAccount && campaignAccount.username ? `@${campaignAccount.username}` : (campaignAccount && campaignAccount.displayName) || job.username || job.accountId %></strong>
                     <span class="campaign-job-copy"><%= job.caption %> / <%= job.hashtags %></span>
                     <time datetime="<%= job.scheduledAt %>"><%= helpers.formatDateTime(job.scheduledAt) %> / <%= job.campaignJobStatus.replaceAll('_', ' ') %></time>
+                    <span class="campaign-job-meta" title="<%= job.id %>">job <%= job.id.slice(0, 8) %> / account <%= job.accountId %><%= job.publishId ? ` / publish ${job.publishId}` : '' %></span>
+                    <% if (childError) { %>
+                      <span class="campaign-job-error"><%= childError %><%= childRetryable ? ' (safe to requeue)' : '' %></span>
+                    <% } %>
                   </div>
                 <% }); %>
               </div>

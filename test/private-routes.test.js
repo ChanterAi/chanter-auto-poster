@@ -41,6 +41,35 @@ const postsByAccount = {
 storage.getTikTokAccounts = async () => accounts;
 storage.getTikTokAccount = async (userId, accountId) => accounts.find((account) => account.accountId === accountId) || null;
 storage.getPosts = async (userId, accountId) => postsByAccount[accountId] || [];
+storage.getCampaigns = async () => [{
+  id: 'cmp-1111-2222-3333',
+  campaignId: 'cmp-1111-2222-3333',
+  mediaReference: { originalName: 'campaign.mp4' },
+  createdAt: '2026-06-20T10:00:00.000Z',
+  campaignStatus: 'retry_required',
+  selectedAccountIds: ['account-a', 'account-b'],
+  scheduleBaseTime: '2026-06-21T10:00:00.000Z',
+  staggerMinutes: 15,
+  childJobIds: ['child-a-posted-11', 'child-b-retry-22'],
+  scheduleSlotIds: [],
+  childJobs: [
+    {
+      id: 'child-a-posted-11', accountId: 'account-a', username: 'account_a',
+      caption: 'Caption A', hashtags: '#alpha',
+      scheduledAt: '2026-06-21T10:00:00.000Z',
+      status: 'posted', campaignJobStatus: 'posted',
+      publishId: 'publish-abc-123', errorMessage: '', errorEvidence: null
+    },
+    {
+      id: 'child-b-retry-22', accountId: 'account-b', username: 'account_b',
+      caption: 'Caption B', hashtags: '#beta',
+      scheduledAt: '2026-06-21T10:15:00.000Z',
+      status: 'failed', campaignJobStatus: 'retry_required',
+      publishId: '', errorMessage: 'Rate limit exceeded',
+      errorEvidence: { ok: false, retryable: true, reason: 'Rate limit exceeded' }
+    }
+  ]
+}];
 storage.getSettings = async () => ({ dailyPostTime: '09:00' });
 storage.getCounts = async () => ({
   total: 0,
@@ -244,6 +273,17 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /Switch \/ Connect another/);
   assert.match(autoPosterHtml, /data-campaign-verdict/);
   assert.match(autoPosterHtml, /\/api\/campaigns\/preview/);
+
+  // Campaign history surfaces parent + child job visibility fields.
+  assert.match(autoPosterHtml, /Campaign cmp-1111/);
+  assert.match(autoPosterHtml, /retry required/, 'derived retry_required status must be readable');
+  assert.match(autoPosterHtml, /job child-a- \/ account account-a \/ publish publish-abc-123/);
+  assert.match(autoPosterHtml, /job child-b- \/ account account-b/);
+  assert.match(autoPosterHtml, /title="child-a-posted-11"/);
+  assert.match(autoPosterHtml, /title="child-b-retry-22"/);
+  assert.match(autoPosterHtml, /Rate limit exceeded \(safe to requeue\)/);
+  assert.doesNotMatch(autoPosterHtml, /job child-a-[^<]*publish publish-abc-123[^<]*safe to requeue/,
+    'error evidence must stay on the failed child, not leak onto the published one');
   assert.match(autoPosterHtml, /Instagram: Not configured/);
   assert.match(autoPosterHtml, /Dry-run mode active/);
   assert.match(autoPosterHtml, /Add Meta API keys to enable Instagram publishing/);
