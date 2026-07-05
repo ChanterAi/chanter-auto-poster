@@ -118,6 +118,16 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     ? (await getCreatorInfoSafe(activeAccountId, userId)) || creatorInfoFromAccount(activeAccount)
     : creatorInfoFromAccount(activeAccount);
 
+  // Read-only scheduler evidence for the Command Center. getSchedulerHealth
+  // already returns sanitized counts/statuses only; a read failure renders
+  // as "unavailable" rather than breaking the page.
+  let schedulerEvidence = null;
+  try {
+    schedulerEvidence = await scheduler.getSchedulerHealth();
+  } catch (error) {
+    schedulerEvidence = null;
+  }
+
   res.render('index', {
     appName: config.appName,
     posts,
@@ -136,6 +146,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     instagramStatus,
     instagramHealth,
     creatorInfo,
+    schedulerEvidence,
     helpers: viewHelpers
   });
 });

@@ -57,7 +57,14 @@ storage.getCampaigns = async () => [{
       id: 'child-a-posted-11', accountId: 'account-a', username: 'account_a',
       caption: 'Caption A', hashtags: '#alpha',
       scheduledAt: '2026-06-21T10:00:00.000Z',
-      status: 'posted', campaignJobStatus: 'posted',
+      status: 'accepted', campaignJobStatus: 'accepted',
+      acceptedAt: '2026-06-21T10:00:05.000Z', claimAttempts: 2,
+      lastResult: {
+        ok: true,
+        mode: 'api',
+        completedAt: '2026-06-21T10:00:05.000Z',
+        response: { data: { publish_id: 'publish-abc-123', upload_token: 'raw-response-must-not-render' } }
+      },
       publishId: 'publish-abc-123', errorMessage: '', errorEvidence: null
     },
     {
@@ -175,6 +182,40 @@ autoMusic.prepareAutoMusic = async ({ videoPath, analysis }) => {
     render: { hasOriginalAudio: true, musicVolume: 0.2, durationSeconds: 5 }
   };
 };
+
+const scheduler = require('../src/scheduler');
+const healthySchedulerEvidence = {
+  lastTickAt: '2026-06-20T12:00:00.000Z',
+  lastTickOk: true,
+  lastTickScope: 'process-local',
+  lastTickDurable: false,
+  lastTickSummary: { checked: 2, posted: 1, failed: 1 },
+  durableHeartbeat: {
+    durable: true,
+    scope: 'firestore',
+    status: 'healthy',
+    lastTickAt: '2026-06-20T12:00:00.000Z',
+    lastTickOk: true,
+    ageSeconds: 42,
+    stale: false,
+    staleAfterSeconds: 300,
+    lastTickSummary: { checked: 2, due: 2, posted: 1, failed: 1, accepted: 1 }
+  },
+  degraded: true,
+  degradedReasons: [{ code: 'overdue_scheduled_jobs', message: 'Canonical scheduled jobs are overdue for processing.' }],
+  firestoreHealthError: false,
+  firestoreHealthFailedQueries: [],
+  overdueScheduledCount: 1,
+  overdueLegacyPendingCount: 0,
+  overdueTotalCount: 1,
+  staleProcessingCount: 0,
+  activeProcessingCount: 0,
+  processingMissingLockCount: 0,
+  stuckPendingCount: 0,
+  staleLockMinutes: 10,
+  maxClaimAttempts: 3
+};
+scheduler.getSchedulerHealth = async () => healthySchedulerEvidence;
 
 const routes = require('../src/routes');
 
@@ -300,6 +341,40 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /Rate limit exceeded \(safe to requeue\)/);
   assert.doesNotMatch(autoPosterHtml, /job child-a-[^<]*publish publish-abc-123[^<]*safe to requeue/,
     'error evidence must stay on the failed child, not leak onto the published one');
+
+  // P1.1 execution evidence: accepted state, attempt times, and counts are
+  // visible; raw provider response bodies are not rendered anywhere.
+  assert.match(autoPosterHtml, /status: accepted/);
+  assert.match(autoPosterHtml, /accepted at: 2026-06-21T10:00:05\.000Z/);
+  assert.match(autoPosterHtml, /last attempt: 2026-06-21T10:00:05\.000Z \(api\)/);
+  assert.match(autoPosterHtml, /attempts: 2/);
+  assert.doesNotMatch(autoPosterHtml, /raw-response-must-not-render/);
+  assert.doesNotMatch(autoPosterHtml, /upload_token/);
+
+  // P1.1 scheduler evidence strip: durable cron heartbeat is readable.
+  assert.match(autoPosterHtml, /Scheduler evidence/);
+  assert.match(autoPosterHtml, /last durable tick:/);
+  assert.match(autoPosterHtml, /\(42s ago\) — completed OK/);
+  assert.match(autoPosterHtml, /last tick: checked 2 \/ posted 1 \/ accepted 1 \/ failed 1/);
+  assert.match(autoPosterHtml, /overdue jobs: 1 \/ stale processing locks: 0/);
+  assert.match(autoPosterHtml, /Canonical scheduled jobs are overdue for processing\./);
+
+  // Without a recorded heartbeat the strip says so instead of faking data.
+  scheduler.getSchedulerHealth = async () => ({
+    ...healthySchedulerEvidence,
+    durableHeartbeat: {
+      durable: true, scope: 'firestore', status: 'missing',
+      lastTickAt: null, lastTickOk: null, ageSeconds: null,
+      stale: null, staleAfterSeconds: 300, lastTickSummary: null
+    },
+    degradedReasons: [{ code: 'scheduler_heartbeat_missing', message: 'No durable scheduler heartbeat has been recorded yet.' }]
+  });
+  const noHeartbeatResponse = await fetch(`${baseUrl}/private/autoposter`, { headers: { Cookie: adminCookie } });
+  const noHeartbeatHtml = await noHeartbeatResponse.text();
+  assert.equal(noHeartbeatResponse.status, 200);
+  assert.match(noHeartbeatHtml, /Cron run evidence is not persisted yet\./);
+  assert.doesNotMatch(noHeartbeatHtml, /last durable tick:/);
+  scheduler.getSchedulerHealth = async () => healthySchedulerEvidence;
   assert.match(autoPosterHtml, /Instagram: Not configured/);
   assert.match(autoPosterHtml, /Dry-run mode active/);
   assert.match(autoPosterHtml, /Add Meta API keys to enable Instagram publishing/);

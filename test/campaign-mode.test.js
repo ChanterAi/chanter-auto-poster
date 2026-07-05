@@ -130,6 +130,15 @@ test('campaign evidence summary is compact copyable text without secrets', () =>
         id: 'child-a-posted-11', accountId: 'account-a', username: 'alpha',
         scheduledAt: '2026-06-21T10:00:00.000Z', status: 'posted',
         campaignJobStatus: 'posted', publishId: 'publish-abc-123',
+        claimAttempts: 2,
+        acceptedAt: '2026-06-21T10:00:05.000Z',
+        postedAt: '2026-06-21T10:20:00.000Z',
+        lastResult: {
+          ok: true,
+          mode: 'api',
+          completedAt: '2026-06-21T10:00:05.000Z',
+          response: { data: { publish_id: 'publish-abc-123', upload_token: 'raw-response-secret-never' } }
+        },
         access_token: 'raw-token-must-not-leak'
       },
       {
@@ -153,7 +162,13 @@ test('campaign evidence summary is compact copyable text without secrets', () =>
   assert.match(summary, /@alpha \(account-a\)/);
   assert.match(summary, /job id: child-a-posted-11/);
   assert.match(summary, /^    status: posted$/m);
+  assert.match(summary, /^    attempts: 2$/m);
+  assert.match(summary, /last attempt: 2026-06-21T10:00:05\.000Z \(api\)/);
+  assert.match(summary, /accepted at: 2026-06-21T10:00:05\.000Z/);
+  assert.match(summary, /posted at: 2026-06-21T10:20:00\.000Z/);
   assert.match(summary, /publish id: publish-abc-123/);
+  assert.doesNotMatch(summary, /raw-response-secret-never/, 'raw provider response bodies must never enter evidence');
+  assert.doesNotMatch(summary, /upload_token/);
   assert.match(summary, /@beta \(account-b\)/);
   assert.match(summary, /^    status: retry_required$/m);
   assert.match(summary, /error: Rate limit exceeded \(safe to requeue\)/);

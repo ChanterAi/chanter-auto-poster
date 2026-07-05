@@ -447,6 +447,11 @@
       .campaign-preview-verdict.is-safe { border-color: rgba(37,244,238,.35); background: rgba(37,244,238,.05); }
       .campaign-preview-verdict.is-blocked { border-color: rgba(239,68,68,.3); background: var(--danger-bg); }
       .campaign-preview-verdict ul { margin: 0; padding-left: 16px; display: grid; gap: 4px; color: var(--text3); }
+      .scheduler-evidence { display: grid; gap: 8px; margin-top: 22px; padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: rgba(0,0,0,.16); }
+      .scheduler-evidence-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .scheduler-evidence-head h3 { font-size: 13px; }
+      .scheduler-evidence-line { color: var(--text3); font: 500 10px 'DM Mono', monospace; overflow-wrap: anywhere; }
+      .scheduler-evidence ul { margin: 0; padding-left: 16px; display: grid; gap: 4px; color: #fca5a5; font-size: 10px; line-height: 1.5; }
       .campaign-history { display: grid; gap: 12px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
       .campaign-history-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
       .campaign-history-head h3 { font-size: 15px; }
@@ -735,6 +740,41 @@
               <p class="campaign-preview-note">Select an account and base time to preview the jobs.</p>
             </div>
           </aside>
+        </div>
+
+        <%
+          const heartbeat = schedulerEvidence ? schedulerEvidence.durableHeartbeat : null;
+          const heartbeatStatus = heartbeat ? String(heartbeat.status || 'missing') : 'unavailable';
+          const tickSummary = heartbeat && heartbeat.lastTickSummary ? heartbeat.lastTickSummary : null;
+          const degradedReasons = schedulerEvidence && Array.isArray(schedulerEvidence.degradedReasons)
+            ? schedulerEvidence.degradedReasons
+            : [];
+        %>
+        <div class="scheduler-evidence" aria-label="Scheduler evidence" data-scheduler-evidence>
+          <div class="scheduler-evidence-head">
+            <h3>Scheduler evidence</h3>
+            <span class="campaign-status"><%= !schedulerEvidence ? 'unavailable' : heartbeatStatus %></span>
+          </div>
+          <% if (!schedulerEvidence || heartbeatStatus === 'unavailable') { %>
+            <p class="campaign-preview-note">Cron evidence could not be read right now. Check /health for the raw scheduler status.</p>
+          <% } else if (heartbeatStatus === 'missing') { %>
+            <p class="campaign-preview-note">Cron run evidence is not persisted yet. It appears after the first completed cron tick.</p>
+          <% } else if (heartbeatStatus === 'invalid') { %>
+            <p class="campaign-preview-note">A cron heartbeat exists but is incomplete. Check /health for details.</p>
+          <% } else { %>
+            <span class="scheduler-evidence-line">last durable tick: <%= helpers.formatDateTime(heartbeat.lastTickAt) %> (<%= heartbeat.ageSeconds %>s ago) — <%= heartbeat.lastTickOk ? 'completed OK' : 'completed with errors' %><%= heartbeat.stale ? ' — STALE' : '' %></span>
+            <% if (tickSummary) { %>
+              <span class="scheduler-evidence-line">last tick: checked <%= tickSummary.checked %> / posted <%= tickSummary.posted %> / accepted <%= Object.hasOwn(tickSummary, 'accepted') ? tickSummary.accepted : 0 %> / failed <%= tickSummary.failed %></span>
+            <% } %>
+            <span class="scheduler-evidence-line">overdue jobs: <%= schedulerEvidence.overdueTotalCount === null ? 'unknown' : schedulerEvidence.overdueTotalCount %> / stale processing locks: <%= schedulerEvidence.staleProcessingCount === null ? 'unknown' : schedulerEvidence.staleProcessingCount %></span>
+            <% if (degradedReasons.length > 0) { %>
+              <ul>
+                <% degradedReasons.forEach(function(reason) { %>
+                  <li><%= reason.message %></li>
+                <% }); %>
+              </ul>
+            <% } %>
+          <% } %>
         </div>
 
         <div class="campaign-history" aria-label="Campaign history">

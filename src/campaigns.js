@@ -226,6 +226,15 @@ function buildCampaignEvidenceSummary(campaign = {}) {
     lines.push(`    job id: ${job.id || 'unknown'}`);
     lines.push(`    scheduled: ${job.scheduledAt || 'not scheduled'}`);
     lines.push(`    status: ${campaignJobStatus(job)}`);
+    if (Number(job.claimAttempts || 0) > 0) lines.push(`    attempts: ${Number(job.claimAttempts)}`);
+    // Execution evidence uses only safe scalar fields; lastResult.response
+    // (raw provider body) is deliberately never read here.
+    const lastResult = job.lastResult && typeof job.lastResult === 'object' ? job.lastResult : null;
+    if (lastResult && lastResult.completedAt) {
+      lines.push(`    last attempt: ${lastResult.completedAt} (${lastResult.mode || 'api'})`);
+    }
+    if (job.acceptedAt) lines.push(`    accepted at: ${job.acceptedAt}`);
+    if (job.postedAt) lines.push(`    posted at: ${job.postedAt}`);
     if (job.publishId) lines.push(`    publish id: ${job.publishId}`);
     const evidence = job.errorEvidence && typeof job.errorEvidence === 'object' ? job.errorEvidence : {};
     const reason = job.errorMessage || evidence.reason || '';
