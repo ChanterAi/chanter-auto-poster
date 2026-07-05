@@ -570,6 +570,55 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
     { accountId: 'account-b', caption: 'Caption B', hashtags: '#beta' }
   ]);
 
+  // P1.3 Operator Review API: admin-gated, read-only, secret-safe.
+  const unauthorizedOperatorReview = await fetch(`${baseUrl}/api/campaigns/cmp-1111-2222-3333/operator-review`);
+  assert.equal(unauthorizedOperatorReview.status, 401);
+
+  const operatorReviewResponse = await fetch(`${baseUrl}/api/campaigns/cmp-1111-2222-3333/operator-review`, {
+    headers: { Cookie: adminCookie, Accept: 'application/json' }
+  });
+  assert.equal(operatorReviewResponse.status, 200);
+  const operatorReviewText = await operatorReviewResponse.text();
+  const operatorReview = JSON.parse(operatorReviewText);
+  assert.equal(operatorReview.ok, true);
+  assert.equal(operatorReview.campaignId, 'cmp-1111-2222-3333');
+  assert.ok(operatorReview.generatedAt);
+  assert.equal(operatorReview.campaign.status, 'retry_required');
+  assert.equal(operatorReview.campaign.caption, 'Caption A');
+  assert.deepEqual(operatorReview.campaign.hashtags, ['#alpha']);
+  assert.deepEqual(operatorReview.evidence, {
+    childrenTotal: 2,
+    postedCount: 0,
+    acceptedCount: 1,
+    failedCount: 0,
+    retryRequiredCount: 1,
+    lastTickAt: '2026-06-20T12:00:00.000Z',
+    heartbeatStatus: 'healthy'
+  });
+  assert.equal(operatorReview.oracle.verdict, 'PARTIAL_SUCCESS');
+  assert.equal(operatorReview.oracle.evidenceConfidence, 'HIGH');
+  assert.ok(operatorReview.safeActions.every((action) => action.destructive === false && action.enabled === false));
+  assert.ok(operatorReview.safeActions.some((action) => action.type === 'MANUAL_REVIEW'));
+  assert.doesNotMatch(operatorReviewText, /raw-response-must-not-render/);
+  assert.doesNotMatch(operatorReviewText, /upload_token/);
+
+  const missingOperatorReview = await fetch(`${baseUrl}/api/campaigns/does-not-exist/operator-review`, {
+    headers: { Cookie: adminCookie, Accept: 'application/json' }
+  });
+  assert.equal(missingOperatorReview.status, 404);
+  assert.deepEqual(await missingOperatorReview.json(), {
+    ok: false,
+    code: 'CAMPAIGN_NOT_FOUND',
+    reason: 'Campaign not found.'
+  });
+
+  // The operator-review path is read-only: no mutation method is registered.
+  const operatorReviewPost = await fetch(`${baseUrl}/api/campaigns/cmp-1111-2222-3333/operator-review`, {
+    method: 'POST',
+    headers: { Cookie: adminCookie }
+  });
+  assert.equal(operatorReviewPost.status, 404, 'POST must not exist for the operator-review path');
+
   let savedPatch = null;
   let savedAccountId = null;
   storage.updatePost = async (userId, postId, patch, accountId) => {

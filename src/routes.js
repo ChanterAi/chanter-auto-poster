@@ -11,7 +11,7 @@ const autoMusic = require('./autoMusic');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
 const { buildCampaignEvidenceSummary } = require('./campaigns');
-const { reviewCampaign } = require('./campaignOracle');
+const { reviewCampaign, buildOperatorReview } = require('./campaignOracle');
 const {
   clearAdminSessionCookie,
   requireAdminApi,
@@ -672,6 +672,34 @@ router.post(
       jobs: draftJobs
     });
     res.json(preview);
+  })
+);
+
+// P1.3 Operator Review: read-only, frontend-ready JSON combining stored
+// campaign evidence with the local deterministic Campaign Oracle. GET only —
+// no mutation routes exist for this path. Never includes raw provider
+// responses or auth material (whitelisted fields only).
+router.get(
+  '/api/campaigns/:campaignId/operator-review',
+  requireAdminApi,
+  asyncRoute(async (req, res) => {
+    const userId = resolveUserId(req);
+    const campaignId = String(req.params.campaignId || '').trim();
+    const campaigns = await storage.getCampaigns(userId);
+    const campaign = campaigns.find((entry) => entry.campaignId === campaignId || entry.id === campaignId);
+    if (!campaign) {
+      res.status(404).json({ ok: false, code: 'CAMPAIGN_NOT_FOUND', reason: 'Campaign not found.' });
+      return;
+    }
+
+    let schedulerEvidence = null;
+    try {
+      schedulerEvidence = await scheduler.getSchedulerHealth();
+    } catch (error) {
+      schedulerEvidence = null;
+    }
+
+    res.json(buildOperatorReview(campaign, { schedulerEvidence, now: new Date() }));
   })
 );
 

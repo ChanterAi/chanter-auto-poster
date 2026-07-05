@@ -188,7 +188,139 @@ function reviewCampaign(campaign = {}, { schedulerEvidence = null, now = new Dat
   };
 }
 
+// ── P1.3 Operator Review contract ────────────────────────────────────────────
+// Frontend-ready, read-only JSON built by whitelisting safe fields only.
+// Reuses reviewCampaign for every verdict decision; adds advisory (never
+// wired, never destructive) safe actions.
+
+const SAFE_ACTION_TYPES = Object.freeze([
+  'MANUAL_REVIEW',
+  'RECONNECT_ACCOUNT',
+  'WAIT_FOR_PROCESSING',
+  'NO_ACTION',
+  'CHECK_SCHEDULER'
+]);
+
+function contractHeartbeatStatus(schedulerEvidence) {
+  const raw = heartbeatStatus(schedulerEvidence);
+  if (raw === 'healthy') return 'healthy';
+  if (raw === 'stale' || raw === 'failed') return 'degraded';
+  if (raw === 'missing') return 'missing';
+  return 'unknown';
+}
+
+function advisoryAction(type, label, description) {
+  // Advisory only: nothing in the backend executes these, so they ship
+  // disabled and non-destructive by contract.
+  return { type, label, description, destructive: false, enabled: false };
+}
+
+function deriveSafeActions(review, contractHeartbeat) {
+  const actions = [];
+  const accountIssueImplied = /token|reconnect|disconnect|expired|authoriz/i.test(String(review.blockedReason || ''));
+
+  if (review.verdict === VERDICTS.SUCCESS) {
+    actions.push(advisoryAction(
+      'NO_ACTION',
+      'No action needed',
+      'All child jobs posted. Keep the evidence summary for your records.'
+    ));
+  }
+  if (review.verdict === VERDICTS.UNKNOWN) {
+    actions.push(advisoryAction(
+      'MANUAL_REVIEW',
+      'Verify outcome manually',
+      'Confirm the TikTok result manually first; acting on unverified state risks a duplicate post.'
+    ));
+  }
+  if (accountIssueImplied) {
+    actions.push(advisoryAction(
+      'RECONNECT_ACCOUNT',
+      'Reconnect the TikTok account',
+      'The stored failure evidence points at a token or connection problem.'
+    ));
+  }
+  if (['PARTIAL_SUCCESS', 'FAILED'].includes(review.verdict) && !accountIssueImplied) {
+    actions.push(advisoryAction(
+      'MANUAL_REVIEW',
+      'Review the failed child jobs',
+      'Read the per-child evidence before deciding anything. Jobs that already posted need no further action.'
+    ));
+  }
+  if (['missing', 'degraded', 'unknown'].includes(contractHeartbeat)) {
+    actions.push(advisoryAction(
+      'CHECK_SCHEDULER',
+      'Check the scheduler cron',
+      'The durable heartbeat is not fresh; confirm the external cron is hitting /api/cron/tick.'
+    ));
+  }
+  if (review.verdict === VERDICTS.WAITING) {
+    actions.push(advisoryAction(
+      'WAIT_FOR_PROCESSING',
+      'Wait for processing',
+      'Jobs are queued or in flight with no failures recorded.'
+    ));
+  }
+  if (actions.length === 0) {
+    actions.push(advisoryAction(
+      'MANUAL_REVIEW',
+      'Review campaign evidence',
+      'No specific action could be derived; read the evidence summary.'
+    ));
+  }
+  return actions;
+}
+
+function splitHashtags(value) {
+  return String(value || '').split(/\s+/).map((tag) => tag.trim()).filter(Boolean);
+}
+
+function buildOperatorReview(campaign = {}, { schedulerEvidence = null, now = new Date() } = {}) {
+  const review = reviewCampaign(campaign, { schedulerEvidence, now });
+  const jobs = Array.isArray(campaign.childJobs) ? campaign.childJobs : [];
+  const firstChild = jobs[0] || {};
+  const contractHeartbeat = contractHeartbeatStatus(schedulerEvidence);
+  const heartbeat = schedulerEvidence && schedulerEvidence.durableHeartbeat
+    ? schedulerEvidence.durableHeartbeat
+    : null;
+
+  return {
+    ok: true,
+    campaignId: String(campaign.campaignId || campaign.id || ''),
+    generatedAt: (now instanceof Date ? now : new Date(now)).toISOString(),
+    campaign: {
+      status: String(campaign.campaignStatus || 'unknown'),
+      // Campaign Mode stores per-account copy variants; the contract exposes
+      // the first child's variant as the representative campaign copy.
+      caption: String(firstChild.caption || ''),
+      hashtags: splitHashtags(firstChild.hashtags),
+      scheduledAt: campaign.scheduleBaseTime || null,
+      createdAt: campaign.createdAt || null
+    },
+    evidence: {
+      childrenTotal: jobs.length,
+      postedCount: review.postedCount,
+      acceptedCount: review.acceptedCount,
+      failedCount: review.failedCount,
+      retryRequiredCount: review.retryRequiredCount,
+      lastTickAt: heartbeat ? (heartbeat.lastTickAt || null) : null,
+      heartbeatStatus: contractHeartbeat
+    },
+    oracle: {
+      verdict: review.verdict,
+      summary: review.summary,
+      blockedReason: review.blockedReason,
+      recommendedNextAction: review.recommendedNextAction,
+      riskNotes: review.riskNotes,
+      evidenceConfidence: review.evidenceConfidence
+    },
+    safeActions: deriveSafeActions(review, contractHeartbeat)
+  };
+}
+
 module.exports = {
   VERDICTS,
-  reviewCampaign
+  SAFE_ACTION_TYPES,
+  reviewCampaign,
+  buildOperatorReview
 };
