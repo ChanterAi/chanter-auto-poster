@@ -274,6 +274,22 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /data-campaign-verdict/);
   assert.match(autoPosterHtml, /\/api\/campaigns\/preview/);
 
+  // Campaign Command Center: cockpit section with verdict states, no-live
+  // demo labeling, and copyable evidence.
+  assert.match(autoPosterHtml, /Campaign Command Center/);
+  assert.match(autoPosterHtml, /Safe to enqueue — dry-run checks passed\./);
+  assert.match(autoPosterHtml, /Blocked — resolve these before creating the campaign\./);
+  assert.match(autoPosterHtml, /Accounts selected: /);
+  assert.match(autoPosterHtml, /No-live demo: this dry run never calls TikTok/);
+  assert.match(autoPosterHtml, /post-simulation demo mode is intentionally not implemented/);
+  assert.match(autoPosterHtml, /data-campaign-copy-verdict/);
+  assert.match(autoPosterHtml, /data-campaign-copy-evidence/);
+  assert.match(autoPosterHtml, /data-campaign-evidence/);
+  assert.match(autoPosterHtml, /CAMPAIGN EVIDENCE cmp-1111-2222-3333/);
+  assert.match(autoPosterHtml, /publish id: publish-abc-123/);
+  assert.match(autoPosterHtml, /error: Rate limit exceeded \(safe to requeue\)/);
+  assert.match(autoPosterHtml, /contains no tokens or raw payloads/);
+
   // Campaign history surfaces parent + child job visibility fields.
   assert.match(autoPosterHtml, /Campaign cmp-1111/);
   assert.match(autoPosterHtml, /retry required/, 'derived retry_required status must be readable');
@@ -423,6 +439,15 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   const previewDocument = {
     mode: 'preview',
     safeToEnqueue: false,
+    readiness: {
+      selectedAccountCount: 2,
+      maxAccounts: 2,
+      accountSelectionMissing: false,
+      duplicateAccountSelection: false,
+      accountIssues: [],
+      scheduleCollisions: ['account-a'],
+      blockedCodes: ['CAMPAIGN_SCHEDULE_COLLISION']
+    },
     campaign: {
       platform: 'tiktok',
       baseScheduledAt: '2026-07-04T10:00:00.000Z',

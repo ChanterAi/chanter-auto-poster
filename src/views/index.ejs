@@ -462,6 +462,11 @@
       .campaign-job time { color: var(--text3); font: 500 9px 'DM Mono', monospace; white-space: nowrap; }
       .campaign-job-meta { grid-column: 1 / -1; color: var(--text3); font: 500 9px 'DM Mono', monospace; overflow-wrap: anywhere; }
       .campaign-job-error { grid-column: 1 / -1; padding: 6px 8px; border: 1px solid rgba(239,68,68,.18); border-radius: 8px; background: var(--danger-bg); color: #fca5a5; font-size: 10px; line-height: 1.5; }
+      .campaign-no-live-note { border: 1px dashed var(--border); border-radius: 8px; padding: 8px; }
+      .campaign-copy-btn { justify-self: start; padding: 6px 10px; font-size: 10px; }
+      .campaign-evidence { display: grid; gap: 8px; }
+      .campaign-evidence summary { cursor: pointer; color: var(--text2); font-size: 11px; font-weight: 700; }
+      .campaign-evidence-text { margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: rgba(0,0,0,.3); color: var(--text2); font: 500 10px 'DM Mono', monospace; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 
       /* ─── Divider ─── */
       .divider { height: 1px; background: var(--border); margin: 12px 0; }
@@ -666,9 +671,9 @@
       <section class="panel campaign-mode" aria-labelledby="campaign-mode-heading">
         <div class="panel-head panel-head-rich">
           <div>
-            <span class="panel-kicker">TikTok only / v0.1</span>
-            <h2 id="campaign-mode-heading">Campaign Mode</h2>
-            <p>Schedule one video for up to two TikTok accounts with account-specific copy and a guarded 15-minute stagger.</p>
+            <span class="panel-kicker">TikTok Campaign Mode / v0.1</span>
+            <h2 id="campaign-mode-heading">Campaign Command Center</h2>
+            <p>One video, per-account child jobs with a guarded 15-minute stagger: preview readiness, schedule, monitor child jobs, and export evidence from one place.</p>
           </div>
           <span class="panel-step">CM</span>
         </div>
@@ -722,8 +727,10 @@
           <aside class="campaign-preview" aria-live="polite">
             <span class="section-kicker">Generated child jobs</span>
             <h3>Schedule preview</h3>
-            <p class="campaign-preview-note">A live dry-run checks accounts and schedule conflicts before any upload. Each job remains independent if the other account fails.</p>
+            <p class="campaign-preview-note">A read-only dry run checks accounts and schedule conflicts before any upload — creating the campaign remains the only step that writes, and it revalidates everything. Each job stays independent if the other account fails.</p>
+            <p class="campaign-preview-note campaign-no-live-note">No-live demo: this dry run never calls TikTok, so it is safe to demo. A full post-simulation demo mode is intentionally not implemented — due jobs are always published for real by the scheduler.</p>
             <div class="campaign-preview-verdict" data-campaign-verdict hidden></div>
+            <button type="button" class="btn btn-ghost campaign-copy-btn" data-campaign-copy-verdict hidden>Copy dry-run verdict</button>
             <div data-campaign-preview>
               <p class="campaign-preview-note">Select an account and base time to preview the jobs.</p>
             </div>
@@ -763,6 +770,11 @@
                   </div>
                 <% }); %>
               </div>
+              <details class="campaign-evidence">
+                <summary>Evidence summary</summary>
+                <pre class="campaign-evidence-text" data-campaign-evidence><%= helpers.campaignEvidence(campaign) %></pre>
+                <button type="button" class="btn btn-ghost campaign-copy-btn" data-campaign-copy-evidence>Copy evidence</button>
+              </details>
             </article>
           <% }); %>
         </div>
@@ -1446,6 +1458,30 @@
         });
       });
 
+      // Copy-to-clipboard with inline button feedback; prompt() fallback keeps
+      // the text reachable when the Clipboard API is unavailable.
+      async function copyTextWithFeedback(button, text) {
+        const original = button.dataset.originalLabel || button.textContent;
+        button.dataset.originalLabel = original;
+        try {
+          await navigator.clipboard.writeText(text);
+          button.textContent = 'Copied ✓';
+          setTimeout(() => { button.textContent = original; }, 1600);
+        } catch (error) {
+          window.prompt('Copy the evidence text below:', text);
+          button.textContent = original;
+        }
+      }
+
+      // Campaign evidence copy buttons (campaign history)
+      document.querySelectorAll('[data-campaign-copy-evidence]').forEach(button => {
+        button.addEventListener('click', () => {
+          const details = button.closest('details');
+          const evidence = details ? details.querySelector('[data-campaign-evidence]') : null;
+          if (evidence) copyTextWithFeedback(button, evidence.textContent);
+        });
+      });
+
       // Campaign Mode preview and client-side safety checks
       document.querySelectorAll('[data-campaign-form]').forEach(form => {
         const videoInput = form.querySelector('[data-campaign-video]');
@@ -1453,6 +1489,7 @@
         const slots = Array.from(form.querySelectorAll('[data-campaign-slot]'));
         const preview = document.querySelector('[data-campaign-preview]');
         const verdict = document.querySelector('[data-campaign-verdict]');
+        const copyVerdictButton = document.querySelector('[data-campaign-copy-verdict]');
         if (!videoInput || !baseTimeInput || slots.length !== 2 || !preview) return;
 
         const toLocalInput = date => {
@@ -1536,6 +1573,26 @@
         // the verdict plus any account/schedule issues found against live state.
         let serverPreviewTimer = null;
         let serverPreviewSequence = 0;
+        let verdictEvidenceText = '';
+
+        const buildVerdictEvidenceText = result => {
+          const lines = [`CAMPAIGN DRY-RUN VERDICT: ${result.safeToEnqueue ? 'SAFE TO ENQUEUE' : 'BLOCKED'}`];
+          if (result.campaign) {
+            lines.push(`base time: ${result.campaign.baseScheduledAt} / stagger: ${result.campaign.staggerMinutes}m`);
+            lines.push(`accounts: ${(result.campaign.selectedAccountIds || []).join(', ')}`);
+          }
+          (Array.isArray(result.childJobs) ? result.childJobs : []).forEach((job, index) => {
+            lines.push(`[${index + 1}] ${job.accountLabel || job.accountId} (${job.accountId}) — ${job.scheduledAt}${job.scheduleCollision ? ' — SCHEDULE COLLISION' : ''}`);
+            const copy = [job.caption, job.hashtags].filter(Boolean).join(' / ');
+            if (copy) lines.push(`    copy: ${copy}`);
+          });
+          (Array.isArray(result.errors) ? result.errors : []).forEach(issue => lines.push(`error: ${issue.message}`));
+          (Array.isArray(result.warnings) ? result.warnings : [])
+            .filter(warning => warning.code !== 'CAMPAIGN_MEDIA_VALIDATED_AT_CREATE')
+            .forEach(warning => lines.push(`warning: ${warning.message}`));
+          lines.push('read-only dry run - nothing was created; creating the campaign revalidates everything');
+          return lines.join('\n');
+        };
 
         const renderServerVerdict = result => {
           verdict.replaceChildren();
@@ -1545,6 +1602,22 @@
             ? 'Safe to enqueue — dry-run checks passed.'
             : 'Blocked — resolve these before creating the campaign.';
           verdict.append(headline);
+          const readiness = result.readiness || null;
+          if (readiness) {
+            const facts = document.createElement('ul');
+            [
+              `Accounts selected: ${readiness.selectedAccountCount} of ${readiness.maxAccounts}`,
+              readiness.accountSelectionMissing ? 'Blocked: no TikTok account selected.' : '',
+              readiness.duplicateAccountSelection ? 'Blocked: the same account is selected twice.' : '',
+              readiness.accountIssues && readiness.accountIssues.length ? `Account issues: ${readiness.accountIssues.join(', ')}` : '',
+              readiness.scheduleCollisions && readiness.scheduleCollisions.length ? `Schedule collisions: ${readiness.scheduleCollisions.join(', ')}` : ''
+            ].filter(Boolean).forEach(text => {
+              const item = document.createElement('li');
+              item.textContent = text;
+              facts.append(item);
+            });
+            verdict.append(facts);
+          }
           const messages = [...new Set([
             ...(Array.isArray(result.errors) ? result.errors : []).map(issue => issue.message),
             ...(Array.isArray(result.warnings) ? result.warnings : [])
@@ -1560,6 +1633,8 @@
             });
             verdict.append(list);
           }
+          verdictEvidenceText = buildVerdictEvidenceText(result);
+          if (copyVerdictButton) copyVerdictButton.hidden = false;
         };
 
         const runServerPreview = async () => {
@@ -1568,11 +1643,13 @@
           const baseTime = new Date(baseTimeInput.value);
           if (selected.length === 0 || Number.isNaN(baseTime.getTime())) {
             verdict.hidden = true;
+            if (copyVerdictButton) copyVerdictButton.hidden = true;
             return;
           }
 
           const sequence = ++serverPreviewSequence;
           verdict.hidden = false;
+          if (copyVerdictButton) copyVerdictButton.hidden = true;
           verdict.className = 'campaign-preview-verdict';
           verdict.textContent = 'Running dry-run checks…';
           const body = {
@@ -1606,6 +1683,12 @@
           clearTimeout(serverPreviewTimer);
           serverPreviewTimer = setTimeout(runServerPreview, 500);
         };
+
+        if (copyVerdictButton) {
+          copyVerdictButton.addEventListener('click', () => {
+            if (verdictEvidenceText) copyTextWithFeedback(copyVerdictButton, verdictEvidenceText);
+          });
+        }
 
         [videoInput, baseTimeInput, ...controls.flatMap(control => Object.values(control))].forEach(control => {
           control.addEventListener('input', () => { validate(); renderPreview(); requestServerPreview(); });

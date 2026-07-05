@@ -128,6 +128,15 @@ test('campaign dry-run preview validates drafts without writing jobs, media, or 
     15 * 60 * 1000
   );
   assert.ok(preview.warnings.some((warning) => warning.code === 'CAMPAIGN_MEDIA_VALIDATED_AT_CREATE'));
+  assert.deepEqual(preview.readiness, {
+    selectedAccountCount: 2,
+    maxAccounts: 2,
+    accountSelectionMissing: false,
+    duplicateAccountSelection: false,
+    accountIssues: [],
+    scheduleCollisions: [],
+    blockedCodes: []
+  }, 'a safe draft reports a fully green readiness checklist');
 
   // The preview is a pure dry run: nothing queued, uploaded, or reserved.
   assert.equal(posts.size, 0, 'preview must not create child jobs');
@@ -150,6 +159,17 @@ test('campaign dry-run preview validates drafts without writing jobs, media, or 
   }, { now: fixedNow });
   assert.equal(duplicate.safeToEnqueue, false);
   assert.ok(duplicate.errors.some((issue) => issue.code === 'CAMPAIGN_ACCOUNT_DUPLICATE'));
+  assert.equal(duplicate.readiness.duplicateAccountSelection, true);
+  assert.ok(duplicate.readiness.blockedCodes.includes('CAMPAIGN_ACCOUNT_DUPLICATE'));
+
+  // Empty selection reports missing accounts in the readiness checklist.
+  const noAccounts = await storage.previewTikTokCampaign('owner', {
+    baseScheduledAt: '2026-07-04T10:00:00.000Z',
+    jobs: []
+  }, { now: fixedNow });
+  assert.equal(noAccounts.safeToEnqueue, false);
+  assert.equal(noAccounts.readiness.accountSelectionMissing, true);
+  assert.equal(noAccounts.readiness.selectedAccountCount, 0);
 
   // Legacy/invalid account ids are rejected before any account lookup.
   const legacy = await storage.previewTikTokCampaign('owner', {
@@ -179,6 +199,7 @@ test('campaign dry-run preview validates drafts without writing jobs, media, or 
   const disconnected = await storage.previewTikTokCampaign('owner', validDraft, { now: fixedNow });
   assert.equal(disconnected.safeToEnqueue, false);
   assert.ok(disconnected.errors.some((issue) => issue.code === 'CAMPAIGN_ACCOUNT_TOKEN_INVALID'));
+  assert.deepEqual(disconnected.readiness.accountIssues, ['account-b']);
   accounts.set('account-b', { ...accounts.get('account-b'), connected: true, access_token: 'token-b' });
 
   // Expired tokens are rejected; tokens expiring before the post only warn.
@@ -221,6 +242,8 @@ test('campaign dry-run preview validates drafts without writing jobs, media, or 
   assert.equal(collision.safeToEnqueue, false);
   assert.ok(collision.errors.some((issue) => issue.code === 'CAMPAIGN_SCHEDULE_COLLISION'));
   assert.deepEqual(collision.childJobs.map((job) => job.scheduleCollision), [true, true]);
+  assert.deepEqual(collision.readiness.scheduleCollisions, ['account-a', 'account-b']);
+  assert.ok(collision.readiness.blockedCodes.includes('CAMPAIGN_SCHEDULE_COLLISION'));
   assert.equal(posts.size, 2, 'collision preview must not add jobs');
   assert.equal(scheduleSlots.size, 2, 'collision preview must not add reservations');
   assert.equal(uploadCalls, 1, 'collision preview must not upload media');

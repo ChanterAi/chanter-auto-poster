@@ -208,6 +208,35 @@ function deriveCampaignStatus(jobs) {
   return 'queued';
 }
 
+// Compact operator-facing evidence text for one campaign. Built only from
+// the stored job records the dashboard already renders — statuses, ids,
+// times, and redacted error reasons. Never tokens, auth fields, or payloads.
+function buildCampaignEvidenceSummary(campaign = {}) {
+  const jobs = Array.isArray(campaign.childJobs) ? campaign.childJobs : [];
+  const lines = [
+    `CAMPAIGN EVIDENCE ${String(campaign.campaignId || campaign.id || 'unknown')}`,
+    `status: ${String(campaign.campaignStatus || 'unknown')}`,
+    `base time: ${campaign.scheduleBaseTime || 'unknown'} / stagger: ${Number(campaign.staggerMinutes || 0)}m / child jobs: ${jobs.length}`
+  ];
+
+  jobs.forEach((job, index) => {
+    const accountId = String(job.accountId || 'unassigned');
+    const label = job.username ? `@${job.username}` : accountId;
+    lines.push(`[${index + 1}] ${label} (${accountId})`);
+    lines.push(`    job id: ${job.id || 'unknown'}`);
+    lines.push(`    scheduled: ${job.scheduledAt || 'not scheduled'}`);
+    lines.push(`    status: ${campaignJobStatus(job)}`);
+    if (job.publishId) lines.push(`    publish id: ${job.publishId}`);
+    const evidence = job.errorEvidence && typeof job.errorEvidence === 'object' ? job.errorEvidence : {};
+    const reason = job.errorMessage || evidence.reason || '';
+    if (reason) lines.push(`    error: ${reason}${evidence.retryable ? ' (safe to requeue)' : ''}`);
+    if (evidence.code) lines.push(`    error code: ${evidence.code}`);
+  });
+
+  lines.push('generated from stored job records - contains no tokens or raw payloads');
+  return lines.join('\n');
+}
+
 module.exports = {
   MAX_CAMPAIGN_ACCOUNTS,
   CAMPAIGN_STAGGER_MINUTES,
@@ -216,5 +245,6 @@ module.exports = {
   campaignJobStatus,
   classifyCampaignChildFailure,
   deriveCampaignStatus,
+  buildCampaignEvidenceSummary,
   minuteKey
 };

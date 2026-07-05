@@ -10,6 +10,7 @@ const autoCaption = require('./autoCaption');
 const autoMusic = require('./autoMusic');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
+const { buildCampaignEvidenceSummary } = require('./campaigns');
 const {
   clearAdminSessionCookie,
   requireAdminApi,
@@ -1036,7 +1037,8 @@ const viewHelpers = {
     return local.toISOString().slice(0, 16);
   },
   fullCaption(post) { return tiktok.buildCaption(post); },
-  statusLabel(status) { return statusLabel(status); }
+  statusLabel(status) { return statusLabel(status); },
+  campaignEvidence(campaign) { return buildCampaignEvidenceSummary(campaign); }
 };
 
 function getPostMediaType(post) {

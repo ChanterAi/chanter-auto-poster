@@ -7,7 +7,8 @@ const {
   validateCampaignAccounts,
   deriveCampaignStatus,
   campaignJobStatus,
-  classifyCampaignChildFailure
+  classifyCampaignChildFailure,
+  buildCampaignEvidenceSummary
 } = require('../src/campaigns');
 
 const fixedNow = new Date('2026-07-04T09:00:00.000Z');
@@ -116,6 +117,52 @@ test('retry_required child state flows through job and campaign status derivatio
   ]), 'retry_required');
   // Requeuing the child resets it to queued via the canonical status.
   assert.equal(campaignJobStatus({ status: 'scheduled', campaignJobStatus: 'retry_required' }), 'queued');
+});
+
+test('campaign evidence summary is compact copyable text without secrets', () => {
+  const summary = buildCampaignEvidenceSummary({
+    campaignId: 'cmp-1111-2222-3333',
+    campaignStatus: 'retry_required',
+    scheduleBaseTime: '2026-06-21T10:00:00.000Z',
+    staggerMinutes: 15,
+    childJobs: [
+      {
+        id: 'child-a-posted-11', accountId: 'account-a', username: 'alpha',
+        scheduledAt: '2026-06-21T10:00:00.000Z', status: 'posted',
+        campaignJobStatus: 'posted', publishId: 'publish-abc-123',
+        access_token: 'raw-token-must-not-leak'
+      },
+      {
+        id: 'child-b-retry-22', accountId: 'account-b', username: 'beta',
+        scheduledAt: '2026-06-21T10:15:00.000Z', status: 'failed',
+        campaignJobStatus: 'retry_required', errorMessage: 'Rate limit exceeded',
+        errorEvidence: { ok: false, retryable: true, reason: 'Rate limit exceeded', code: 'rate_limit_exceeded' }
+      },
+      {
+        id: 'child-c-failed-33', accountId: 'account-c', username: '',
+        scheduledAt: '2026-06-21T10:30:00.000Z', status: 'failed',
+        campaignJobStatus: 'failed', errorMessage: 'Token revoked',
+        errorEvidence: { ok: false, retryable: false, reason: 'Token revoked' }
+      }
+    ]
+  });
+
+  assert.match(summary, /CAMPAIGN EVIDENCE cmp-1111-2222-3333/);
+  assert.match(summary, /^status: retry_required$/m);
+  assert.match(summary, /child jobs: 3/);
+  assert.match(summary, /@alpha \(account-a\)/);
+  assert.match(summary, /job id: child-a-posted-11/);
+  assert.match(summary, /^    status: posted$/m);
+  assert.match(summary, /publish id: publish-abc-123/);
+  assert.match(summary, /@beta \(account-b\)/);
+  assert.match(summary, /^    status: retry_required$/m);
+  assert.match(summary, /error: Rate limit exceeded \(safe to requeue\)/);
+  assert.match(summary, /error code: rate_limit_exceeded/);
+  assert.match(summary, /^    status: failed$/m);
+  assert.match(summary, /error: Token revoked$/m, 'terminal failures must not be marked safe to requeue');
+  assert.match(summary, /contains no tokens or raw payloads/);
+  assert.doesNotMatch(summary, /raw-token-must-not-leak/);
+  assert.doesNotMatch(summary, /access_token/);
 });
 
 test('campaign storage uploads once and atomically creates one parent plus two child jobs', async (t) => {

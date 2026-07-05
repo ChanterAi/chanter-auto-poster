@@ -20,6 +20,7 @@ const {
   validateCampaignAccounts,
   campaignJobStatus,
   deriveCampaignStatus,
+  MAX_CAMPAIGN_ACCOUNTS,
   minuteKey
 } = require('./campaigns');
 
@@ -873,9 +874,30 @@ async function previewTikTokCampaign(userId, draft = {}, options = {}) {
     message: 'The campaign video is validated when the campaign is created. The preview checks accounts and scheduling only.'
   });
 
+  // Operator readiness checklist, derived from the issues above so the
+  // dashboard does not have to re-parse error codes client-side.
+  const blockedCodes = [...new Set(errors.map((issue) => issue.code))];
+  const requestedAccountIds = (Array.isArray(draft.jobs) ? draft.jobs : [])
+    .map((job) => String((job && job.accountId) || '').trim())
+    .filter(Boolean);
+  const readiness = {
+    selectedAccountCount: plan ? plan.jobs.length : requestedAccountIds.length,
+    maxAccounts: MAX_CAMPAIGN_ACCOUNTS,
+    accountSelectionMissing: blockedCodes.includes('CAMPAIGN_ACCOUNT_REQUIRED'),
+    duplicateAccountSelection: blockedCodes.includes('CAMPAIGN_ACCOUNT_DUPLICATE'),
+    accountIssues: childJobs
+      .filter((job) => job.issues.some((issue) => issue.code.startsWith('CAMPAIGN_ACCOUNT_TOKEN')))
+      .map((job) => job.accountId),
+    scheduleCollisions: childJobs
+      .filter((job) => job.scheduleCollision)
+      .map((job) => job.accountId),
+    blockedCodes
+  };
+
   return {
     mode: 'preview',
     safeToEnqueue: errors.length === 0,
+    readiness,
     campaign: plan ? {
       platform: 'tiktok',
       baseScheduledAt: plan.baseScheduledAt,
