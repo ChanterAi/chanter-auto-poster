@@ -10,6 +10,9 @@ const autoCaption = require('./autoCaption');
 const autoMusic = require('./autoMusic');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
+const { parseDateTimeLocal } = require('./timeUtil');
+const { computeMaxSchedulePlan, DEFAULT_OFFSET_MINUTES } = require('./maxScheduler');
+const { summarizeCampaigns, latestCampaignChannelCount } = require('./campaignAccounting');
 const {
   clearAdminSessionCookie,
   requireAdminApi,
@@ -83,11 +86,44 @@ function asyncRoute(handler) {
   };
 }
 
+function countsFromPosts(posts) {
+  return posts.reduce(
+    (counts, post) => {
+      counts.total += 1;
+      counts[post.status] = (counts[post.status] || 0) + 1;
+      return counts;
+    },
+    { total: 0, pending: 0, scheduled: 0, processing: 0, ready: 0, posted: 0, failed: 0 }
+  );
+}
+
+// Release Queue view mode: "active" (today's behavior, scoped to the
+// currently selected TikTok channel) or "all" (every channel, grouped by
+// campaign). getPosts(userId) with no accountId already reads every post
+// for this user in one Firestore query — getPosts(userId, accountId) just
+// filters the same result client-side — so resolving both modes from one
+// fetch costs nothing extra over the old single-channel-only fetch.
+function resolveQueueView(req, allPosts) {
+  const requested = String(req.query.queueView || '').trim().toLowerCase();
+  if (requested === 'all' || requested === 'active') return requested;
+  return latestCampaignChannelCount(allPosts) > 1 ? 'all' : 'active';
+}
+
 const renderAutoPoster = asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const { accounts, activeAccount } = await resolveTikTokAccountContext(req, res);
   const activeAccountId = activeAccount ? activeAccount.accountId : '';
-  const posts = activeAccountId ? await storage.getPosts(userId, activeAccountId) : [];
+  // Two calls, not one filtered locally: storage.getPosts(userId, accountId)
+  // is the long-standing, widely-mocked single-channel contract, so the
+  // "active" view keeps using it completely unchanged. The unscoped call is
+  // only for "All Channels" and for picking the default view — a narrower
+  // test double that only understands the single-channel form (i.e. one
+  // that doesn't handle "no accountId means every channel") just yields no
+  // multi-channel signal, which safely resolves to the same "active" default.
+  const activeAccountPosts = activeAccountId ? await storage.getPosts(userId, activeAccountId) : [];
+  const allPosts = await storage.getPosts(userId);
+  const queueView = resolveQueueView(req, allPosts);
+  const posts = queueView === 'all' ? allPosts : activeAccountPosts;
   const tiktokAuthStatus = await tiktok.getTikTokAuthStatus(activeAccountId, userId);
   const instagramStatus = config.ENABLE_INSTAGRAM
     ? await instagram.getInstagramAuthStatus()
@@ -100,9 +136,13 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
   res.render('index', {
     appName: config.appName,
     posts,
+    queueView,
+    campaignSummaries: queueView === 'all' ? summarizeCampaigns(posts) : [],
     todayPost: getTodayPost(posts),
     settings: await storage.getSettings(),
-    counts: activeAccountId ? await storage.getCounts(userId, activeAccountId) : emptyPostCounts(),
+    counts: queueView === 'all'
+      ? countsFromPosts(allPosts)
+      : (activeAccountId ? await storage.getCounts(userId, activeAccountId) : emptyPostCounts()),
     notice: req.query.notice || '',
     tiktokConfigured: tiktokAuthStatus.connected,
     tiktokAuthStatus,
@@ -111,6 +151,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     enableInstagram: config.ENABLE_INSTAGRAM,
     autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
     autoMusicConfigured: autoMusic.isAutoMusicConfigured(),
+    defaultOffsetMinutes: DEFAULT_OFFSET_MINUTES,
     instagramStatus,
     instagramHealth,
     creatorInfo,
@@ -547,6 +588,34 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
     targetAccounts = resolved;
   }
 
+  // Max Scheduler: an explicit campaign start date/time turns on
+  // start-time + per-channel-offset scheduling instead of the legacy
+  // "tomorrow at the daily release window, per channel" auto-schedule.
+  // Preflight (no channels / disconnected channels) is validated before any
+  // job is created, so a bad plan never leaves partial jobs behind.
+  const startDate = String(req.body.startDate || '').trim();
+  const startTime = String(req.body.startTime || '').trim();
+  const useMaxScheduler = Boolean(startDate && startTime);
+  let maxSchedulePlan = null;
+  if (useMaxScheduler) {
+    maxSchedulePlan = computeMaxSchedulePlan({
+      startDate,
+      startTime,
+      timezoneOffsetMinutes: req.body.timezoneOffsetMinutes,
+      offsetMinutes: req.body.offsetMinutes,
+      channels: targetAccounts.map((target) => ({
+        accountId: target.accountId,
+        tiktokOpenId: target.open_id,
+        username: target.username,
+        connected: target.connected
+      }))
+    });
+    if (!maxSchedulePlan.ok) {
+      redirectWithNotice(res, maxSchedulePlan.reason);
+      return;
+    }
+  }
+
   const preparedMedia = resolvePreparedMedia(req.body.autoMusicToken, userId, files);
   const created = await storage.addUploadedPosts(userId, files, {
     caption: req.body.caption,
@@ -564,14 +633,18 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
     preparedMedia
   });
 
-  // Auto-schedule each channel's queue independently so one channel's
-  // release cadence never shifts another channel's.
   let scheduledCount = 0;
-  for (const target of targetAccounts) {
-    const channelPostIds = created
-      .filter((post) => post.accountId === target.accountId)
-      .map((post) => post.id);
-    scheduledCount += await storage.autoSchedulePosts(userId, channelPostIds, target.accountId);
+  if (useMaxScheduler) {
+    scheduledCount = await storage.applyExplicitSchedule(userId, created, maxSchedulePlan);
+  } else {
+    // Auto-schedule each channel's queue independently so one channel's
+    // release cadence never shifts another channel's.
+    for (const target of targetAccounts) {
+      const channelPostIds = created
+        .filter((post) => post.accountId === target.accountId)
+        .map((post) => post.id);
+      scheduledCount += await storage.autoSchedulePosts(userId, channelPostIds, target.accountId);
+    }
   }
 
   const usedFallback = created.some((post) => post.storageFallback);
@@ -582,7 +655,10 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
   const channelNotice = targetAccounts.length > 1
     ? ` across ${targetAccounts.length} channels`
     : ` for ${accountLabel(targetAccounts[0])}`;
-  redirectWithNotice(res, `Created ${created.length} release ${created.length === 1 ? 'job' : 'jobs'}${channelNotice}. Scheduled ${scheduledCount}.${sourceNotice}${musicNotice}`);
+  const scheduleNotice = useMaxScheduler
+    ? ` First release ${maxSchedulePlan.baseAt} (UTC), offset ${maxSchedulePlan.offsetMinutes}m between channels.`
+    : '';
+  redirectWithNotice(res, `Created ${created.length} release ${created.length === 1 ? 'job' : 'jobs'}${channelNotice}. Scheduled ${scheduledCount}.${scheduleNotice}${sourceNotice}${musicNotice}`);
 }));
 
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
@@ -886,19 +962,6 @@ function isPublicHttpsUrl(value) {
   } catch (error) {
     return false;
   }
-}
-
-function parseDateTimeLocal(value, timezoneOffsetMinutes) {
-  if (!value) return null;
-  const fallback = () => { const d = new Date(value); return isNaN(d.getTime()) ? null : d.toISOString(); };
-  if (timezoneOffsetMinutes === undefined || timezoneOffsetMinutes === null || timezoneOffsetMinutes === '') return fallback();
-  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
-  if (!match) return fallback();
-  const [, year, month, day, hour, minute] = match;
-  const offset = Number(timezoneOffsetMinutes);
-  if (!Number.isFinite(offset)) return fallback();
-  const utc = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute)) + offset * 60000;
-  return Number.isFinite(utc) ? new Date(utc).toISOString() : null;
 }
 
 function getTodayPost(posts) {

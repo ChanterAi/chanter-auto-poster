@@ -292,6 +292,21 @@
       .channel-option.is-disconnected .channel-option-copy small { color: var(--warn); }
       .channel-plan { min-height: 16px; color: var(--text3); font-size: 11px; font-weight: 500; line-height: 1.45; }
       .channel-plan[data-tone="ready"] { color: var(--text2); }
+
+      /* ─── Max Scheduler: Release Plan ─── */
+      .schedule-plan { display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.02); padding: 16px; }
+      .schedule-plan-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+      .schedule-plan-inputs label { display: grid; gap: 5px; font-size: 11px; color: var(--text2); font-weight: 600; }
+      .schedule-plan-inputs small { color: var(--text3); font-weight: 500; }
+      .schedule-plan-list { display: grid; gap: 6px; margin-top: 4px; list-style: none; }
+      .schedule-plan-list li {
+        display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+        border: 1px solid var(--border); border-radius: var(--r-sm); background: rgba(0,0,0,.18);
+        font-size: 12px; color: var(--text2);
+      }
+      .schedule-plan-list li.schedule-plan-summary { border-style: dashed; color: var(--text3); }
+      .schedule-plan-list li[data-state="blocked"] { border-color: rgba(192,133,133,.3); color: var(--danger); }
+      .schedule-plan-list li strong { color: var(--text); font-size: 12px; min-width: 110px; }
       .upload-zone .field-heading { display: block; margin-bottom: 3px; color: var(--text2); font-size: 11px; }
       .upload-zone .field-note { margin-bottom: 12px; }
       .url-field { margin-top: 2px; }
@@ -381,6 +396,27 @@
       .count { font-size: 12px; font-weight: 700; color: var(--text3); }
       .count-prominent { border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,.035); padding: 6px 11px; color: var(--text2); }
       .queue-list { display: grid; gap: 18px; }
+
+      /* ─── Release Queue view mode ─── */
+      .queue-view-toggle { display: flex; gap: 8px; margin-bottom: 10px; }
+      .queue-view-toggle .btn { height: 32px; padding: 0 13px; font-size: 11px; }
+      .queue-view-note {
+        margin-bottom: 16px; padding: 10px 14px; border-radius: var(--r-sm);
+        border: 1px solid var(--border); background: rgba(255,255,255,.02);
+        color: var(--text3); font-size: 12px;
+      }
+      .campaign-summary-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+      .campaign-summary-card {
+        display: grid; gap: 6px; border: 1px solid var(--border); border-radius: var(--r-sm);
+        background: rgba(255,255,255,.02); padding: 12px 14px;
+      }
+      .campaign-summary-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+      .campaign-summary-card header strong { font-size: 12px; color: var(--text); }
+      .campaign-summary-card header span { font-size: 10px; color: var(--text3); font-weight: 600; }
+      .campaign-summary-card[data-state="attention"] { border-color: rgba(192,133,133,.3); }
+      .campaign-summary-range { font-size: 11px; color: var(--text2); }
+      .campaign-summary-jobs { list-style: none; display: grid; gap: 3px; }
+      .campaign-summary-jobs li { font-size: 11px; color: var(--text3); }
 
       /* ─── Queue Card ─── */
       .queue-card {
@@ -752,6 +788,30 @@
                   </div>
                   <p class="channel-plan" data-channel-plan aria-live="polite"></p>
                 </div>
+
+                <div class="wide schedule-plan" data-schedule-plan>
+                  <div class="channel-picker-head">
+                    <span class="field-heading">Release Plan</span>
+                  </div>
+                  <span class="field-note">Optional. Set an exact campaign start date and time — the first selected channel publishes then, and each following channel publishes one offset later, in the order selected above. Leave blank to use the daily Release Window instead.</span>
+                  <div class="schedule-plan-inputs">
+                    <label>
+                      Start date
+                      <input type="date" name="startDate" data-schedule-start-date />
+                    </label>
+                    <label>
+                      Start time
+                      <input type="time" name="startTime" data-schedule-start-time />
+                      <small>Local browser time (<span data-schedule-tz>—</span>). Stored as UTC.</small>
+                    </label>
+                    <label>
+                      Offset between channels (minutes)
+                      <input type="number" name="offsetMinutes" min="0" step="1" value="<%= defaultOffsetMinutes %>" data-schedule-offset />
+                    </label>
+                  </div>
+                  <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
+                  <ul class="schedule-plan-list" data-schedule-plan-list aria-live="polite"></ul>
+                </div>
               <% } %>
               <div class="wide auto-caption-card">
                 <label class="auto-caption-row">
@@ -878,6 +938,39 @@
           </div>
           <span class="count count-prominent"><%= activePosts.length %> active</span>
         </div>
+
+        <% if (tiktokAccounts.length > 0) { %>
+          <div class="queue-view-toggle" role="group" aria-label="Release queue view">
+            <a class="btn <%= queueView === 'all' ? 'btn-primary' : 'btn-secondary' %>" href="?queueView=all">All Channels</a>
+            <a class="btn <%= queueView === 'active' ? 'btn-primary' : 'btn-secondary' %>" href="?queueView=active">Active Channel</a>
+          </div>
+          <% if (queueView === 'active') { %>
+            <p class="queue-view-note">Showing jobs for active channel only. Switch to All Channels to view all campaign jobs.</p>
+          <% } %>
+        <% } %>
+
+        <% if (queueView === 'all' && campaignSummaries.length > 0) { %>
+          <div class="campaign-summary-strip" aria-label="Parent campaign summary">
+            <% campaignSummaries.forEach(function(campaign) { %>
+              <article class="campaign-summary-card" data-state="<%= campaign.aggregateState %>">
+                <header>
+                  <strong>Campaign <%= campaign.campaignId.slice(0, 8) %></strong>
+                  <span><%= campaign.channelCount %> <%= campaign.channelCount === 1 ? 'channel' : 'channels' %> &middot; <%= campaign.jobCount %> <%= campaign.jobCount === 1 ? 'job' : 'jobs' %></span>
+                </header>
+                <% if (campaign.scheduledRange.start) { %>
+                  <p class="campaign-summary-range">
+                    <%= helpers.formatDateTime(campaign.scheduledRange.start) %><% if (campaign.scheduledRange.end && campaign.scheduledRange.end !== campaign.scheduledRange.start) { %> &rarr; <%= helpers.formatDateTime(campaign.scheduledRange.end) %><% } %>
+                  </p>
+                <% } %>
+                <ul class="campaign-summary-jobs">
+                  <% campaign.jobs.forEach(function(job) { %>
+                    <li><%= job.username ? `@${job.username}` : 'Channel unassigned' %> &middot; <%= job.status %></li>
+                  <% }); %>
+                </ul>
+              </article>
+            <% }); %>
+          </div>
+        <% } %>
 
         <% if (activePosts.length === 0) { %>
           <div class="empty-state">
@@ -1651,6 +1744,90 @@
           input.addEventListener('change', runPreflight);
         });
         runPreflight();
+      })();
+
+      // Max Scheduler — Release Plan preview. Pure client-side math that
+      // mirrors src/maxScheduler.js's computeMaxSchedulePlan(): base time
+      // plus index * offset minutes, in the browser's own local time. No
+      // network round-trip; the server recomputes the identical plan
+      // authoritatively from the same submitted fields at /upload.
+      (() => {
+        const form = document.querySelector('[data-upload-form]');
+        const panel = form ? form.querySelector('[data-schedule-plan]') : null;
+        if (!form || !panel) return;
+        const dateInput = panel.querySelector('[data-schedule-start-date]');
+        const timeInput = panel.querySelector('[data-schedule-start-time]');
+        const offsetInput = panel.querySelector('[data-schedule-offset]');
+        const list = panel.querySelector('[data-schedule-plan-list]');
+        const tzLabel = panel.querySelector('[data-schedule-tz]');
+        const channelOptions = Array.from(form.querySelectorAll('[data-channel-option]'));
+
+        if (tzLabel) {
+          try { tzLabel.textContent = Intl.DateTimeFormat().resolvedOptions().timeZone; }
+          catch (error) { tzLabel.textContent = 'local time'; }
+        }
+
+        const addRow = (text, state) => {
+          const item = document.createElement('li');
+          if (state) item.dataset.state = state;
+          item.textContent = text;
+          list.appendChild(item);
+        };
+
+        const render = () => {
+          if (!list) return;
+          list.textContent = '';
+          const dateValue = dateInput ? dateInput.value : '';
+          const timeValue = timeInput ? timeInput.value : '';
+          const offsetMinutes = offsetInput ? Number(offsetInput.value) : NaN;
+          const selected = channelOptions.filter((option) => option.checked && !option.disabled);
+
+          if (!dateValue || !timeValue) {
+            addRow('Set a start date and time to preview the release plan, or leave blank to use the daily Release Window.');
+            return;
+          }
+          if (selected.length === 0) {
+            addRow('Select at least one publishing channel to preview the release plan.', 'blocked');
+            return;
+          }
+          if (!Number.isFinite(offsetMinutes) || offsetMinutes < 0) {
+            addRow('Offset must be zero or a positive number of minutes.', 'blocked');
+            return;
+          }
+
+          const base = new Date(`${dateValue}T${timeValue}`);
+          if (Number.isNaN(base.getTime())) {
+            addRow('The start date/time could not be parsed.', 'blocked');
+            return;
+          }
+
+          const jobs = selected.length;
+          addRow(`This campaign will create ${jobs} release ${jobs === 1 ? 'job' : 'jobs'} across ${jobs} selected ${jobs === 1 ? 'channel' : 'channels'}.`, '');
+          list.lastElementChild.classList.add('schedule-plan-summary');
+
+          selected.forEach((option, index) => {
+            const at = new Date(base.getTime() + index * offsetMinutes * 60000);
+            const connected = option.dataset.channelConnected === 'true';
+            const handle = option.dataset.channelHandle || option.value;
+            const offsetLabel = index === 0 ? 'Start time' : `+${index * offsetMinutes}m`;
+            const item = document.createElement('li');
+            item.dataset.state = connected ? 'ready' : 'blocked';
+            const label = document.createElement('strong');
+            label.textContent = handle;
+            const detail = document.createElement('span');
+            detail.textContent = `${at.toLocaleString()} · ${offsetLabel}${connected ? '' : ' · Reconnect Required'}`;
+            item.append(label, detail);
+            list.appendChild(item);
+          });
+        };
+
+        [dateInput, timeInput, offsetInput].forEach((input) => {
+          if (!input) return;
+          input.addEventListener('input', render);
+          input.addEventListener('change', render);
+        });
+        channelOptions.forEach((option) => option.addEventListener('change', render));
+        render();
       })();
     </script>
   </body>
