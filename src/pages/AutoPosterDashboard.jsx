@@ -4,6 +4,7 @@ import {
   assignDashboardJobs,
   groupDashboardJobs,
   normalizeDashboardAccounts,
+  summarizeDashboardCampaigns,
   UNASSIGNED_ACCOUNT_ID
 } from './dashboard-accounting.mjs';
 
@@ -77,9 +78,11 @@ function normalizeJob(job) {
   ));
   const mediaType = asText(firstValue(job.mediaType, job.media?.type, job.mimeType)).toLowerCase();
   const lastResult = firstValue(job.lastResult, job.result, job.publishResult);
+  const errorEvidence = job.errorEvidence && typeof job.errorEvidence === 'object' ? job.errorEvidence : null;
   const lastError = asText(firstValue(
     job.lastError,
     job.error,
+    errorEvidence?.reason,
     lastResult?.reason,
     lastResult?.error,
     lastResult?.message
@@ -101,7 +104,12 @@ function normalizeJob(job) {
     scheduledAt,
     createdAt: firstValue(job.createdAt, job.created_time),
     postedAt: firstValue(job.postedAt, job.publishedAt, job.completedAt),
+    acceptedAt: firstValue(job.acceptedAt),
+    lastAttemptAt: firstValue(lastResult?.completedAt),
     status: normalizeStatus(job.status, scheduledAt),
+    campaignId: asText(firstValue(job.campaignId, job.campaign_id)),
+    campaignJobStatus: asText(firstValue(job.campaignJobStatus, job.campaign_job_status)).toLowerCase(),
+    errorEvidence,
     privacy: asText(firstValue(job.privacyLevel, job.privacy, job.privacy_level, 'Not set')),
     attempts: Number(firstValue(job.claimAttempts, job.attempts, job.retryCount, 0)) || 0,
     lastError,
@@ -252,10 +260,18 @@ function JobCard({ job, account }) {
         <JobAccountBadge account={account} />
         <div className="job-heading">
           <div>
-            <span className="account-kicker">Job {job.id.slice(0, 8)}</span>
+            <span className="account-kicker">
+              Job {job.id.slice(0, 8)}
+              {job.campaignId && <span className="campaign-chip">Campaign {job.campaignId.slice(0, 8)}</span>}
+            </span>
             <h2>{job.title}</h2>
           </div>
-          <span className={`status-badge status-${job.status}`}>{job.status}</span>
+          <div className="status-badges">
+            <span className={`status-badge status-${job.status}`}>{job.status}</span>
+            {job.campaignJobStatus === 'retry_required' && (
+              <span className="status-badge status-retry_required">retry required</span>
+            )}
+          </div>
         </div>
 
         {job.caption && <p className="caption">{job.caption}</p>}
@@ -266,13 +282,22 @@ function JobCard({ job, account }) {
           <DetailItem label="Privacy" value={job.privacy.replaceAll('_', ' ')} />
           <DetailItem label="Attempts" value={String(job.attempts)} />
           <DetailItem label="Created" value={formatDate(job.createdAt)} />
+          {job.acceptedAt && <DetailItem label="Accepted" value={formatDate(job.acceptedAt)} />}
           <DetailItem label="Posted" value={formatDate(job.postedAt)} />
+          {job.lastAttemptAt && <DetailItem label="Last attempt" value={formatDate(job.lastAttemptAt)} />}
         </div>
 
         {job.lastError && (
           <div className="error-box">
             <strong>Last error</strong>
             <span>{job.lastError}</span>
+            {job.errorEvidence && (
+              <span className="evidence-note">
+                {job.errorEvidence.retryable
+                  ? 'Retry-safe — the scheduler can retry this job.'
+                  : 'Terminal — needs manual attention.'}
+              </span>
+            )}
           </div>
         )}
 
@@ -371,6 +396,7 @@ export default function AutoPosterDashboard() {
     ? groupDashboardJobs(visibleJobs, accounts)
     : [];
   const hasUnassignedJobs = jobs.some((job) => job.accountId === UNASSIGNED_ACCOUNT_ID);
+  const campaigns = summarizeDashboardCampaigns(accountScopedJobs);
 
   return (
     <main className="control-room">
@@ -390,7 +416,7 @@ export default function AutoPosterDashboard() {
           <a className="back-link" href="/private/autoposter">&larr; Back to AutoPoster</a>
           <p className="eyebrow">Internal operations</p>
           <h1>AutoPoster Control Room</h1>
-          <p>Monitor TikTok schedules, posting progress, and failures from one read-only view.</p>
+          <p>Monitor campaigns, TikTok schedules, posting progress, and failure evidence from one read-only view.</p>
         </div>
         <div className="header-actions">
           <span className="timezone-label">Times shown in {Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
@@ -431,6 +457,35 @@ export default function AutoPosterDashboard() {
               <strong>{counts[status] || 0}</strong>
             </button>
           ))}
+        </section>
+      )}
+
+      {!loading && !error && campaigns.length > 0 && (
+        <section className="campaign-strip" aria-labelledby="campaigns-heading">
+          <div className="section-heading">
+            <div><p className="eyebrow">Campaigns</p><h2 id="campaigns-heading">Campaign overview</h2></div>
+            <span className="result-count">{campaigns.length} {campaigns.length === 1 ? 'campaign' : 'campaigns'}</span>
+          </div>
+          <div className="campaign-grid">
+            {campaigns.map((campaign) => (
+              <article
+                className={`campaign-card${campaign.hasFailures ? ' has-failures' : campaign.hasRetryRequired ? ' has-retries' : ''}`}
+                key={campaign.campaignId}
+              >
+                <header>
+                  <strong>Campaign {campaign.campaignId.slice(0, 8)}</strong>
+                  <span>{campaign.jobCount} {campaign.jobCount === 1 ? 'job' : 'jobs'}</span>
+                </header>
+                <div className="campaign-status-counts">
+                  {Object.entries(campaign.statusCounts).map(([status, count]) => (
+                    <span className={`status-badge status-${status}`} key={status}>
+                      {status.replaceAll('_', ' ')} {count}
+                    </span>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
         </section>
       )}
 
@@ -480,10 +535,18 @@ export default function AutoPosterDashboard() {
         {loading && !error && <div className="state-card">Loading Firestore jobs...</div>}
 
         {!loading && !error && visibleJobs.length === 0 && (
-          <div className="state-card">
-            <strong>No jobs match these filters.</strong>
-            <span>Change the status or account filter to review other posts.</span>
-          </div>
+          jobs.length === 0 ? (
+            <div className="state-card">
+              <strong>No scheduled posts yet.</strong>
+              <span>Create and schedule posts from the AutoPoster page — they appear here with live status.</span>
+              <a className="empty-action" href="/private/autoposter">Go to AutoPoster</a>
+            </div>
+          ) : (
+            <div className="state-card">
+              <strong>No jobs match these filters.</strong>
+              <span>Change the status or account filter to review other posts.</span>
+            </div>
+          )
         )}
 
         {!loading && !error && visibleJobs.length > 0 && (
