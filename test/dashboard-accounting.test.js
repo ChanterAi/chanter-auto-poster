@@ -80,3 +80,38 @@ test('groups account jobs in account order and puts unassigned jobs last', async
   assert.deepEqual(groups.map((group) => group.jobs.length), [2, 1, 1]);
   assert.deepEqual(groups[0].jobs.map((job) => job.id), ['a-1', 'a-2']);
 });
+
+test('summarizes campaigns from job campaign fields without inventing data', async () => {
+  const { summarizeDashboardCampaigns } = await accountingPromise;
+  const campaigns = summarizeDashboardCampaigns([
+    { id: 'a-1', campaignId: 'cmp-1111-2222', campaignJobStatus: 'posted', status: 'posted' },
+    { id: 'a-2', campaignId: 'cmp-1111-2222', campaignJobStatus: 'retry_required', status: 'failed' },
+    { id: 'b-1', campaignId: 'cmp-9999-8888', campaignJobStatus: 'failed', status: 'failed' },
+    { id: 'fallback', campaignId: 'cmp-9999-8888', campaignJobStatus: '', status: 'scheduled' },
+    { id: 'standalone', campaignId: '', status: 'scheduled' },
+    { id: 'no-campaign-field', status: 'posted' }
+  ]);
+
+  assert.deepEqual(campaigns, [
+    {
+      campaignId: 'cmp-1111-2222',
+      jobCount: 2,
+      statusCounts: { posted: 1, retry_required: 1 },
+      hasFailures: false,
+      hasRetryRequired: true
+    },
+    {
+      campaignId: 'cmp-9999-8888',
+      jobCount: 2,
+      statusCounts: { failed: 1, scheduled: 1 },
+      hasFailures: true,
+      hasRetryRequired: false
+    }
+  ]);
+});
+
+test('summarizes zero campaigns for standalone jobs and bad input', async () => {
+  const { summarizeDashboardCampaigns } = await accountingPromise;
+  assert.deepEqual(summarizeDashboardCampaigns([{ id: 'solo', status: 'posted' }]), []);
+  assert.deepEqual(summarizeDashboardCampaigns(null), []);
+});

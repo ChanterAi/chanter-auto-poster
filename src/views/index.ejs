@@ -601,7 +601,7 @@
         max-width: 760px;
         color: var(--text);
         font-size: clamp(42px, 5vw, 72px);
-        line-height: .94;
+        line-height: 1.05;
         letter-spacing: -.06em;
         font-weight: 900;
       }
@@ -792,7 +792,7 @@
       .client-hero h1 {
         max-width: 820px;
         font-size: clamp(44px, 4.2vw, 64px);
-        line-height: .96;
+        line-height: 1.05;
       }
       .client-hero p {
         max-width: 720px;
@@ -1644,7 +1644,7 @@
                   </form>
                 </div>
                 <% if (result.hasDebug) { %>
-                  <details class="advanced"><summary>Debug</summary><div class="advanced-body"><pre><%= result.debugJson %></pre></div></details>
+                  <details class="advanced"><summary>Audit details</summary><div class="advanced-body"><pre><%= result.debugJson %></pre></div></details>
                 <% } %>
               </div>
             </article>
