@@ -108,6 +108,7 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
 .header-actions button:disabled { cursor: wait; opacity: .65; }
 
 .accounts-section,
+.campaign-strip,
 .jobs-section {
   border: 1px solid #e4e7ec;
   border-radius: 16px;
@@ -115,7 +116,8 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   box-shadow: 0 1px 2px rgba(16, 24, 40, .025), 0 10px 34px rgba(16, 24, 40, .035);
 }
 
-.accounts-section { margin-bottom: 18px; padding: 22px; }
+.accounts-section,
+.campaign-strip { margin-bottom: 18px; padding: 22px; }
 .jobs-section { padding: 26px; }
 .section-heading { align-items: center; margin-bottom: 18px; }
 .section-heading h2 { margin: 4px 0 0; font-size: 20px; letter-spacing: -.015em; }
@@ -348,10 +350,52 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
 .status-posted { border-color: #abefc6; background: #ecfdf3; color: #067647; }
 .status-failed { border-color: #fecdca; background: #fef3f2; color: #b42318; }
 .status-cancelled { border-color: #d0d5dd; background: #f2f4f7; color: #344054; }
+.status-queued { border-color: #b2ddff; background: #eff8ff; color: #175cd3; }
+.status-posting { border-color: #fedf89; background: #fffaeb; color: #b54708; }
+.status-retry_required { border-color: #fedf89; background: #fffaeb; color: #b54708; }
+
+.status-badges { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.campaign-chip {
+  display: inline-block;
+  margin-left: 8px;
+  border: 1px solid #d0d5dd;
+  border-radius: 999px;
+  background: #f9fafb;
+  color: #475467;
+  padding: 2px 7px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.campaign-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+.campaign-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #fff, #fbfcfe);
+  padding: 14px 16px;
+}
+.campaign-card header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.campaign-card strong { color: #101828; font-size: 13px; }
+.campaign-card header span {
+  border-radius: 999px;
+  background: #f2f4f7;
+  color: #344054;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 800;
+}
+.campaign-card.has-failures { border-color: #fecdca; }
+.campaign-card.has-retries { border-color: #fedf89; }
+.campaign-status-counts { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .caption { margin: 13px 0 0; color: #475467; font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
 .hashtags { margin: 8px 0 0; color: #175cd3; font-size: 12px; line-height: 1.5; }
-.job-metadata { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)); gap: 14px; margin-top: 18px; border-top: 1px solid #f0f1f3; padding-top: 16px; }
+.job-metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 14px; margin-top: 18px; border-top: 1px solid #f0f1f3; padding-top: 16px; }
 .detail-item { min-width: 0; }
 .detail-item span { display: block; margin-bottom: 4px; color: #98a2b3; font-size: 10px; font-weight: 700; text-transform: uppercase; }
 .detail-item strong { display: block; overflow-wrap: anywhere; color: #344054; font-size: 12px; font-weight: 650; }
@@ -367,6 +411,21 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   font-size: 12px;
 }
 .error-box span { overflow-wrap: anywhere; }
+.error-box .evidence-note { margin-top: 2px; font-size: 11px; font-weight: 750; }
+
+.empty-action {
+  display: inline-block;
+  margin-top: 4px;
+  border: 1px solid #d0d5dd;
+  border-radius: 9px;
+  background: #fff;
+  color: #344054;
+  padding: 9px 13px;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.empty-action:hover { border-color: #98a2b3; background: #f9fafb; }
 
 .job-footer { align-items: start; margin-top: 18px; border-top: 1px solid #eaecf0; padding-top: 15px; }
 .job-details { min-width: 0; flex: 1; }

@@ -131,6 +131,31 @@ export function assignDashboardJobs(jobs, accounts) {
   });
 }
 
+export function summarizeDashboardCampaigns(jobs) {
+  const campaigns = new Map();
+
+  (Array.isArray(jobs) ? jobs : []).forEach((job) => {
+    const campaignId = text(job?.campaignId);
+    if (!campaignId) return;
+
+    const campaign = campaigns.get(campaignId) || {
+      campaignId,
+      jobCount: 0,
+      statusCounts: {},
+      hasFailures: false,
+      hasRetryRequired: false
+    };
+    const status = text(job?.campaignJobStatus || job?.status).toLowerCase() || 'unknown';
+    campaign.jobCount += 1;
+    campaign.statusCounts[status] = (campaign.statusCounts[status] || 0) + 1;
+    if (status === 'failed') campaign.hasFailures = true;
+    if (status === 'retry_required') campaign.hasRetryRequired = true;
+    campaigns.set(campaignId, campaign);
+  });
+
+  return [...campaigns.values()];
+}
+
 export function groupDashboardJobs(jobs, accounts) {
   const normalizedAccounts = normalizeDashboardAccounts(accounts);
   const accountMap = new Map(normalizedAccounts.map((account) => [account.id, account]));
