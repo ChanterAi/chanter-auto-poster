@@ -43,6 +43,9 @@ function postFromDoc(doc) {
     tiktokOpenId,
     username: data.username || data.tiktokUsername || '',
     accountAssignment: accountId ? 'assigned' : 'legacy',
+    // Parent campaign link for multi-channel scheduling. Older documents
+    // have no campaignId; '' keeps them rendering as standalone jobs.
+    campaignId: data.campaignId || '',
     originalName: data.originalName || '',
     fileName: data.fileName || '',
     mimeType: data.mimeType || '',

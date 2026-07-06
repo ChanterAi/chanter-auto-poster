@@ -189,6 +189,16 @@
       .preflight-list li[data-state="pass"] .preflight-state { color: var(--ok); }
       .preflight-list li[data-state="blocked"]::before { background: var(--danger); }
       .preflight-list li[data-state="blocked"] .preflight-state { color: var(--danger); }
+      .preflight-channels { display: grid; gap: 6px; margin-top: 10px; list-style: none; }
+      .preflight-channels li {
+        display: flex; align-items: center; gap: 10px; padding: 8px 13px;
+        border: 1px solid var(--border); border-radius: var(--r-sm); background: rgba(0,0,0,.12);
+        color: var(--text2); font-size: 12px; font-weight: 600;
+      }
+      .preflight-channels li .preflight-state { margin-left: auto; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--text3); white-space: nowrap; }
+      .preflight-channels li[data-state="ready"] .preflight-state { color: var(--ok); }
+      .preflight-channels li[data-state="blocked"] .preflight-state { color: var(--danger); }
+      .preflight-channels li[data-state="idle"] { opacity: .55; }
       .preflight-verdict {
         display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
         margin-top: 16px; padding: 13px 16px;
@@ -255,6 +265,33 @@
       .actions { display: flex; gap: 9px; margin-top: 16px; flex-wrap: wrap; }
       .actions .btn { height: 38px; padding: 0 16px; }
       .upload-zone { display: block; border: 1px solid rgba(255,255,255,.09); border-radius: 14px; background: rgba(255,255,255,.02); padding: 16px; }
+
+      /* ─── Target Publishing Channels ─── */
+      .channel-picker { display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.02); padding: 16px; }
+      .channel-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .channel-picker-head .field-heading { color: var(--text2); font-size: 11px; }
+      .channel-select-all {
+        border: 1px solid var(--border); border-radius: 8px; background: transparent;
+        color: var(--text3); padding: 5px 9px; font: 700 10px inherit; letter-spacing: .04em;
+        text-transform: uppercase; cursor: pointer; transition: border-color .16s, color .16s;
+      }
+      .channel-select-all:hover { border-color: var(--border2); color: var(--text); }
+      .channel-options { display: grid; gap: 8px; }
+      .channel-option {
+        display: flex; align-items: center; gap: 11px; padding: 10px 13px;
+        border: 1px solid var(--border); border-radius: var(--r-sm); background: rgba(0,0,0,.18);
+        cursor: pointer; text-transform: none; letter-spacing: 0; transition: border-color .16s;
+      }
+      .channel-option:hover { border-color: var(--border2); }
+      .channel-option input { width: 15px; height: 15px; }
+      .channel-option-copy { display: grid; gap: 2px; min-width: 0; }
+      .channel-option-copy strong { color: var(--text); font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .channel-option-copy small { color: var(--text3); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+      .channel-option.is-active-channel .channel-option-copy small { color: var(--ok); }
+      .channel-option.is-disconnected { opacity: .55; cursor: not-allowed; }
+      .channel-option.is-disconnected .channel-option-copy small { color: var(--warn); }
+      .channel-plan { min-height: 16px; color: var(--text3); font-size: 11px; font-weight: 500; line-height: 1.45; }
+      .channel-plan[data-tone="ready"] { color: var(--text2); }
       .upload-zone .field-heading { display: block; margin-bottom: 3px; color: var(--text2); font-size: 11px; }
       .upload-zone .field-note { margin-bottom: 12px; }
       .url-field { margin-top: 2px; }
@@ -682,6 +719,40 @@
                 <span class="field-note">Choose images or MP4, MOV, and WebM videos. Multiple files are supported.</span>
                 <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple data-media-upload />
               </label>
+              <% if (tiktokAccounts.length > 0) { %>
+                <div class="wide channel-picker" data-channel-picker>
+                  <div class="channel-picker-head">
+                    <span class="field-heading">Target Publishing Channels</span>
+                    <button type="button" class="channel-select-all" data-select-all-channels>Select all connected</button>
+                  </div>
+                  <span class="field-note">The campaign creates one release job per selected channel. Disconnected channels cannot be scheduled.</span>
+                  <div class="channel-options">
+                    <% tiktokAccounts.forEach(function(channel) { %>
+                      <%
+                        const channelHandle = channel.username ? `@${channel.username}` : (channel.displayName || `TikTok ${String(channel.accountId || '').slice(0, 8)}`);
+                        const isActiveChannel = activeTikTokAccount && activeTikTokAccount.accountId === channel.accountId;
+                      %>
+                      <label class="channel-option <%= channel.connected ? '' : 'is-disconnected' %> <%= isActiveChannel && channel.connected ? 'is-active-channel' : '' %>">
+                        <input
+                          type="checkbox"
+                          name="targetChannels"
+                          value="<%= channel.accountId %>"
+                          data-channel-option
+                          data-channel-handle="<%= channelHandle %>"
+                          data-channel-connected="<%= channel.connected ? 'true' : 'false' %>"
+                          <%= channel.connected ? '' : 'disabled' %>
+                          <%= isActiveChannel && channel.connected ? 'checked' : '' %>
+                        />
+                        <span class="channel-option-copy">
+                          <strong><%= channelHandle %></strong>
+                          <small><%= channel.connected ? (isActiveChannel ? 'Active channel' : 'Connected') : 'Reconnect Required' %></small>
+                        </span>
+                      </label>
+                    <% }); %>
+                  </div>
+                  <p class="channel-plan" data-channel-plan aria-live="polite"></p>
+                </div>
+              <% } %>
               <div class="wide auto-caption-card">
                 <label class="auto-caption-row">
                   <span class="auto-caption-copy">
@@ -784,12 +855,13 @@
           <span class="panel-step">03</span>
         </div>
         <ul class="preflight-list">
-          <li data-check="channel">Publishing Channel connected<span class="preflight-state" data-state-label>Checking</span></li>
-          <li data-check="auth">Channel authorization active<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="channel">Target Publishing Channels selected<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="auth">Selected channels authorized<span class="preflight-state" data-state-label>Checking</span></li>
           <li data-check="asset">Creative Asset attached<span class="preflight-state" data-state-label>Checking</span></li>
           <li data-check="caption">Editorial Caption present<span class="preflight-state" data-state-label>Checking</span></li>
           <li data-check="window">Release Window configured<span class="preflight-state" data-state-label>Checking</span></li>
         </ul>
+        <ul class="preflight-channels" data-preflight-channels aria-label="Per-channel preflight"></ul>
         <div class="preflight-verdict" data-preflight-verdict>
           <span data-preflight-message>Run preflight to confirm this campaign is ready.</span>
           <div class="actions"><button type="button" class="btn btn-secondary" data-run-preflight>Run Preflight</button></div>
@@ -852,7 +924,7 @@
                 <div class="queue-top">
                   <div class="queue-title">
                     <h3><%= post.originalName %></h3>
-                    <p class="queue-meta"><%= helpers.formatDateTime(post.scheduledAt) %></p>
+                    <p class="queue-meta"><%= helpers.formatDateTime(post.scheduledAt) %> &middot; <%= post.username ? `@${post.username}` : 'Channel unassigned' %><%= post.campaignId ? ` · Campaign ${post.campaignId.slice(0, 8)}` : '' %> &middot; Job <%= post.id.slice(0, 8) %></p>
                   </div>
                   <span class="badge <%= result.tone %>" data-result-badge><%= displayResultLabel(result) %></span>
                 </div>
@@ -1075,7 +1147,7 @@
                 <div class="queue-top">
                   <div class="queue-title">
                     <h3><%= post.originalName %></h3>
-                    <p class="queue-meta"><%= helpers.formatDateTime(post.postedAt || post.scheduledAt) %></p>
+                    <p class="queue-meta"><%= helpers.formatDateTime(post.postedAt || post.scheduledAt) %> &middot; <%= post.username ? `@${post.username}` : 'Channel unassigned' %><%= post.campaignId ? ` · Campaign ${post.campaignId.slice(0, 8)}` : '' %></p>
                   </div>
                   <span class="badge <%= result.tone %>"><%= displayResultLabel(result) %></span>
                 </div>
@@ -1135,17 +1207,25 @@
         let pendingAnalysis = null;
         let musicStatusTimer = null;
 
+        const channelBoxes = Array.from(form.querySelectorAll('[data-channel-option]'));
+        const channelValidityTarget = channelBoxes.find(box => !box.disabled) || null;
+
         const validate = () => {
           const files = Array.from(input.files || []);
           const publicUrl = publicUrlInput.value.trim();
           let msg = '';
           let urlMsg = '';
+          let channelMsg = '';
           if (files.length === 0 && !publicUrl) msg = 'Choose a media file or enter a Public Media URL.';
           else if (files.some(f => !getFileKind(f))) msg = 'Use image files or MP4, MOV, or WebM video files.';
           if (publicUrl && !publicUrl.toLowerCase().startsWith('https://')) urlMsg = 'Public Media URL must use HTTPS.';
+          if (channelBoxes.length > 0 && !channelBoxes.some(box => box.checked && !box.disabled)) {
+            channelMsg = 'Select at least one publishing channel.';
+          }
           input.setCustomValidity(msg);
           publicUrlInput.setCustomValidity(urlMsg);
-          return !msg && !urlMsg;
+          if (channelValidityTarget) channelValidityTarget.setCustomValidity(channelMsg);
+          return !msg && !urlMsg && !channelMsg;
         };
 
         const selectedVideos = () => Array.from(input.files || []).filter(file => getFileKind(file) === 'video');
@@ -1297,6 +1377,7 @@
           if (wantsAnalysis()) analyzeSelectedVideo();
         });
         publicUrlInput.addEventListener('input', validate);
+        channelBoxes.forEach(box => box.addEventListener('change', validate));
         if (captionInput) {
           captionInput.addEventListener('input', () => captionInput.setCustomValidity(''));
         }
@@ -1428,7 +1509,8 @@
       });
 
       // Preflight check — client-side readiness review of the intake form.
-      // Uses only server-rendered booleans; no tokens or secrets are exposed.
+      // Validates every selected target channel. Uses only server-rendered
+      // booleans and public channel handles; no tokens or secrets are exposed.
       (() => {
         const panel = document.querySelector('[data-preflight]');
         if (!panel) return;
@@ -1436,10 +1518,18 @@
         const mediaInput = uploadForm ? uploadForm.querySelector('[data-media-upload]') : null;
         const publicUrlInput = uploadForm ? uploadForm.querySelector('[data-public-media-url]') : null;
         const captionInput = uploadForm ? uploadForm.querySelector('[data-caption-input]') : null;
+        const channelOptions = uploadForm ? Array.from(uploadForm.querySelectorAll('[data-channel-option]')) : [];
+        const selectAllButton = uploadForm ? uploadForm.querySelector('[data-select-all-channels]') : null;
+        const planLine = uploadForm ? uploadForm.querySelector('[data-channel-plan]') : null;
+        const channelList = panel.querySelector('[data-preflight-channels]');
         const verdict = panel.querySelector('[data-preflight-verdict]');
         const message = panel.querySelector('[data-preflight-message]');
-        const channelConnected = panel.dataset.channelConnected === 'true';
+        // Fallback for pages rendered without a channel picker (no accounts).
+        const legacyChannelConnected = panel.dataset.channelConnected === 'true';
         const releaseWindow = String(panel.dataset.releaseWindow || '').trim();
+
+        const selectedChannels = () => channelOptions.filter((option) => option.checked && !option.disabled);
+        const isConnected = (option) => option.dataset.channelConnected === 'true';
 
         const setCheck = (name, pass, passLabel, blockedLabel) => {
           const item = panel.querySelector(`[data-check="${name}"]`);
@@ -1449,36 +1539,112 @@
           if (label) label.textContent = pass ? passLabel : blockedLabel;
         };
 
+        const sourceCount = () => {
+          const fileCount = mediaInput && mediaInput.files ? mediaInput.files.length : 0;
+          if (fileCount > 0) return fileCount;
+          return publicUrlInput && publicUrlInput.value.trim() ? 1 : 0;
+        };
+
+        const renderPlan = () => {
+          if (!planLine) return;
+          const channels = selectedChannels().length;
+          const sources = sourceCount();
+          planLine.dataset.tone = '';
+          if (channels === 0) {
+            planLine.textContent = 'Select at least one publishing channel to plan this campaign.';
+            return;
+          }
+          if (sources === 0) {
+            planLine.textContent = `${channels} ${channels === 1 ? 'channel' : 'channels'} selected — attach a creative asset to plan the release jobs.`;
+            return;
+          }
+          planLine.dataset.tone = 'ready';
+          const jobs = channels * sources;
+          planLine.textContent = `This campaign will create ${jobs} release ${jobs === 1 ? 'job' : 'jobs'} across ${channels} selected ${channels === 1 ? 'channel' : 'channels'}.`;
+        };
+
+        const renderChannelList = (campaignBlockedLabel) => {
+          if (!channelList) return;
+          channelList.textContent = '';
+          channelOptions.forEach((option) => {
+            const item = document.createElement('li');
+            const state = document.createElement('span');
+            state.className = 'preflight-state';
+            if (!isConnected(option)) {
+              item.dataset.state = 'blocked';
+              state.textContent = 'Reconnect Required';
+            } else if (!option.checked) {
+              item.dataset.state = 'idle';
+              state.textContent = 'Not selected';
+            } else if (campaignBlockedLabel) {
+              item.dataset.state = 'blocked';
+              state.textContent = campaignBlockedLabel;
+            } else {
+              item.dataset.state = 'ready';
+              state.textContent = 'Ready';
+            }
+            item.append(document.createTextNode(option.dataset.channelHandle || option.value), state);
+            channelList.appendChild(item);
+          });
+        };
+
         const runPreflight = () => {
-          const hasAsset = Boolean(
-            (mediaInput && mediaInput.files && mediaInput.files.length > 0) ||
-            (publicUrlInput && publicUrlInput.value.trim())
-          );
+          const hasPicker = channelOptions.length > 0;
+          const targets = selectedChannels();
+          const hasTargets = hasPicker ? targets.length > 0 : legacyChannelConnected;
+          const allAuthorized = hasPicker
+            ? hasTargets && targets.every(isConnected)
+            : legacyChannelConnected;
+          const hasAsset = sourceCount() > 0;
           const hasCaption = Boolean(captionInput && captionInput.value.trim());
           const hasWindow = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(releaseWindow);
 
-          setCheck('channel', channelConnected, 'Connected', 'Channel Required');
-          setCheck('auth', channelConnected, 'Authorized', 'Not Authorized');
+          setCheck('channel', hasTargets, hasPicker && targets.length > 0 ? `${targets.length} selected` : 'Selected', 'Channel Required');
+          setCheck('auth', allAuthorized, 'Authorized', hasTargets ? 'Reconnect Required' : 'Channel Required');
           setCheck('asset', hasAsset, 'Attached', 'Asset Required');
           setCheck('caption', hasCaption, 'Present', 'Caption Required');
           setCheck('window', hasWindow, 'Configured', 'Window Required');
 
-          const blockedReason = !channelConnected ? 'Channel Required — connect a publishing channel first.'
+          const blockedReason = !hasTargets ? 'Channel Required — select at least one publishing channel.'
+            : !allAuthorized ? 'Reconnect Required — a selected channel is no longer authorized.'
             : !hasAsset ? 'Asset Required — attach a creative asset or public media URL.'
             : !hasCaption ? 'Caption Required — write an editorial caption or enable Auto Caption.'
             : !hasWindow ? 'Release Window Required — set a daily release time.'
             : '';
+          const shortReason = !hasAsset ? 'Asset Required'
+            : !hasCaption ? 'Caption Required'
+            : !hasWindow ? 'Window Required'
+            : '';
+
+          renderChannelList(shortReason);
+          renderPlan();
 
           if (verdict) verdict.dataset.tone = blockedReason ? 'blocked' : 'ready';
           if (message) {
-            message.textContent = blockedReason
-              ? `Blocked — ${blockedReason}`
-              : 'Ready to publish — prepare the campaign to enter the release queue.';
+            if (blockedReason) {
+              message.textContent = `Blocked — ${blockedReason}`;
+            } else if (hasPicker) {
+              message.textContent = `Ready to publish — ${targets.length} ${targets.length === 1 ? 'channel' : 'channels'} will receive this campaign.`;
+            } else {
+              message.textContent = 'Ready to publish — prepare the campaign to enter the release queue.';
+            }
           }
         };
 
         const runButton = panel.querySelector('[data-run-preflight]');
         if (runButton) runButton.addEventListener('click', runPreflight);
+        if (selectAllButton) {
+          selectAllButton.addEventListener('click', () => {
+            channelOptions.forEach((option) => {
+              if (option.disabled) return;
+              option.checked = true;
+              // Notify the form-validation listeners registered elsewhere.
+              option.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            runPreflight();
+          });
+        }
+        channelOptions.forEach((option) => option.addEventListener('change', runPreflight));
         [mediaInput, publicUrlInput, captionInput].forEach((input) => {
           if (!input) return;
           input.addEventListener('input', runPreflight);
