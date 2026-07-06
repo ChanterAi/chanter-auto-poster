@@ -154,6 +154,15 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
     const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
   });
   t.after(() => new Promise((resolve) => server.close(resolve)));
+  // Defensive isolation: restore the env vars this file sets on top of
+  // whatever the runner provided, even though node --test already gives
+  // every test file its own process/module cache.
+  const envSnapshot = {
+    ADMIN_PASSWORD: process.env.ADMIN_PASSWORD,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    ENABLE_INSTAGRAM: process.env.ENABLE_INSTAGRAM
+  };
+  t.after(() => { Object.assign(process.env, envSnapshot); });
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
 
