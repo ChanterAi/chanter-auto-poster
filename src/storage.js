@@ -286,6 +286,12 @@ async function getMaxOrder(userId, accountId) {
   return posts.reduce((max, post) => Math.max(max, Number(post.order || 0)), 0);
 }
 
+function nextOrderFor(orderByAccount, accountId) {
+  const next = orderByAccount.get(accountId) || 1;
+  orderByAccount.set(accountId, next + 1);
+  return next;
+}
+
 function getUploadMediaType(file) {
   const mime = String(file.mimetype || '').toLowerCase();
   if (mime.startsWith('video/')) return 'video';
@@ -361,12 +367,37 @@ function getPublicMediaMimeType(mediaType, mediaUrl) {
   return mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
 }
 
+function normalizeTargetAccounts(defaults) {
+  // Multi-channel campaigns pass defaults.accounts (one entry per target
+  // Publishing Channel). The legacy single-account fields remain the
+  // fallback so every existing call site keeps working unchanged.
+  const rawAccounts = Array.isArray(defaults.accounts) && defaults.accounts.length > 0
+    ? defaults.accounts
+    : [{
+        accountId: defaults.accountId,
+        tiktokOpenId: defaults.tiktokOpenId,
+        username: defaults.username || defaults.displayName
+      }];
+
+  const seen = new Set();
+  const targets = [];
+  for (const raw of rawAccounts) {
+    const accountId = String((raw && (raw.accountId || raw.tiktokOpenId || raw.open_id)) || '').trim();
+    if (!accountId || accountId === 'legacy' || seen.has(accountId)) continue;
+    seen.add(accountId);
+    targets.push({
+      accountId,
+      tiktokOpenId: String((raw && (raw.tiktokOpenId || raw.open_id)) || accountId).trim(),
+      username: String((raw && (raw.username || raw.displayName)) || accountId).trim()
+    });
+  }
+  return targets;
+}
+
 async function addUploadedPosts(userId, files, defaults = {}) {
   const ownerId = userId || DEFAULT_USER_ID;
-  const accountId = String(defaults.accountId || defaults.tiktokOpenId || '').trim();
-  const tiktokOpenId = String(defaults.tiktokOpenId || accountId).trim();
-  const username = String(defaults.username || defaults.displayName || accountId).trim();
-  if (!accountId || accountId === 'legacy') {
+  const targetAccounts = normalizeTargetAccounts(defaults);
+  if (targetAccounts.length === 0) {
     const error = new Error('Select a connected TikTok account before creating scheduled posts');
     error.status = 400;
     throw error;
@@ -385,7 +416,15 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     throw error;
   }
 
-  let order = (await getMaxOrder(ownerId, accountId)) + 1;
+  // One parent campaign per prepare action; every child job carries this id
+  // so evidence and the dashboard can group per-channel releases together.
+  const campaignId = String(defaults.campaignId || '').trim() || randomUUID();
+
+  const orderByAccount = new Map();
+  for (const target of targetAccounts) {
+    orderByAccount.set(target.accountId, (await getMaxOrder(ownerId, target.accountId)) + 1);
+  }
+
   const now = Timestamp.now();
   const db = getFirestore();
   const batch = db.batch();
@@ -394,6 +433,10 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   let committed = false;
 
   try {
+    // One child job per (target channel x source). Each child job uploads
+    // its own Cloudinary copy so deleting one channel's job can never
+    // destroy media that another channel's job still references.
+    for (const target of targetAccounts) {
     for (const file of sources) {
       const mediaType = file ? getUploadMediaType(file) : getPublicMediaType(fallbackUrl);
       const fileName = file ? getStoredFileName(file) : getPublicMediaName(fallbackUrl);
@@ -446,9 +489,10 @@ async function addUploadedPosts(userId, files, defaults = {}) {
       const data = {
         userId: ownerId,
         platform: 'tiktok',
-        accountId,
-        tiktokOpenId,
-        username,
+        accountId: target.accountId,
+        tiktokOpenId: target.tiktokOpenId,
+        username: target.username,
+        campaignId,
         originalName: file ? file.originalname : fileName,
         fileName,
         mimeType: autoMusicApplied ? 'video/mp4' : ((file && file.mimetype) || getPublicMediaMimeType(mediaType, publicMediaUrl)),
@@ -475,7 +519,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
           String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
         scheduledAt: null,
         status: 'pending',
-        order: order++,
+        order: nextOrderFor(orderByAccount, target.accountId),
         createdAt: now,
         updatedAt: now,
         postedAt: null,
@@ -495,6 +539,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
 
       batch.set(ref, data);
       created.push({ ref, data });
+    }
     }
 
     await batch.commit();

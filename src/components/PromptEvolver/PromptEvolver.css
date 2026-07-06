@@ -42,7 +42,7 @@
 .prompt-evolver-block > span,
 .prompt-evolver-variant-head span,
 .prompt-evolver-variants-head span {
-  color: var(--accent2, #25f4ee);
+  color: var(--text3, #71717a);
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -142,9 +142,9 @@
 
 .prompt-evolver-field textarea:focus,
 .prompt-evolver-field select:focus {
-  border-color: rgba(37, 244, 238, 0.55);
+  border-color: rgba(255, 255, 255, 0.42);
   background: rgba(3, 4, 8, 0.74);
-  box-shadow: 0 0 0 3px rgba(37, 244, 238, 0.09);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.07);
 }
 
 .prompt-evolver-field textarea::placeholder {
@@ -176,9 +176,9 @@
 }
 
 .prompt-evolver-button.primary {
-  background: #fe2c55;
-  color: #fff;
-  box-shadow: 0 8px 24px rgba(254, 44, 85, 0.18);
+  background: #f5f5f4;
+  color: #0a0a0b;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
 }
 
 .prompt-evolver-button.secondary {
@@ -232,9 +232,9 @@
 }
 
 .prompt-evolver-score.elite {
-  color: #25f4ee;
-  border-color: rgba(37, 244, 238, 0.25);
-  background: rgba(37, 244, 238, 0.07);
+  color: #f5f5f4;
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .prompt-evolver-score.strong {
@@ -312,10 +312,10 @@
 }
 
 .prompt-evolver-variant.active {
-  border-color: rgba(37, 244, 238, 0.34);
+  border-color: rgba(255, 255, 255, 0.28);
   background:
-    linear-gradient(145deg, rgba(20, 37, 42, 0.92), rgba(8, 10, 16, 0.94)),
-    #0b0d14;
+    linear-gradient(145deg, rgba(28, 28, 32, 0.92), rgba(10, 10, 13, 0.94)),
+    #0c0c0e;
 }
 
 .prompt-evolver-variant:hover {
@@ -329,7 +329,7 @@
 }
 
 .prompt-evolver-variant-head strong {
-  color: #25f4ee;
+  color: #f5f5f4;
   font: 700 18px "DM Mono", monospace;
 }
 
@@ -358,8 +358,8 @@
 }
 
 .prompt-evolver-variant.active button {
-  border-color: rgba(37, 244, 238, 0.28);
-  color: #25f4ee;
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #f5f5f4;
 }
 
 @media (max-width: 1080px) {

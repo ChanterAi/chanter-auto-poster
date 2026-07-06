@@ -20,6 +20,27 @@ const STATUS_ALIASES = {
   canceled: 'cancelled'
 };
 
+// Premium display names for internal status values. Internal values stay
+// unchanged so filters, CSS classes, and the API contract are untouched.
+const STATUS_LABELS = {
+  all: 'All',
+  pending: 'Prepared',
+  scheduled: 'Queued',
+  queued: 'Queued',
+  processing: 'Publishing',
+  posting: 'Publishing',
+  ready: 'Needs Review',
+  posted: 'Published',
+  failed: 'Needs Review',
+  cancelled: 'Cancelled',
+  retry_required: 'Retry Required'
+};
+
+function statusDisplay(status) {
+  const key = asText(status).toLowerCase();
+  return STATUS_LABELS[key] || key.replaceAll('_', ' ');
+}
+
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== '');
 }
@@ -153,7 +174,7 @@ function AccountCard({ account, jobCount, active }) {
             {account.connected ? 'Connected' : 'Unavailable'}
           </span>
         </div>
-        <span>{account.displayName || 'Display name unavailable'} / {jobCount} {jobCount === 1 ? 'job' : 'jobs'}</span>
+        <span>{account.displayName || 'Display name unavailable'} / {jobCount} {jobCount === 1 ? 'campaign' : 'campaigns'}</span>
       </div>
     </article>
   );
@@ -164,7 +185,7 @@ function JobAccountBadge({ account }) {
     <div className={`job-account-badge${account ? '' : ' unassigned'}`}>
       <AccountAvatar account={account} className="job-account-avatar" />
       <span>
-        <small>TikTok</small>
+        <small>Channel</small>
         <strong>{account ? accountLabel(account) : 'Legacy / Unassigned'}</strong>
       </span>
     </div>
@@ -177,10 +198,10 @@ function AccountGroupHeader({ account, jobCount }) {
       <header className="account-group-header legacy-group-header">
         <AccountAvatar account={null} />
         <div className="account-group-copy">
-          <h3>Legacy / Unassigned jobs</h3>
-          <p>These older jobs were created before account isolation and cannot be safely assigned.</p>
+          <h3>Legacy / Unassigned campaigns</h3>
+          <p>These older campaigns were created before channel isolation and cannot be safely assigned.</p>
         </div>
-        <span className="group-job-count">{jobCount} {jobCount === 1 ? 'job' : 'jobs'}</span>
+        <span className="group-job-count">{jobCount} {jobCount === 1 ? 'campaign' : 'campaigns'}</span>
       </header>
     );
   }
@@ -197,7 +218,7 @@ function AccountGroupHeader({ account, jobCount }) {
         </div>
         <p>{account.displayName || 'Display name unavailable'}</p>
       </div>
-      <span className="group-job-count">{jobCount} {jobCount === 1 ? 'job' : 'jobs'}</span>
+      <span className="group-job-count">{jobCount} {jobCount === 1 ? 'campaign' : 'campaigns'}</span>
     </header>
   );
 }
@@ -240,17 +261,46 @@ function DetailItem({ label, value }) {
   );
 }
 
+function CopyEvidenceButton({ payload }) {
+  const [copied, setCopied] = useState(false);
+
+  const copyEvidence = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Clipboard unavailable (permissions/insecure context); leave label unchanged.
+    }
+  };
+
+  return (
+    <button type="button" className="copy-evidence" onClick={copyEvidence}>
+      {copied ? 'Copied' : 'Copy Evidence'}
+    </button>
+  );
+}
+
 function JobCard({ job, account }) {
-  const debugPayload = {
+  // Campaign evidence payload — operational fields only, never tokens or auth data.
+  const evidencePayload = {
     jobId: job.id,
+    campaignId: job.campaignId || null,
     accountId: job.accountId,
+    channelHandle: job.username ? `@${job.username}` : null,
     status: job.status,
+    scheduledAt: job.scheduledAt || null,
+    publishedAt: job.postedAt || null,
+    errorReason: job.lastError || null,
     lockedAt: job.lockedAt || null,
     lockedBy: job.lockedBy || null,
     updatedAt: job.updatedAt || null,
     logs: job.logs,
     lastResult: job.lastResult
   };
+  const assetState = job.mediaUrl || job.thumbnailUrl
+    ? (job.isVideo ? 'Video attached' : 'Image attached')
+    : 'Asset required';
 
   return (
     <article className="job-card">
@@ -261,15 +311,15 @@ function JobCard({ job, account }) {
         <div className="job-heading">
           <div>
             <span className="account-kicker">
-              Job {job.id.slice(0, 8)}
-              {job.campaignId && <span className="campaign-chip">Campaign {job.campaignId.slice(0, 8)}</span>}
+              Campaign {job.id.slice(0, 8)}
+              {job.campaignId && <span className="campaign-chip">Batch {job.campaignId.slice(0, 8)}</span>}
             </span>
             <h2>{job.title}</h2>
           </div>
           <div className="status-badges">
-            <span className={`status-badge status-${job.status}`}>{job.status}</span>
+            <span className={`status-badge status-${job.status}`}>{statusDisplay(job.status)}</span>
             {job.campaignJobStatus === 'retry_required' && (
-              <span className="status-badge status-retry_required">retry required</span>
+              <span className="status-badge status-retry_required">Retry Required</span>
             )}
           </div>
         </div>
@@ -278,23 +328,24 @@ function JobCard({ job, account }) {
         {job.hashtags && <p className="hashtags">{job.hashtags}</p>}
 
         <div className="job-metadata">
-          <DetailItem label="Scheduled (local)" value={formatDate(job.scheduledAt)} />
+          <DetailItem label="Asset" value={assetState} />
+          <DetailItem label="Release window" value={formatDate(job.scheduledAt)} />
           <DetailItem label="Privacy" value={job.privacy.replaceAll('_', ' ')} />
           <DetailItem label="Attempts" value={String(job.attempts)} />
           <DetailItem label="Created" value={formatDate(job.createdAt)} />
           {job.acceptedAt && <DetailItem label="Accepted" value={formatDate(job.acceptedAt)} />}
-          <DetailItem label="Posted" value={formatDate(job.postedAt)} />
+          <DetailItem label="Published" value={formatDate(job.postedAt)} />
           {job.lastAttemptAt && <DetailItem label="Last attempt" value={formatDate(job.lastAttemptAt)} />}
         </div>
 
         {job.lastError && (
           <div className="error-box">
-            <strong>Last error</strong>
+            <strong>Error reason</strong>
             <span>{job.lastError}</span>
             {job.errorEvidence && (
               <span className="evidence-note">
                 {job.errorEvidence.retryable
-                  ? 'Retry-safe — the scheduler can retry this job.'
+                  ? 'Retry-safe — the publishing engine can retry this campaign.'
                   : 'Terminal — needs manual attention.'}
               </span>
             )}
@@ -303,11 +354,12 @@ function JobCard({ job, account }) {
 
         <div className="job-footer">
           <details className="job-details">
-            <summary>Logs &amp; details</summary>
-            <pre>{JSON.stringify(debugPayload, null, 2)}</pre>
+            <summary>Publishing evidence</summary>
+            <CopyEvidenceButton payload={evidencePayload} />
+            <pre>{JSON.stringify(evidencePayload, null, 2)}</pre>
           </details>
           <div className="job-actions" aria-label={`Actions for ${job.title}`}>
-            {['Retry', 'Cancel', 'Delete', 'Post Now'].map((label) => (
+            {['Retry', 'Cancel', 'Delete', 'Publish Now'].map((label) => (
               <button
                 className={label === 'Delete' ? 'danger-action' : ''}
                 type="button"
@@ -403,20 +455,20 @@ export default function AutoPosterDashboard() {
       <nav className="dashboard-nav" aria-label="AutoPoster navigation">
         <a className="product-link" href="/private/autoposter">
           <span className="product-mark">C</span>
-          <span><strong>CHANTER</strong><small>Auto Poster</small></span>
+          <span><strong>CHANTER</strong><small>AutoPoster</small></span>
         </a>
         <div className="dashboard-nav-actions">
-          <span className="internal-label"><span></span>Internal control room</span>
-          <form action="/logout" method="post"><button type="submit">Log out</button></form>
+          <span className="internal-label"><span></span>Command Center</span>
+          <form action="/logout" method="post"><button type="submit">End Session</button></form>
         </div>
       </nav>
 
       <header className="page-header">
         <div>
-          <a className="back-link" href="/private/autoposter">&larr; Back to AutoPoster</a>
-          <p className="eyebrow">Internal operations</p>
-          <h1>AutoPoster Control Room</h1>
-          <p>Monitor campaigns, TikTok schedules, posting progress, and failure evidence from one read-only view.</p>
+          <a className="back-link" href="/private/autoposter">&larr; Back to CHANTER AutoPoster</a>
+          <p className="eyebrow">CHANTER AutoPoster</p>
+          <h1>Command Center</h1>
+          <p>Monitor campaigns, release windows, publishing progress, and evidence from one read-only view.</p>
         </div>
         <div className="header-actions">
           <span className="timezone-label">Times shown in {Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
@@ -429,7 +481,7 @@ export default function AutoPosterDashboard() {
       {accounts.length > 0 && (
         <section className="accounts-section" aria-labelledby="accounts-heading">
           <div className="section-heading">
-            <div><p className="eyebrow">Connections</p><h2 id="accounts-heading">TikTok accounts</h2></div>
+            <div><p className="eyebrow">Channels</p><h2 id="accounts-heading">Publishing Channels</h2></div>
           </div>
           <div className="account-grid">
             {accounts.map((account) => (
@@ -445,7 +497,7 @@ export default function AutoPosterDashboard() {
       )}
 
       {!loading && !error && (
-        <section className="metric-grid" aria-label="Job status overview">
+        <section className="metric-grid" aria-label="Campaign state overview">
           {['all', 'scheduled', 'processing', 'posted', 'failed'].map((status) => (
             <button
               type="button"
@@ -453,7 +505,7 @@ export default function AutoPosterDashboard() {
               onClick={() => setStatusFilter(status)}
               key={status}
             >
-              <span>{status === 'all' ? 'Total jobs' : status}</span>
+              <span>{status === 'all' ? 'Total campaigns' : statusDisplay(status)}</span>
               <strong>{counts[status] || 0}</strong>
             </button>
           ))}
@@ -463,7 +515,7 @@ export default function AutoPosterDashboard() {
       {!loading && !error && campaigns.length > 0 && (
         <section className="campaign-strip" aria-labelledby="campaigns-heading">
           <div className="section-heading">
-            <div><p className="eyebrow">Campaigns</p><h2 id="campaigns-heading">Campaign overview</h2></div>
+            <div><p className="eyebrow">Publishing evidence</p><h2 id="campaigns-heading">Campaign overview</h2></div>
             <span className="result-count">{campaigns.length} {campaigns.length === 1 ? 'campaign' : 'campaigns'}</span>
           </div>
           <div className="campaign-grid">
@@ -474,12 +526,12 @@ export default function AutoPosterDashboard() {
               >
                 <header>
                   <strong>Campaign {campaign.campaignId.slice(0, 8)}</strong>
-                  <span>{campaign.jobCount} {campaign.jobCount === 1 ? 'job' : 'jobs'}</span>
+                  <span>{campaign.jobCount} {campaign.jobCount === 1 ? 'release' : 'releases'}</span>
                 </header>
                 <div className="campaign-status-counts">
                   {Object.entries(campaign.statusCounts).map(([status, count]) => (
                     <span className={`status-badge status-${status}`} key={status}>
-                      {status.replaceAll('_', ' ')} {count}
+                      {statusDisplay(status)} {count}
                     </span>
                   ))}
                 </div>
@@ -492,14 +544,14 @@ export default function AutoPosterDashboard() {
       <section className="jobs-section" aria-labelledby="jobs-heading">
         <div className="section-heading jobs-heading-row">
           <div>
-            <p className="eyebrow">Firestore jobs</p>
-            <h2 id="jobs-heading">Scheduled posts</h2>
+            <p className="eyebrow">Release pipeline</p>
+            <h2 id="jobs-heading">Release Queue</h2>
           </div>
           <span className="result-count">{visibleJobs.length} of {accountScopedJobs.length}</span>
         </div>
 
         <div className="toolbar">
-          <div className="status-filters" aria-label="Filter by status">
+          <div className="status-filters" aria-label="Filter by campaign state">
             {STATUS_FILTERS.map((status) => (
               <button
                 type="button"
@@ -507,19 +559,19 @@ export default function AutoPosterDashboard() {
                 onClick={() => setStatusFilter(status)}
                 key={status}
               >
-                {status}<span>{counts[status] || 0}</span>
+                {statusDisplay(status)}<span>{counts[status] || 0}</span>
               </button>
             ))}
           </div>
 
           <label className="account-filter">
-            <span>Account</span>
+            <span>Channel</span>
             <select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
-              <option value="all">All accounts</option>
+              <option value="all">All channels</option>
               {accounts.map((account) => (
                 <option value={account.id} key={account.id}>{accountLabel(account)}</option>
               ))}
-              {hasUnassignedJobs && <option value={UNASSIGNED_ACCOUNT_ID}>Legacy / Unassigned jobs</option>}
+              {hasUnassignedJobs && <option value={UNASSIGNED_ACCOUNT_ID}>Legacy / Unassigned campaigns</option>}
             </select>
           </label>
         </div>
@@ -532,19 +584,19 @@ export default function AutoPosterDashboard() {
           </div>
         )}
 
-        {loading && !error && <div className="state-card">Loading Firestore jobs...</div>}
+        {loading && !error && <div className="state-card">Loading the release queue...</div>}
 
         {!loading && !error && visibleJobs.length === 0 && (
           jobs.length === 0 ? (
             <div className="state-card">
-              <strong>No scheduled posts yet.</strong>
-              <span>Create and schedule posts from the AutoPoster page — they appear here with live status.</span>
-              <a className="empty-action" href="/private/autoposter">Go to AutoPoster</a>
+              <strong>No campaigns queued yet.</strong>
+              <span>Prepare campaigns from CHANTER AutoPoster — they appear here with live campaign state.</span>
+              <a className="empty-action" href="/private/autoposter">Open CHANTER AutoPoster</a>
             </div>
           ) : (
             <div className="state-card">
-              <strong>No jobs match these filters.</strong>
-              <span>Change the status or account filter to review other posts.</span>
+              <strong>No campaigns match these filters.</strong>
+              <span>Change the campaign state or channel filter to review other releases.</span>
             </div>
           )
         )}

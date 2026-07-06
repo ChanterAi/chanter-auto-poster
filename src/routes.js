@@ -523,23 +523,66 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
     return;
   }
 
+  // Multi-channel scheduling: the form may submit one or more target
+  // Publishing Channels. When absent, the active channel is the single
+  // target — identical to the pre-multichannel behavior.
+  let targetAccounts = [account];
+  const requestedChannelIds = normalizeTargetChannelIds(req.body.targetChannels);
+  if (requestedChannelIds.length > 0) {
+    const allAccounts = await storage.getTikTokAccounts(userId);
+    const accountsById = new Map(allAccounts.map((item) => [item.accountId, item]));
+    const resolved = [];
+    for (const channelId of requestedChannelIds) {
+      const target = accountsById.get(channelId);
+      if (!target) {
+        redirectWithNotice(res, 'One of the selected publishing channels was not found. Refresh and try again.');
+        return;
+      }
+      if (!target.connected) {
+        redirectWithNotice(res, `${accountLabel(target)} needs to be reconnected before campaigns can be scheduled to it.`);
+        return;
+      }
+      resolved.push(target);
+    }
+    targetAccounts = resolved;
+  }
+
   const preparedMedia = resolvePreparedMedia(req.body.autoMusicToken, userId, files);
   const created = await storage.addUploadedPosts(userId, files, {
     caption: req.body.caption,
     hashtags: req.body.hashtags,
     publicMediaUrl,
+    accounts: targetAccounts.map((target) => ({
+      accountId: target.accountId,
+      tiktokOpenId: target.open_id,
+      username: target.username
+    })),
+    // Legacy single-account fields, kept as the fallback contract.
     accountId: account.accountId,
     tiktokOpenId: account.open_id,
     username: account.username,
     preparedMedia
   });
-  const scheduledCount = await storage.autoSchedulePosts(userId, created.map((p) => p.id), account.accountId);
+
+  // Auto-schedule each channel's queue independently so one channel's
+  // release cadence never shifts another channel's.
+  let scheduledCount = 0;
+  for (const target of targetAccounts) {
+    const channelPostIds = created
+      .filter((post) => post.accountId === target.accountId)
+      .map((post) => post.id);
+    scheduledCount += await storage.autoSchedulePosts(userId, channelPostIds, target.accountId);
+  }
+
   const usedFallback = created.some((post) => post.storageFallback);
   const sourceNotice = usedFallback ? ' Cloudinary upload failed, so the submitted public URL was used.' : '';
   const musicNotice = created.some((post) => post.autoMusicApplied)
     ? ' Background music was embedded in the final video.'
     : (req.body.autoMusicToken ? ' Prepared music was unavailable, so the original video was used.' : '');
-  redirectWithNotice(res, `Created ${created.length}. Scheduled ${scheduledCount}.${sourceNotice}${musicNotice}`);
+  const channelNotice = targetAccounts.length > 1
+    ? ` across ${targetAccounts.length} channels`
+    : ` for ${accountLabel(targetAccounts[0])}`;
+  redirectWithNotice(res, `Created ${created.length} release ${created.length === 1 ? 'job' : 'jobs'}${channelNotice}. Scheduled ${scheduledCount}.${sourceNotice}${musicNotice}`);
 }));
 
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
@@ -664,6 +707,13 @@ router.post('/posts/:id/delete', requireConnectedTikTokAccount, asyncRoute(async
 }));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+function normalizeTargetChannelIds(value) {
+  // Checkbox groups arrive as a string for one selection and an array for
+  // several; normalize to a de-duplicated list of non-empty ids.
+  const raw = Array.isArray(value) ? value : (value ? [value] : []);
+  return [...new Set(raw.map((id) => String(id || '').trim()).filter(Boolean))];
+}
 
 function requireConnectedTikTokAccount(req, res, next) {
   if (!req.isAdmin) {

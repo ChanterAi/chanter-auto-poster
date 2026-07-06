@@ -173,7 +173,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   const loginPageResponse = await fetch(`${baseUrl}/admin-login`);
   const loginPageHtml = await loginPageResponse.text();
   assert.equal(loginPageResponse.status, 200);
-  assert.match(loginPageHtml, /Admin login/);
+  assert.match(loginPageHtml, /Command Center Access/);
   assert.doesNotMatch(loginPageHtml, /test-admin-password-123/);
 
   const failedLogin = await fetch(`${baseUrl}/admin-login`, {
@@ -208,7 +208,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   ]);
 
   assert.equal(autoPosterResponse.status, 200);
-  assert.match(autoPosterHtml, /Create &amp; Schedule/);
+  assert.match(autoPosterHtml, /Prepare Campaign/);
   assert.match(autoPosterHtml, /data-auto-caption-toggle/);
   assert.match(autoPosterHtml, /data-auto-music-toggle/);
   assert.match(autoPosterHtml, /Turn on Auto Music/);
@@ -216,13 +216,17 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /href="\/private\/autoposter\/dashboard"/);
   assert.match(autoPosterHtml, /account-a-history\.jpg/);
   assert.doesNotMatch(autoPosterHtml, /account-b-queue\.jpg/);
-  assert.match(autoPosterHtml, /Switch \/ Connect another/);
+  assert.match(autoPosterHtml, /Connect Another Channel/);
+  assert.match(autoPosterHtml, /Release Queue/);
+  assert.match(autoPosterHtml, /Publishing Log/);
+  assert.match(autoPosterHtml, /data-preflight/);
+  assert.match(autoPosterHtml, /Run Preflight/);
   assert.match(autoPosterHtml, /Instagram: Not configured/);
   assert.match(autoPosterHtml, /Dry-run mode active/);
   assert.match(autoPosterHtml, /Add Meta API keys to enable Instagram publishing/);
 
   assert.equal(dashboardResponse.status, 200);
-  assert.match(dashboardHtml, /AutoPoster Control Room/);
+  assert.match(dashboardHtml, /Command Center/);
 
   const dashboardSource = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'pages', 'AutoPosterDashboard.jsx'),
@@ -321,6 +325,9 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   const accountBHtml = await accountBResponse.text();
   assert.match(accountBHtml, /account-b-queue\.jpg/);
   assert.doesNotMatch(accountBHtml, /account-a-history\.jpg/);
+  // Queue cards render the premium action labels.
+  assert.match(accountBHtml, /Publish Now/);
+  assert.match(accountBHtml, /Save Campaign/);
 
   let savedPatch = null;
   let savedAccountId = null;
