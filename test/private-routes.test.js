@@ -311,7 +311,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /href="\/private\/autoposter\/dashboard"/);
   assert.match(autoPosterHtml, /account-a-history\.jpg/);
   assert.doesNotMatch(autoPosterHtml, /account-b-queue\.jpg/);
-  assert.match(autoPosterHtml, /Switch \/ Connect another/);
+  assert.match(autoPosterHtml, /Add TikTok account/);
 
   // P1.4 luxury console: real monogram asset in the brand lockup + subtitle.
   assert.match(autoPosterHtml, /class="brand-mark" src="\/assets\/chanter-logo\.png" alt="CHANTER monogram"/);

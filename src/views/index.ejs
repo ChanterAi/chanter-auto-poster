@@ -917,6 +917,41 @@
         .client-hero p { font-size: 15px; }
         .panel { padding: 18px; }
       }
+
+      /* ─── Client Mode collapsed sections ─── */
+      .collapse-block {
+        margin-top: 16px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: rgba(23,24,29,.02);
+        overflow: hidden;
+      }
+      .collapse-block > summary {
+        display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        padding: 14px 18px; cursor: pointer; list-style: none; user-select: none;
+        font-size: 12px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--text3);
+      }
+      .collapse-block > summary::-webkit-details-marker { display: none; }
+      .collapse-block > summary:hover { color: var(--text2); background: rgba(23,24,29,.02); }
+      .collapse-block-body { padding: 0 18px 18px; display: grid; gap: 14px; }
+      .collapse-block .scheduler-evidence { margin-top: 0; }
+      .collapse-block .campaign-history { margin-top: 0; padding-top: 0; border-top: 0; }
+      .collapse-block .instagram-status-banner,
+      .collapse-block .unaudited-note { margin-bottom: 0; }
+      .page-admin-details { margin: 18px 0 0; }
+      .advanced-options {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: rgba(23,24,29,.02);
+      }
+      .advanced-options > summary {
+        padding: 12px 14px; cursor: pointer; list-style: none; user-select: none;
+        font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--text3);
+      }
+      .advanced-options > summary::-webkit-details-marker { display: none; }
+      .advanced-options > summary:hover { color: var(--text2); }
+      .advanced-options-body { display: grid; gap: 12px; padding: 0 14px 14px; }
+      .advanced-options .auto-caption-card { border: 0; background: transparent; padding: 0; }
     </style>
   </head>
   <body>
@@ -1003,7 +1038,7 @@
           <div class="account-context-copy">
             <span class="account-context-label">Active TikTok account</span>
             <strong><%= activeTikTokAccount && activeTikTokAccount.username ? `@${activeTikTokAccount.username}` : (activeTikTokAccount && activeTikTokAccount.displayName) || 'TikTok account' %></strong>
-            <small><%= activeTikTokAccount && activeTikTokAccount.connected ? 'Connected and used for this queue' : 'Disconnected - history is view only until reconnected' %></small>
+            <small><%= activeTikTokAccount && activeTikTokAccount.connected ? 'Connected' : 'Disconnected — reconnect to publish' %></small>
           </div>
           <form class="account-selector" action="/private/autoposter/account" method="post">
             <label>
@@ -1018,311 +1053,43 @@
             </label>
           </form>
           <div class="account-connect-flow">
-            <a class="btn btn-secondary" href="/connect/tiktok?new=1">Switch / Connect another</a>
-            <small>TikTok may reuse its current browser login. Log out of TikTok first or use another browser/incognito window to connect a different account.</small>
+            <a class="btn btn-primary" href="/connect/tiktok?new=1">Add TikTok account</a>
+            <small>To connect a different TikTok account, log out of TikTok first or use another browser.</small>
           </div>
         </section>
       <% } %>
 
       <% if (notice) { %><div class="notice"><%= notice %></div><% } %>
 
-      <% if (instagramHealth && !instagramHealth.configured) { %>
-        <div class="instagram-status-banner" role="status" aria-label="Instagram configuration status">
-          <strong>Instagram: Not configured</strong>
-          <span>Dry-run mode active</span>
-          <span>Add Meta API keys to enable Instagram publishing</span>
-        </div>
-      <% } %>
-
-      <%
-        const isUnauditedApp = !tiktokConfigured;
-        const showUnauditedWarning = tiktokConfigured && creatorInfo && privacyOptions.length > 0 && !privacyOptions.includes('PUBLIC_TO_EVERYONE');
-      %>
-      <% if (showUnauditedWarning) { %>
-        <div class="unaudited-note">
-          <strong>App not yet reviewed by TikTok:</strong> Until your TikTok Developer app passes the audit, all posts are restricted to <code>SELF_ONLY</code> privacy and up to 5 users per 24 h window. To lift this, <a href="https://developers.tiktok.com/doc/content-sharing-guidelines/" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;">complete the TikTok audit</a>.
-        </div>
-      <% } %>
-
       <section class="client-hero" aria-label="AutoPoster overview">
         <div class="client-hero-copy">
           <span class="hero-kicker">CHANTER AutoPoster</span>
-          <h1>Publish clean TikTok campaigns.</h1>
-          <p>Upload media, write the copy, schedule the post, and check campaign status from one simple screen.</p>
+          <h1>Publish your next TikTok post.</h1>
+          <p>Upload media, add your caption, pick a time. Done.</p>
         </div>
         <div class="client-hero-actions">
-          <a class="btn btn-primary" href="#campaign-mode-heading">Create campaign</a>
-          <a class="btn btn-secondary" href="#creative-lab">Open Creative Lab</a>
+          <a class="btn btn-primary" href="#create-post">Create post</a>
+          <a class="btn btn-secondary" href="#campaign-mode-heading">Campaigns</a>
         </div>
       </section>
 
-      <section id="creative-lab" class="creative-lab-wrapper" aria-label="AI Creative Lab">
-        <details class="creative-lab-details">
-          <summary>
-            <span>
-              <strong>Creative Lab</strong>
-              <small>Optional prompt tools. Keep publishing first.</small>
-            </span>
-            <em>Open</em>
-          </summary>
-          <div class="creative-lab-body">
-            <div id="prompt-evolver-root"></div>
-            <noscript>
-              <div class="panel">
-                <div class="panel-head panel-head-rich">
-                  <div>
-                    <span class="panel-kicker">Creative Lab</span>
-                    <h2>Prompt tools</h2>
-                    <p>Enable JavaScript to generate prompt variants.</p>
-                  </div>
-                </div>
-              </div>
-            </noscript>
-          </div>
-        </details>
-      </section>
-
-      <!-- ─── Dashboard Grid ─── -->
-      <%
-        const connectedCampaignAccounts = tiktokAccounts.filter(function(account) { return account.connected; });
-        const campaignHistory = Array.isArray(campaigns) ? campaigns : [];
-      %>
-      <section class="panel campaign-mode" aria-labelledby="campaign-mode-heading">
-        <div class="panel-head panel-head-rich">
-          <div>
-            <span class="panel-kicker">TikTok Campaign Mode / v0.1</span>
-            <h2 id="campaign-mode-heading">Campaign Command Center</h2>
-            <p>One video, posted to each selected account on a staggered schedule.</p>
-          </div>
-          <span class="panel-step">CM</span>
-        </div>
-
-        <div class="campaign-layout">
-          <form class="campaign-form" action="/campaigns" method="post" enctype="multipart/form-data" data-campaign-form>
-            <div class="campaign-intake">
-              <label class="campaign-video upload-zone">
-                <span class="field-heading">Campaign video</span>
-                <span class="field-note">One MP4, MOV, or WebM video. It is uploaded once and referenced by both child jobs.</span>
-                <input type="file" name="campaignVideo" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" required data-campaign-video />
-              </label>
-              <label>
-                Base schedule time
-                <span class="field-note">Account 2 is automatically scheduled 15 minutes later.</span>
-                <input type="datetime-local" name="campaignBaseScheduledAt" required data-campaign-base-time />
-              </label>
-              <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
-            </div>
-
-            <div class="campaign-account-grid">
-              <% [1, 2].forEach(function(slot) { %>
-                <article class="campaign-account-card" data-campaign-slot="<%= slot %>">
-                  <h3>Account <%= slot %><%= slot === 2 ? ' (optional)' : '' %></h3>
-                  <label>
-                    TikTok account
-                    <select name="campaignAccountId<%= slot %>" <%= slot === 1 ? 'required' : '' %> data-campaign-account>
-                      <option value=""><%= slot === 1 ? 'Select an account' : 'No second account' %></option>
-                      <% connectedCampaignAccounts.forEach(function(account) { %>
-                        <option value="<%= account.accountId %>"><%= account.username ? `@${account.username}` : (account.displayName || `TikTok ${account.accountId.slice(0, 8)}`) %></option>
-                      <% }); %>
-                    </select>
-                  </label>
-                  <label>
-                    Caption
-                    <textarea name="campaignCaption<%= slot %>" placeholder="Account-specific caption" data-campaign-caption></textarea>
-                  </label>
-                  <label>
-                    Hashtags
-                    <textarea name="campaignHashtags<%= slot %>" placeholder="#accountSpecific #campaign" data-campaign-hashtags></textarea>
-                  </label>
-                </article>
-              <% }); %>
-            </div>
-
-            <div class="actions upload-actions">
-              <button type="submit" class="btn btn-primary btn-create" <%= connectedCampaignAccounts.length === 0 ? 'disabled' : '' %>>Create campaign</button>
-            </div>
-          </form>
-
-          <aside class="campaign-preview" aria-live="polite">
-            <span class="section-kicker">Generated child jobs</span>
-            <h3>Schedule preview</h3>
-            <p class="campaign-preview-note">Safety checks run automatically before anything is uploaded or posted.</p>
-            <details class="fine-print">
-              <summary>How checks work</summary>
-              <p class="campaign-preview-note">A read-only dry run checks accounts and schedule conflicts before any upload — creating the campaign remains the only step that writes, and it revalidates everything. Each job stays independent if the other account fails.</p>
-              <p class="campaign-preview-note campaign-no-live-note">No-live demo: this dry run never calls TikTok, so it is safe to demo. A full post-simulation demo mode is intentionally not implemented — due jobs are always published for real by the scheduler.</p>
-            </details>
-            <div class="campaign-preview-verdict" data-campaign-verdict hidden></div>
-            <button type="button" class="btn btn-ghost campaign-copy-btn" data-campaign-copy-verdict hidden>Copy dry-run verdict</button>
-            <div data-campaign-preview>
-              <p class="campaign-preview-note">Select an account and base time to preview the jobs.</p>
-            </div>
-          </aside>
-        </div>
-
-        <%
-          const heartbeat = schedulerEvidence ? schedulerEvidence.durableHeartbeat : null;
-          const heartbeatStatus = heartbeat ? String(heartbeat.status || 'missing') : 'unavailable';
-          const tickSummary = heartbeat && heartbeat.lastTickSummary ? heartbeat.lastTickSummary : null;
-          const degradedReasons = schedulerEvidence && Array.isArray(schedulerEvidence.degradedReasons)
-            ? schedulerEvidence.degradedReasons
-            : [];
-        %>
-        <div class="scheduler-evidence" aria-label="Scheduler evidence" data-scheduler-evidence>
-          <div class="scheduler-evidence-head">
-            <h3>System status</h3>
-            <span class="campaign-status"><%= !schedulerEvidence ? 'unavailable' : heartbeatStatus %></span>
-          </div>
-          <% if (!schedulerEvidence || heartbeatStatus === 'unavailable') { %>
-            <p class="campaign-preview-note">Cron evidence could not be read right now. Check /health for the raw scheduler status.</p>
-          <% } else if (heartbeatStatus === 'missing') { %>
-            <p class="campaign-preview-note">Cron run evidence is not persisted yet. It appears after the first completed cron tick.</p>
-          <% } else if (heartbeatStatus === 'invalid') { %>
-            <p class="campaign-preview-note">A cron heartbeat exists but is incomplete. Check /health for details.</p>
-          <% } else { %>
-            <p class="campaign-preview-note">Scheduler last ran <%= helpers.formatDateTime(heartbeat.lastTickAt) %><%= heartbeat.stale ? ' — needs attention' : '' %>.</p>
-            <details class="fine-print">
-              <summary>Advanced evidence</summary>
-              <span class="scheduler-evidence-line">last durable tick: <%= helpers.formatDateTime(heartbeat.lastTickAt) %> (<%= heartbeat.ageSeconds %>s ago) — <%= heartbeat.lastTickOk ? 'completed OK' : 'completed with errors' %><%= heartbeat.stale ? ' — STALE' : '' %></span>
-              <% if (tickSummary) { %>
-                <span class="scheduler-evidence-line">last tick: checked <%= tickSummary.checked %> / posted <%= tickSummary.posted %> / accepted <%= Object.hasOwn(tickSummary, 'accepted') ? tickSummary.accepted : 0 %> / failed <%= tickSummary.failed %></span>
-              <% } %>
-              <span class="scheduler-evidence-line">overdue jobs: <%= schedulerEvidence.overdueTotalCount === null ? 'unknown' : schedulerEvidence.overdueTotalCount %> / stale processing locks: <%= schedulerEvidence.staleProcessingCount === null ? 'unknown' : schedulerEvidence.staleProcessingCount %></span>
-              <% if (degradedReasons.length > 0) { %>
-                <ul>
-                  <% degradedReasons.forEach(function(reason) { %>
-                    <li><%= reason.message %></li>
-                  <% }); %>
-                </ul>
-              <% } %>
-            </details>
-          <% } %>
-        </div>
-
-        <div class="campaign-history" aria-label="Campaign history">
-          <div class="campaign-history-head">
-            <h3>Campaign history</h3>
-            <span class="count"><%= campaignHistory.length %> campaigns</span>
-          </div>
-          <% if (campaignHistory.length === 0) { %>
-            <p class="campaign-preview-note">No campaigns have been created yet.</p>
-          <% } %>
-          <% campaignHistory.forEach(function(campaign) { %>
-            <article class="campaign-group">
-              <header class="campaign-group-head">
-                <div>
-                  <strong>Campaign <%= campaign.campaignId.slice(0, 8) %></strong>
-                  <small><%= helpers.formatDateTime(campaign.scheduleBaseTime) %> / <%= campaign.childJobs.length %> child job<%= campaign.childJobs.length === 1 ? '' : 's' %></small>
-                </div>
-                <span class="campaign-status"><%= campaign.campaignStatus.replaceAll('_', ' ') %></span>
-              </header>
-              <div class="campaign-job-list">
-                <% campaign.childJobs.forEach(function(job) { %>
-                  <% const campaignAccount = tiktokAccounts.find(function(account) { return account.accountId === job.accountId; }); %>
-                  <% const childError = job.errorMessage || (job.errorEvidence && job.errorEvidence.reason) || ''; %>
-                  <% const childRetryable = Boolean(job.errorEvidence && job.errorEvidence.retryable); %>
-                  <div class="campaign-job">
-                    <strong><%= campaignAccount && campaignAccount.username ? `@${campaignAccount.username}` : (campaignAccount && campaignAccount.displayName) || job.username || job.accountId %></strong>
-                    <span class="campaign-job-copy"><%= job.caption %> / <%= job.hashtags %></span>
-                    <time datetime="<%= job.scheduledAt %>"><%= helpers.formatDateTime(job.scheduledAt) %> / <%= job.campaignJobStatus.replaceAll('_', ' ') %></time>
-                    <span class="campaign-job-meta" title="<%= job.id %>">job <%= job.id.slice(0, 8) %> / account <%= job.accountId %><%= job.publishId ? ` / publish ${job.publishId}` : '' %></span>
-                    <% if (childError) { %>
-                      <span class="campaign-job-error"><%= childError %><%= childRetryable ? ' (safe to requeue)' : '' %></span>
-                    <% } %>
-                  </div>
-                <% }); %>
-              </div>
-              <% const oracleReview = helpers.campaignReview(campaign, schedulerEvidence); %>
-              <div class="campaign-oracle" data-campaign-oracle>
-                <div class="campaign-oracle-head">
-                  <strong>Campaign review</strong>
-                  <span class="campaign-status">verdict: <%= oracleReview.verdict %></span>
-                </div>
-                <p><%= oracleReview.summary %></p>
-                <% if (oracleReview.blockedReason) { %>
-                  <p class="campaign-oracle-blocked">Blocked: <%= oracleReview.blockedReason %></p>
-                <% } %>
-                <details class="fine-print">
-                  <summary>Review details</summary>
-                  <p>Local, deterministic review — no AI call.</p>
-                  <span class="scheduler-evidence-line">posted <%= oracleReview.postedCount %> / accepted <%= oracleReview.acceptedCount %> / retry required <%= oracleReview.retryRequiredCount %> / failed <%= oracleReview.failedCount %> — evidence confidence <%= oracleReview.evidenceConfidence %></span>
-                  <p>Next: <%= oracleReview.recommendedNextAction %></p>
-                  <% if (oracleReview.riskNotes.length > 0) { %>
-                    <ul>
-                      <% oracleReview.riskNotes.forEach(function(note) { %>
-                        <li><%= note %></li>
-                      <% }); %>
-                    </ul>
-                  <% } %>
-                </details>
-              </div>
-              <details class="campaign-evidence">
-                <summary>Evidence summary</summary>
-                <pre class="campaign-evidence-text" data-campaign-evidence><%= helpers.campaignEvidence(campaign) %></pre>
-                <button type="button" class="btn btn-ghost campaign-copy-btn" data-campaign-copy-evidence>Copy evidence</button>
-              </details>
-            </article>
-          <% }); %>
-        </div>
-      </section>
-
-      <div class="dashboard-grid" aria-label="Poster controls">
-        <section class="panel panel-upload">
+      <!-- ─── Create Post ─── -->
+      <div class="dashboard-grid" aria-label="Create post">
+        <section class="panel panel-upload" id="create-post">
           <div class="panel-head panel-head-rich">
             <div>
-              <span class="panel-kicker">Content intake</span>
-              <h2>Add Media</h2>
-              <p>Upload polished assets and prepare the TikTok copy.</p>
+              <span class="panel-kicker">New post</span>
+              <h2>Create Post</h2>
+              <p>Upload media, add your copy, then schedule.</p>
             </div>
             <span class="panel-step">01</span>
           </div>
           <form class="upload-form" action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
             <div class="form-grid">
               <label class="wide upload-zone">
-                <span class="field-heading">Media files</span>
-                <span class="field-note">Choose images or MP4, MOV, and WebM videos. Multiple files are supported.</span>
+                <span class="field-heading">Media</span>
+                <span class="field-note">Images or MP4, MOV, WebM videos.</span>
                 <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple data-media-upload />
-              </label>
-              <div class="wide auto-caption-card">
-                <label class="auto-caption-row">
-                  <span class="auto-caption-copy">
-                    <strong>Auto Caption</strong>
-                    <span>Analyze five video frames and optional speech before creating the scheduled job.</span>
-                  </span>
-                  <input
-                    type="checkbox"
-                    name="autoCaption"
-                    value="1"
-                    data-auto-caption-toggle
-                    <%= !autoCaptionConfigured ? 'disabled' : '' %>
-                  />
-                </label>
-                <p class="auto-caption-status" data-auto-caption-status aria-live="polite">
-                  <%= autoCaptionConfigured ? 'Turn on Auto Caption, then choose a video.' : 'Auto Caption is unavailable until an AI provider key is configured.' %>
-                </p>
-                <div class="auto-music-divider" aria-hidden="true"></div>
-                <label class="auto-caption-row">
-                  <span class="auto-caption-copy">
-                    <strong>Auto Music</strong>
-                    <span>Select and embed background music in the first uploaded video before scheduling.</span>
-                  </span>
-                  <input
-                    type="checkbox"
-                    name="autoMusic"
-                    value="1"
-                    data-auto-music-toggle
-                    <%= !autoMusicConfigured ? 'disabled' : '' %>
-                  />
-                </label>
-                <p class="auto-caption-status" data-auto-music-status aria-live="polite">
-                  <%= autoMusicConfigured ? 'Turn on Auto Music, then choose a video.' : 'Auto Music is unavailable until the local music library is configured.' %>
-                </p>
-                <input type="hidden" name="autoMusicToken" value="" data-auto-music-token />
-              </div>
-              <label class="wide url-field">
-                Public Media URL
-                <span class="field-note">Optional HTTPS fallback when the asset is already hosted.</span>
-                <input type="url" name="publicMediaUrl" placeholder="https://example.com/media.jpg" data-public-media-url />
               </label>
               <label>
                 Caption
@@ -1332,6 +1099,52 @@
                 Hashtags
                 <textarea name="hashtags" placeholder="#chanter #viral" data-hashtags-input></textarea>
               </label>
+              <details class="wide advanced-options">
+                <summary>Advanced options</summary>
+                <div class="advanced-options-body">
+                  <div class="auto-caption-card">
+                    <label class="auto-caption-row">
+                      <span class="auto-caption-copy">
+                        <strong>Auto Caption</strong>
+                        <span>Generate a caption from the selected video.</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        name="autoCaption"
+                        value="1"
+                        data-auto-caption-toggle
+                        <%= !autoCaptionConfigured ? 'disabled' : '' %>
+                      />
+                    </label>
+                    <p class="auto-caption-status" data-auto-caption-status aria-live="polite">
+                      <%= autoCaptionConfigured ? 'Turn on Auto Caption, then choose a video.' : 'Auto Caption is unavailable until an AI provider key is configured.' %>
+                    </p>
+                    <div class="auto-music-divider" aria-hidden="true"></div>
+                    <label class="auto-caption-row">
+                      <span class="auto-caption-copy">
+                        <strong>Auto Music</strong>
+                        <span>Add background music to the selected video.</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        name="autoMusic"
+                        value="1"
+                        data-auto-music-toggle
+                        <%= !autoMusicConfigured ? 'disabled' : '' %>
+                      />
+                    </label>
+                    <p class="auto-caption-status" data-auto-music-status aria-live="polite">
+                      <%= autoMusicConfigured ? 'Turn on Auto Music, then choose a video.' : 'Auto Music is unavailable until the local music library is configured.' %>
+                    </p>
+                    <input type="hidden" name="autoMusicToken" value="" data-auto-music-token />
+                  </div>
+                  <label class="url-field">
+                    Public Media URL
+                    <span class="field-note">Optional HTTPS link if the file is already hosted.</span>
+                    <input type="url" name="publicMediaUrl" placeholder="https://example.com/media.jpg" data-public-media-url />
+                  </label>
+                </div>
+              </details>
             </div>
             <div class="actions upload-actions"><button type="submit" class="btn btn-primary btn-create" <%= !tiktokConfigured ? 'disabled' : '' %>>Create &amp; Schedule</button></div>
           </form>
@@ -1340,16 +1153,16 @@
         <section class="panel panel-schedule">
           <div class="panel-head panel-head-rich">
             <div>
-              <span class="panel-kicker">Automation</span>
+              <span class="panel-kicker">Timing</span>
               <h2>Post Schedule</h2>
-              <p>Set the daily publishing window for queued posts.</p>
+              <p>Daily posting time for queued posts.</p>
             </div>
             <span class="panel-step">02</span>
           </div>
           <div class="schedule-clock">
             <span>Current daily time</span>
             <strong><%= settings.dailyPostTime %></strong>
-            <small>Your configured application timezone</small>
+            <small>App timezone</small>
           </div>
           <form class="schedule-settings" action="/settings" method="post">
             <label>
@@ -1360,7 +1173,7 @@
           </form>
           <div class="schedule-divider"></div>
           <form class="rebuild-form" action="/schedule" method="post">
-            <p><span class="status-dot"></span>Rebuild applies the daily time to pending queue items.</p>
+            <p><span class="status-dot"></span>Applies the daily time to pending posts.</p>
             <div class="actions">
               <button type="submit" class="btn btn-secondary" <%= !tiktokConfigured ? 'disabled' : '' %>>Rebuild queue</button>
             </div>
@@ -1372,9 +1185,9 @@
       <section class="queue-section" aria-label="Queue">
         <div class="section-head">
           <div>
-            <span class="section-kicker">Publishing pipeline</span>
-            <h2>Queue</h2>
-            <p>Review scheduled posts and adjust their publishing details.</p>
+            <span class="section-kicker">Status</span>
+            <h2>Scheduled posts</h2>
+            <p>Latest status for each post.</p>
           </div>
           <span class="count count-prominent"><%= activePosts.length %> active</span>
         </div>
@@ -1382,8 +1195,8 @@
         <% if (activePosts.length === 0) { %>
           <div class="empty-state">
             <span class="empty-icon" aria-hidden="true">+</span>
-            <p>Your publishing queue is clear</p>
-            <span>Add media above to prepare the next TikTok post.</span>
+            <p>No posts scheduled yet</p>
+            <span>Use Create Post above to schedule your first post.</span>
           </div>
         <% } %>
 
@@ -1454,7 +1267,7 @@
                   <!-- ① Title (required by TikTok) -->
                   <label>
                     Title
-                    <span class="field-note">Required — visible on TikTok post page. Shown to your audience.</span>
+                    <span class="field-note">Shown on TikTok.</span>
                     <input type="text" name="caption" value="<%= post.caption || '' %>" placeholder="Add a title…" maxlength="150" required />
                   </label>
 
@@ -1467,7 +1280,7 @@
                   <!-- ③ Schedule + Privacy row -->
                   <div class="schedule-row">
                     <label>
-                      <span class="field-note">Scheduled time (your local timezone).</span>
+                      Schedule time
                       <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
                     </label>
                     <label>
@@ -1609,6 +1422,179 @@
         </div>
       </section>
 
+      <!-- ─── Campaign Mode ─── -->
+      <%
+        const connectedCampaignAccounts = tiktokAccounts.filter(function(account) { return account.connected; });
+        const campaignHistory = Array.isArray(campaigns) ? campaigns : [];
+      %>
+      <section class="panel campaign-mode" aria-labelledby="campaign-mode-heading">
+        <div class="panel-head panel-head-rich">
+          <div>
+            <span class="panel-kicker">Campaigns</span>
+            <h2 id="campaign-mode-heading">Campaign Command Center</h2>
+            <p>One video, posted to each selected account on a staggered schedule.</p>
+          </div>
+          <span class="panel-step">CM</span>
+        </div>
+
+        <div class="campaign-layout">
+          <form class="campaign-form" action="/campaigns" method="post" enctype="multipart/form-data" data-campaign-form>
+            <div class="campaign-intake">
+              <label class="campaign-video upload-zone">
+                <span class="field-heading">Campaign video</span>
+                <span class="field-note">One MP4, MOV, or WebM video.</span>
+                <input type="file" name="campaignVideo" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" required data-campaign-video />
+              </label>
+              <label>
+                Base schedule time
+                <span class="field-note">Account 2 is automatically scheduled 15 minutes later.</span>
+                <input type="datetime-local" name="campaignBaseScheduledAt" required data-campaign-base-time />
+              </label>
+              <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
+            </div>
+
+            <div class="campaign-account-grid">
+              <% [1, 2].forEach(function(slot) { %>
+                <article class="campaign-account-card" data-campaign-slot="<%= slot %>">
+                  <h3>Account <%= slot %><%= slot === 2 ? ' (optional)' : '' %></h3>
+                  <label>
+                    TikTok account
+                    <select name="campaignAccountId<%= slot %>" <%= slot === 1 ? 'required' : '' %> data-campaign-account>
+                      <option value=""><%= slot === 1 ? 'Select an account' : 'No second account' %></option>
+                      <% connectedCampaignAccounts.forEach(function(account) { %>
+                        <option value="<%= account.accountId %>"><%= account.username ? `@${account.username}` : (account.displayName || `TikTok ${account.accountId.slice(0, 8)}`) %></option>
+                      <% }); %>
+                    </select>
+                  </label>
+                  <label>
+                    Caption
+                    <textarea name="campaignCaption<%= slot %>" placeholder="Account-specific caption" data-campaign-caption></textarea>
+                  </label>
+                  <label>
+                    Hashtags
+                    <textarea name="campaignHashtags<%= slot %>" placeholder="#accountSpecific #campaign" data-campaign-hashtags></textarea>
+                  </label>
+                </article>
+              <% }); %>
+            </div>
+
+            <div class="actions upload-actions">
+              <button type="submit" class="btn btn-primary btn-create" <%= connectedCampaignAccounts.length === 0 ? 'disabled' : '' %>>Create campaign</button>
+            </div>
+          </form>
+
+          <aside class="campaign-preview" aria-live="polite">
+            <span class="section-kicker">Preview</span>
+            <h3>Schedule preview</h3>
+            <p class="campaign-preview-note">Checks run automatically before anything is posted.</p>
+            <details class="fine-print">
+              <summary>How checks work</summary>
+              <p class="campaign-preview-note">A read-only dry run checks accounts and schedule conflicts before any upload — creating the campaign remains the only step that writes, and it revalidates everything. Each job stays independent if the other account fails.</p>
+              <p class="campaign-preview-note campaign-no-live-note">No-live demo: this dry run never calls TikTok, so it is safe to demo. A full post-simulation demo mode is intentionally not implemented — due jobs are always published for real by the scheduler.</p>
+            </details>
+            <div class="campaign-preview-verdict" data-campaign-verdict hidden></div>
+            <button type="button" class="btn btn-ghost campaign-copy-btn" data-campaign-copy-verdict hidden>Copy dry-run verdict</button>
+            <div data-campaign-preview>
+              <p class="campaign-preview-note">Select an account and base time to preview the jobs.</p>
+            </div>
+          </aside>
+        </div>
+
+        <details class="collapse-block" aria-label="Campaign archive">
+          <summary>Archive · Campaign history <span class="count"><%= campaignHistory.length %></span></summary>
+          <div class="collapse-block-body">
+            <div class="campaign-history" aria-label="Campaign history">
+          <% if (campaignHistory.length === 0) { %>
+            <p class="campaign-preview-note">No campaigns have been created yet.</p>
+          <% } %>
+          <% campaignHistory.forEach(function(campaign) { %>
+            <article class="campaign-group">
+              <header class="campaign-group-head">
+                <div>
+                  <strong>Campaign <%= campaign.campaignId.slice(0, 8) %></strong>
+                  <small><%= helpers.formatDateTime(campaign.scheduleBaseTime) %> / <%= campaign.childJobs.length %> child job<%= campaign.childJobs.length === 1 ? '' : 's' %></small>
+                </div>
+                <span class="campaign-status"><%= campaign.campaignStatus.replaceAll('_', ' ') %></span>
+              </header>
+              <div class="campaign-job-list">
+                <% campaign.childJobs.forEach(function(job) { %>
+                  <% const campaignAccount = tiktokAccounts.find(function(account) { return account.accountId === job.accountId; }); %>
+                  <% const childError = job.errorMessage || (job.errorEvidence && job.errorEvidence.reason) || ''; %>
+                  <% const childRetryable = Boolean(job.errorEvidence && job.errorEvidence.retryable); %>
+                  <div class="campaign-job">
+                    <strong><%= campaignAccount && campaignAccount.username ? `@${campaignAccount.username}` : (campaignAccount && campaignAccount.displayName) || job.username || job.accountId %></strong>
+                    <span class="campaign-job-copy"><%= job.caption %> / <%= job.hashtags %></span>
+                    <time datetime="<%= job.scheduledAt %>"><%= helpers.formatDateTime(job.scheduledAt) %> / <%= job.campaignJobStatus.replaceAll('_', ' ') %></time>
+                    <span class="campaign-job-meta" title="<%= job.id %>">job <%= job.id.slice(0, 8) %> / account <%= job.accountId %><%= job.publishId ? ` / publish ${job.publishId}` : '' %></span>
+                    <% if (childError) { %>
+                      <span class="campaign-job-error"><%= childError %><%= childRetryable ? ' (safe to requeue)' : '' %></span>
+                    <% } %>
+                  </div>
+                <% }); %>
+              </div>
+              <% const oracleReview = helpers.campaignReview(campaign, schedulerEvidence); %>
+              <div class="campaign-oracle" data-campaign-oracle>
+                <div class="campaign-oracle-head">
+                  <strong>Campaign review</strong>
+                  <span class="campaign-status">verdict: <%= oracleReview.verdict %></span>
+                </div>
+                <p><%= oracleReview.summary %></p>
+                <% if (oracleReview.blockedReason) { %>
+                  <p class="campaign-oracle-blocked">Blocked: <%= oracleReview.blockedReason %></p>
+                <% } %>
+                <details class="fine-print">
+                  <summary>Review details</summary>
+                  <p>Local, deterministic review — no AI call.</p>
+                  <span class="scheduler-evidence-line">posted <%= oracleReview.postedCount %> / accepted <%= oracleReview.acceptedCount %> / retry required <%= oracleReview.retryRequiredCount %> / failed <%= oracleReview.failedCount %> — evidence confidence <%= oracleReview.evidenceConfidence %></span>
+                  <p>Next: <%= oracleReview.recommendedNextAction %></p>
+                  <% if (oracleReview.riskNotes.length > 0) { %>
+                    <ul>
+                      <% oracleReview.riskNotes.forEach(function(note) { %>
+                        <li><%= note %></li>
+                      <% }); %>
+                    </ul>
+                  <% } %>
+                </details>
+              </div>
+              <details class="campaign-evidence">
+                <summary>Evidence summary</summary>
+                <pre class="campaign-evidence-text" data-campaign-evidence><%= helpers.campaignEvidence(campaign) %></pre>
+                <button type="button" class="btn btn-ghost campaign-copy-btn" data-campaign-copy-evidence>Copy evidence</button>
+              </details>
+            </article>
+          <% }); %>
+        </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- ─── Creative Lab (secondary) ─── -->
+      <section id="creative-lab" class="creative-lab-wrapper" aria-label="AI Creative Lab">
+        <details class="creative-lab-details">
+          <summary>
+            <span>
+              <strong>Creative Lab</strong>
+              <small>Optional prompt tools.</small>
+            </span>
+            <em>Open</em>
+          </summary>
+          <div class="creative-lab-body">
+            <div id="prompt-evolver-root"></div>
+            <noscript>
+              <div class="panel">
+                <div class="panel-head panel-head-rich">
+                  <div>
+                    <span class="panel-kicker">Creative Lab</span>
+                    <h2>Prompt tools</h2>
+                    <p>Enable JavaScript to generate prompt variants.</p>
+                  </div>
+                </div>
+              </div>
+            </noscript>
+          </div>
+        </details>
+      </section>
+
       <!-- ─── History ─── -->
       <details class="history-panel">
         <summary>
@@ -1663,6 +1649,68 @@
               </div>
             </article>
           <% }); %>
+        </div>
+      </details>
+
+      <!-- ─── Admin / Audit details ─── -->
+      <details class="collapse-block page-admin-details" aria-label="Admin and audit details">
+        <summary>Admin / Audit details</summary>
+        <div class="collapse-block-body">
+          <% if (instagramHealth && !instagramHealth.configured) { %>
+            <div class="instagram-status-banner" role="status" aria-label="Instagram configuration status">
+              <strong>Instagram: Not configured</strong>
+              <span>Dry-run mode active</span>
+              <span>Add Meta API keys to enable Instagram publishing</span>
+            </div>
+          <% } %>
+
+          <%
+            const showUnauditedWarning = tiktokConfigured && creatorInfo && privacyOptions.length > 0 && !privacyOptions.includes('PUBLIC_TO_EVERYONE');
+          %>
+          <% if (showUnauditedWarning) { %>
+            <div class="unaudited-note">
+              <strong>App not yet reviewed by TikTok:</strong> Until your TikTok Developer app passes the audit, all posts are restricted to <code>SELF_ONLY</code> privacy and up to 5 users per 24 h window. To lift this, <a href="https://developers.tiktok.com/doc/content-sharing-guidelines/" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;">complete the TikTok audit</a>.
+            </div>
+          <% } %>
+
+          <%
+            const heartbeat = schedulerEvidence ? schedulerEvidence.durableHeartbeat : null;
+            const heartbeatStatus = heartbeat ? String(heartbeat.status || 'missing') : 'unavailable';
+            const tickSummary = heartbeat && heartbeat.lastTickSummary ? heartbeat.lastTickSummary : null;
+            const degradedReasons = schedulerEvidence && Array.isArray(schedulerEvidence.degradedReasons)
+              ? schedulerEvidence.degradedReasons
+              : [];
+          %>
+          <div class="scheduler-evidence" aria-label="Scheduler evidence" data-scheduler-evidence>
+            <div class="scheduler-evidence-head">
+              <h3>System status</h3>
+              <span class="campaign-status"><%= !schedulerEvidence ? 'unavailable' : heartbeatStatus %></span>
+            </div>
+            <% if (!schedulerEvidence || heartbeatStatus === 'unavailable') { %>
+              <p class="campaign-preview-note">Cron evidence could not be read right now. Check /health for the raw scheduler status.</p>
+            <% } else if (heartbeatStatus === 'missing') { %>
+              <p class="campaign-preview-note">Cron run evidence is not persisted yet. It appears after the first completed cron tick.</p>
+            <% } else if (heartbeatStatus === 'invalid') { %>
+              <p class="campaign-preview-note">A cron heartbeat exists but is incomplete. Check /health for details.</p>
+            <% } else { %>
+              <p class="campaign-preview-note">Scheduler last ran <%= helpers.formatDateTime(heartbeat.lastTickAt) %><%= heartbeat.stale ? ' — needs attention' : '' %>.</p>
+              <details class="fine-print">
+                <summary>Advanced evidence</summary>
+                <span class="scheduler-evidence-line">last durable tick: <%= helpers.formatDateTime(heartbeat.lastTickAt) %> (<%= heartbeat.ageSeconds %>s ago) — <%= heartbeat.lastTickOk ? 'completed OK' : 'completed with errors' %><%= heartbeat.stale ? ' — STALE' : '' %></span>
+                <% if (tickSummary) { %>
+                  <span class="scheduler-evidence-line">last tick: checked <%= tickSummary.checked %> / posted <%= tickSummary.posted %> / accepted <%= Object.hasOwn(tickSummary, 'accepted') ? tickSummary.accepted : 0 %> / failed <%= tickSummary.failed %></span>
+                <% } %>
+                <span class="scheduler-evidence-line">overdue jobs: <%= schedulerEvidence.overdueTotalCount === null ? 'unknown' : schedulerEvidence.overdueTotalCount %> / stale processing locks: <%= schedulerEvidence.staleProcessingCount === null ? 'unknown' : schedulerEvidence.staleProcessingCount %></span>
+                <% if (degradedReasons.length > 0) { %>
+                  <ul>
+                    <% degradedReasons.forEach(function(reason) { %>
+                      <li><%= reason.message %></li>
+                    <% }); %>
+                  </ul>
+                <% } %>
+              </details>
+            <% } %>
+          </div>
         </div>
       </details>
     </div>
