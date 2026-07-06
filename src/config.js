@@ -25,7 +25,7 @@ function envInverseFlag(name, fallback = true) {
 
 module.exports = {
   ENABLE_INSTAGRAM,
-  appName: 'CHANTER Auto Poster',
+  appName: 'CHANTER AutoPoster',
   port,
   rootDir,
   // NOTE: the running app no longer reads these — Firestore is the source

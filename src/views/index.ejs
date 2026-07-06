@@ -9,41 +9,42 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,700;0,9..40,900;1,9..40,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/autoposter-dashboard/assets/prompt-evolver-main.css" />
     <style>
+      /* CHANTER AutoPoster design tokens — black / charcoal / gray / white */
       :root {
-        --bg: #07080d;
-        --bg2: #0d0f17;
-        --surface: rgba(18,21,31,0.82);
-        --surface2: rgba(255,255,255,0.06);
-        --border: rgba(255,255,255,0.085);
+        --bg: #09090b;
+        --bg2: #0e0e11;
+        --surface: rgba(23,23,27,0.85);
+        --surface2: rgba(255,255,255,0.045);
+        --border: rgba(255,255,255,0.08);
         --border2: rgba(255,255,255,0.16);
-        --accent: #fe2c55;
-        --accent2: #25f4ee;
-        --accent-glow: rgba(254, 44, 85, 0.18);
-        --accent2-glow: rgba(37, 244, 238, 0.12);
-        --text: #f7f7fa;
-        --text2: #a9adbd;
-        --text3: #707587;
-        --danger: #ef4444;
-        --danger-bg: rgba(239,68,68,0.10);
-        --warn: #f59e0b;
-        --warn-bg: rgba(245,158,11,0.10);
-        --ok: #22c55e;
-        --ok-bg: rgba(34,197,94,0.10);
-        --purple: #a78bfa;
-        --purple-bg: rgba(167,139,250,0.10);
-        --cyan: #25f4ee;
-        --cyan-bg: rgba(37,244,238,0.08);
-        --r: 20px;
-        --r-sm: 11px;
+        --accent: #f5f5f4;
+        --accent2: #d4d4d8;
+        --accent-glow: rgba(255,255,255,0.07);
+        --accent2-glow: rgba(255,255,255,0.05);
+        --text: #f5f5f4;
+        --text2: #a1a1aa;
+        --text3: #71717a;
+        --danger: #c08585;
+        --danger-bg: rgba(192,133,133,0.09);
+        --warn: #b8a077;
+        --warn-bg: rgba(184,160,119,0.09);
+        --ok: #86b092;
+        --ok-bg: rgba(134,176,146,0.09);
+        --purple: #a3a3b8;
+        --purple-bg: rgba(163,163,184,0.09);
+        --cyan: #d4d4d8;
+        --cyan-bg: rgba(212,212,216,0.06);
+        --r: 18px;
+        --r-sm: 10px;
         --r-xs: 6px;
-        --shadow: 0 22px 70px rgba(0,0,0,.25), 0 2px 10px rgba(0,0,0,.16);
+        --shadow: 0 18px 50px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.2);
       }
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       html { background: var(--bg); }
       body {
         font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
         color: var(--text);
-        background: linear-gradient(180deg, #090a10 0%, var(--bg) 58%, #08090e 100%);
+        background: linear-gradient(180deg, #0b0b0d 0%, var(--bg) 58%, #08080a 100%);
         line-height: 1.5;
         -webkit-font-smoothing: antialiased;
         min-height: 100vh;
@@ -52,11 +53,10 @@
         content: "";
         position: fixed; inset: 0; z-index: 0; pointer-events: none;
         background:
-          radial-gradient(ellipse 70% 48% at 12% -12%, rgba(254,44,85,0.10) 0%, transparent 70%),
-          radial-gradient(ellipse 52% 42% at 94% 18%, rgba(37,244,238,0.055) 0%, transparent 72%),
-          linear-gradient(rgba(255,255,255,.012) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255,255,255,.012) 1px, transparent 1px);
-        background-size: auto, auto, 64px 64px, 64px 64px;
+          radial-gradient(ellipse 68% 42% at 50% -14%, rgba(255,255,255,0.035) 0%, transparent 70%),
+          linear-gradient(rgba(255,255,255,.01) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,.01) 1px, transparent 1px);
+        background-size: auto, 64px 64px, 64px 64px;
       }
 
       .app { position: relative; z-index: 1; max-width: 1240px; margin: 0 auto; padding: 34px 28px 96px; }
@@ -66,18 +66,18 @@
       .topbar-inner {
         display: flex; align-items: center; justify-content: space-between; gap: 24px;
         padding: 18px 20px;
-        background: linear-gradient(135deg, rgba(22,24,35,.92), rgba(12,14,22,.88));
+        background: linear-gradient(135deg, rgba(26,26,30,.92), rgba(14,14,17,.88));
         border: 1px solid var(--border); border-radius: var(--r);
         box-shadow: var(--shadow); backdrop-filter: blur(24px);
       }
       .brand-lockup { display: flex; align-items: center; gap: 22px; min-width: 0; }
       .brand { display: flex; align-items: center; gap: 12px; }
       .brand-mark {
-        width: 44px; height: 44px; border-radius: 13px;
-        background: linear-gradient(145deg, #ff4568, #e21d49 62%, #9c1234);
-        box-shadow: 0 9px 26px rgba(254,44,85,0.30), inset 0 1px 0 rgba(255,255,255,.25);
+        width: 44px; height: 44px; border-radius: 12px;
+        background: var(--accent);
+        box-shadow: 0 6px 20px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.6);
         display: grid; place-items: center;
-        font-weight: 900; font-size: 18px; color: white; letter-spacing: -0.03em;
+        font-weight: 900; font-size: 18px; color: #0a0a0b; letter-spacing: -0.03em;
       }
       .brand-title { font-size: 17px; font-weight: 900; letter-spacing: 0.05em; color: var(--text); }
       .brand-sub { font-size: 10px; font-weight: 700; color: #8e93a5; text-transform: uppercase; letter-spacing: 0.12em; }
@@ -92,11 +92,11 @@
         border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--border);
         background: var(--surface2); color: var(--text2); white-space: nowrap;
       }
-      .pill .dot { width: 7px; height: 7px; border: 2px solid rgba(255,255,255,.16); border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
-      .pill-ok   { border-color: rgba(34,197,94,.25); background: var(--ok-bg); color: var(--ok); }
-      .pill-cyan { border-color: rgba(37,244,238,.25); background: var(--cyan-bg); color: var(--cyan); }
-      .pill-warn { border-color: rgba(245,158,11,.25); background: var(--warn-bg); color: var(--warn); }
-      .pill-err  { border-color: rgba(239,68,68,.25);  background: var(--danger-bg); color: #fca5a5; }
+      .pill .dot { width: 7px; height: 7px; border: 2px solid rgba(255,255,255,.14); border-radius: 50%; background: currentColor; }
+      .pill-ok   { border-color: rgba(134,176,146,.28); background: var(--ok-bg); color: var(--ok); }
+      .pill-cyan { border-color: rgba(212,212,216,.22); background: var(--cyan-bg); color: var(--cyan); }
+      .pill-warn { border-color: rgba(184,160,119,.28); background: var(--warn-bg); color: var(--warn); }
+      .pill-err  { border-color: rgba(192,133,133,.28); background: var(--danger-bg); color: var(--danger); }
       .pill-creator { padding: 4px 11px 4px 4px; gap: 7px; }
       .pill-creator img { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; background: var(--surface2); }
 
@@ -108,30 +108,30 @@
         cursor: pointer; text-decoration: none; transition: all 0.18s ease;
         background: none; color: inherit; font-family: inherit; white-space: nowrap;
       }
-      .btn-primary   { background: var(--accent); color: white; box-shadow: 0 3px 14px var(--accent-glow); }
-      .btn-primary:hover { filter: brightness(1.12); transform: translateY(-1px); box-shadow: 0 5px 20px var(--accent-glow); }
+      .btn-primary   { background: var(--accent); color: #0a0a0b; box-shadow: 0 2px 12px rgba(0,0,0,.3); }
+      .btn-primary:hover { background: #ffffff; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(0,0,0,.35); }
       .btn-ghost     { border-color: var(--border); color: var(--text2); }
       .btn-ghost:hover { border-color: var(--border2); background: var(--surface2); color: var(--text); }
-      .btn-secondary { border-color: var(--border); color: var(--text2); background: transparent; }
-      .btn-secondary:hover { border-color: var(--border2); background: var(--surface2); color: var(--text); }
-      .btn-danger    { border-color: rgba(239,68,68,.22); color: #fca5a5; background: transparent; }
-      .btn-danger:hover { background: var(--danger-bg); border-color: rgba(239,68,68,.4); }
-      .btn-cyan      { background: transparent; border-color: rgba(37,244,238,.3); color: var(--cyan); }
-      .btn-cyan:hover{ background: var(--cyan-bg); }
+      .btn-secondary { border-color: var(--border2); color: var(--text); background: transparent; }
+      .btn-secondary:hover { border-color: rgba(255,255,255,.28); background: var(--surface2); }
+      .btn-danger    { border-color: rgba(192,133,133,.24); color: var(--danger); background: transparent; }
+      .btn-danger:hover { background: var(--danger-bg); border-color: rgba(192,133,133,.4); }
+      .btn-cyan      { background: transparent; border-color: var(--border2); color: var(--text); }
+      .btn-cyan:hover{ background: var(--surface2); }
       .btn[disabled]  { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
       .btn-dashboard { border-color: rgba(255,255,255,.14); background: rgba(255,255,255,.08); color: var(--text); }
       .btn-dashboard::after { content: "\2197"; color: var(--text3); font-size: 12px; }
       .btn-dashboard:hover { border-color: rgba(255,255,255,.24); background: rgba(255,255,255,.12); transform: translateY(-1px); }
-      .btn-prompt-evolver { border-color: rgba(37,244,238,.26); background: rgba(37,244,238,.065); color: var(--cyan); }
+      .btn-prompt-evolver { border-color: var(--border); background: var(--surface2); color: var(--text2); }
       .btn-prompt-evolver::after { content: "\2193"; color: var(--text3); font-size: 12px; }
-      .btn-prompt-evolver:hover { border-color: rgba(37,244,238,.42); background: rgba(37,244,238,.11); transform: translateY(-1px); }
+      .btn-prompt-evolver:hover { border-color: var(--border2); background: rgba(255,255,255,.08); color: var(--text); transform: translateY(-1px); }
       .btn-disconnect { color: #85899a; }
       .logout-form { display: inline-flex; }
 
       .account-context {
         display: grid; grid-template-columns: minmax(180px, .7fr) minmax(210px, .72fr) minmax(280px, 1fr);
         align-items: center; gap: 20px; margin: -14px 0 30px; padding: 16px 18px;
-        border: 1px solid var(--border); border-radius: 16px; background: rgba(12,14,22,.68); backdrop-filter: blur(18px);
+        border: 1px solid var(--border); border-radius: 16px; background: rgba(15,15,18,.68); backdrop-filter: blur(18px);
       }
       .account-context-copy { display: grid; min-width: 0; }
       .account-context-label { color: var(--text3); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
@@ -145,13 +145,13 @@
       /* ─── Notice ─── */
       .notice {
         margin-bottom: 22px; padding: 13px 17px; border-radius: var(--r-sm);
-        border: 1px solid rgba(254,44,85,.2); background: rgba(254,44,85,.07);
+        border: 1px solid var(--border2); background: var(--surface2);
         color: var(--text); font-size: 14px; font-weight: 500;
       }
       .instagram-status-banner {
         display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
         margin-bottom: 22px; padding: 12px 16px; border-radius: var(--r-sm);
-        border: 1px solid rgba(245,158,11,.22); background: rgba(245,158,11,.07);
+        border: 1px solid rgba(184,160,119,.24); background: var(--warn-bg);
         color: var(--text2); font-size: 12px;
       }
       .instagram-status-banner strong { color: var(--warn); font-size: 13px; }
@@ -160,11 +160,44 @@
       /* ─── Compliance Warning Banner ─── */
       .compliance-banner {
         margin-bottom: 22px; padding: 14px 18px;
-        background: rgba(245,158,11,.07); border: 1px solid rgba(245,158,11,.2); border-radius: var(--r-sm);
+        background: var(--warn-bg); border: 1px solid rgba(184,160,119,.22); border-radius: var(--r-sm);
         font-size: 13px; color: var(--warn); line-height: 1.6;
       }
       .compliance-banner strong { font-weight: 700; }
       .compliance-banner a { color: inherit; text-decoration: underline; }
+
+      /* ─── AIM flow strip ─── */
+      .flow-strip {
+        display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center;
+        margin: -18px 0 30px; padding: 12px 18px;
+        border: 1px solid var(--border); border-radius: 14px; background: rgba(15,15,18,.55);
+      }
+      .flow-strip span { display: inline-flex; align-items: center; gap: 7px; color: var(--text3); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+      .flow-strip span i { font: 500 10px 'DM Mono', monospace; font-style: normal; color: var(--text3); opacity: .7; }
+
+      /* ─── Preflight ─── */
+      .preflight-panel { margin-bottom: 42px; }
+      .preflight-list { display: grid; gap: 8px; list-style: none; }
+      .preflight-list li {
+        display: flex; align-items: center; gap: 11px; padding: 10px 13px;
+        border: 1px solid var(--border); border-radius: var(--r-sm); background: rgba(0,0,0,.18);
+        color: var(--text2); font-size: 13px;
+      }
+      .preflight-list li .preflight-state { margin-left: auto; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--text3); white-space: nowrap; }
+      .preflight-list li::before { content: ""; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--text3); }
+      .preflight-list li[data-state="pass"]::before { background: var(--ok); }
+      .preflight-list li[data-state="pass"] .preflight-state { color: var(--ok); }
+      .preflight-list li[data-state="blocked"]::before { background: var(--danger); }
+      .preflight-list li[data-state="blocked"] .preflight-state { color: var(--danger); }
+      .preflight-verdict {
+        display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+        margin-top: 16px; padding: 13px 16px;
+        border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface2);
+        color: var(--text2); font-size: 13px; font-weight: 600;
+      }
+      .preflight-verdict[data-tone="ready"] { border-color: rgba(134,176,146,.26); background: var(--ok-bg); color: var(--ok); }
+      .preflight-verdict[data-tone="blocked"] { border-color: rgba(192,133,133,.24); background: var(--danger-bg); color: var(--danger); }
+      .preflight-verdict .actions { margin: 0; }
 
       /* ─── Grid ─── */
       .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.32fr) minmax(320px, .68fr); gap: 22px; margin-bottom: 42px; }
@@ -172,7 +205,7 @@
       /* ─── Panel ─── */
       .panel {
         position: relative; overflow: hidden;
-        background: linear-gradient(145deg, rgba(21,24,35,.92), rgba(12,14,22,.88));
+        background: linear-gradient(145deg, rgba(25,25,29,.92), rgba(14,14,17,.88));
         border: 1px solid var(--border);
         border-radius: var(--r); padding: 26px; backdrop-filter: blur(24px); box-shadow: var(--shadow);
       }
@@ -182,7 +215,7 @@
       .panel-meta { font-size: 13px; font-weight: 600; color: var(--text3); font-variant-numeric: tabular-nums; }
       .panel-head-rich { align-items: flex-start; margin-bottom: 22px; }
       .panel-head-rich p { margin-top: 5px; max-width: 430px; color: var(--text3); font-size: 12px; line-height: 1.55; }
-      .panel-kicker, .section-kicker { display: block; margin-bottom: 5px; color: var(--accent2); font-size: 9px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+      .panel-kicker, .section-kicker { display: block; margin-bottom: 5px; color: var(--text3); font-size: 9px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
       .panel-step { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.035); color: var(--text3); font: 500 11px 'DM Mono', monospace; }
 
       /* ─── Forms ─── */
@@ -202,7 +235,7 @@
         font-size: 13px; font-family: inherit; outline: none; transition: border-color .18s, box-shadow .18s, background .18s;
       }
       input:hover, select:hover, textarea:hover { border-color: rgba(255,255,255,.14); }
-      input:focus, select:focus, textarea:focus { border-color: rgba(254,44,85,.75); background: rgba(4,5,9,.72); box-shadow: 0 0 0 3px var(--accent-glow); }
+      input:focus, select:focus, textarea:focus { border-color: rgba(255,255,255,.42); background: rgba(4,5,9,.72); box-shadow: 0 0 0 3px var(--accent-glow); }
       input::placeholder, textarea::placeholder { color: var(--text3); }
       input[type="file"] { padding: 12px; cursor: pointer; min-height: 58px; border-style: dashed; background: rgba(255,255,255,.025); }
       input[type="file"]::file-selector-button {
@@ -210,7 +243,7 @@
         background: rgba(255,255,255,.08); color: var(--text); font-weight: 700; cursor: pointer;
       }
       input[type="checkbox"] {
-        width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent);
+        width: 15px; height: 15px; cursor: pointer; accent-color: #e4e4e7;
         flex-shrink: 0; border-radius: 4px;
       }
       textarea { min-height: 92px; resize: vertical; line-height: 1.55; }
@@ -221,13 +254,13 @@
       }
       .actions { display: flex; gap: 9px; margin-top: 16px; flex-wrap: wrap; }
       .actions .btn { height: 38px; padding: 0 16px; }
-      .upload-zone { display: block; border: 1px solid rgba(255,255,255,.09); border-radius: 14px; background: linear-gradient(135deg, rgba(254,44,85,.045), rgba(37,244,238,.025)); padding: 16px; }
+      .upload-zone { display: block; border: 1px solid rgba(255,255,255,.09); border-radius: 14px; background: rgba(255,255,255,.02); padding: 16px; }
       .upload-zone .field-heading { display: block; margin-bottom: 3px; color: var(--text2); font-size: 11px; }
       .upload-zone .field-note { margin-bottom: 12px; }
       .url-field { margin-top: 2px; }
       .auto-caption-card {
-        display: grid; gap: 8px; border: 1px solid rgba(37,244,238,.18); border-radius: 12px;
-        background: rgba(37,244,238,.035); padding: 13px 14px;
+        display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 12px;
+        background: rgba(255,255,255,.03); padding: 13px 14px;
       }
       .auto-caption-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; }
       .auto-caption-copy { display: grid; gap: 3px; min-width: 0; }
@@ -243,7 +276,7 @@
       .btn-create { min-width: 190px; height: 44px !important; }
       .btn-create::after { content: "\2192"; font-size: 16px; transition: transform .18s; }
       .btn-create:hover::after { transform: translateX(2px); }
-      .schedule-clock { display: grid; margin-bottom: 20px; border: 1px solid rgba(37,244,238,.12); border-radius: 15px; background: linear-gradient(135deg, rgba(37,244,238,.07), rgba(255,255,255,.02)); padding: 17px; }
+      .schedule-clock { display: grid; margin-bottom: 20px; border: 1px solid var(--border); border-radius: 15px; background: rgba(255,255,255,.03); padding: 17px; }
       .schedule-clock span { color: var(--text3); font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
       .schedule-clock strong { margin: 2px 0; color: var(--text); font: 500 30px 'DM Mono', monospace; letter-spacing: -.04em; }
       .schedule-clock small { color: #7d8293; font-size: 10px; }
@@ -252,7 +285,7 @@
       .rebuild-form { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
       .rebuild-form p { display: flex; align-items: flex-start; gap: 8px; color: var(--text3); font-size: 11px; line-height: 1.5; }
       .rebuild-form .actions { flex: 0 0 auto; margin: 0; }
-      .status-dot { flex: 0 0 auto; width: 6px; height: 6px; margin-top: 5px; border-radius: 50%; background: var(--accent2); box-shadow: 0 0 9px rgba(37,244,238,.5); }
+      .status-dot { flex: 0 0 auto; width: 6px; height: 6px; margin-top: 5px; border-radius: 50%; background: var(--text2); }
 
       /* ─── Interaction Controls (TikTok Required UX) ─── */
       .interaction-controls { display: grid; gap: 8px; }
@@ -292,15 +325,15 @@
         background: white; left: 3px; top: 3px; transition: transform 0.2s; box-shadow: 0 1px 4px rgba(0,0,0,.3);
       }
       .toggle input:checked + .toggle-slider { background: var(--accent); }
-      .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+      .toggle input:checked + .toggle-slider::before { transform: translateX(16px); background: #0a0a0b; }
 
       /* ─── Music Disclosure (Required) ─── */
       .music-declaration {
         padding: 11px 14px; border-radius: var(--r-sm);
-        border: 1px solid rgba(37,244,238,.2); background: rgba(37,244,238,.05);
-        font-size: 12px; color: #a0d8d6; line-height: 1.6;
+        border: 1px solid var(--border); background: var(--surface2);
+        font-size: 12px; color: var(--text3); line-height: 1.6;
       }
-      .music-declaration a { color: var(--cyan); text-decoration: underline; }
+      .music-declaration a { color: var(--text2); text-decoration: underline; }
       .music-declaration strong { color: var(--text2); font-weight: 600; }
 
       /* ─── Queue ─── */
@@ -315,7 +348,7 @@
       /* ─── Queue Card ─── */
       .queue-card {
         display: grid; grid-template-columns: 150px 1fr; gap: 22px;
-        background: linear-gradient(145deg, rgba(20,23,33,.9), rgba(12,14,21,.86)); border: 1px solid var(--border);
+        background: linear-gradient(145deg, rgba(24,24,28,.9), rgba(14,14,17,.86)); border: 1px solid var(--border);
         border-radius: var(--r); padding: 20px; backdrop-filter: blur(22px);
         box-shadow: 0 14px 42px rgba(0,0,0,.16);
         transition: transform .18s, border-color .18s, box-shadow .18s;
@@ -333,7 +366,7 @@
       .media-chip {
         position: absolute; bottom: 7px; right: 7px; padding: 3px 8px; border-radius: 5px;
         background: rgba(0,0,0,.65); backdrop-filter: blur(8px); font-size: 9px; font-weight: 800;
-        text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent2); border: 1px solid var(--border);
+        text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); border: 1px solid var(--border);
       }
       .queue-main { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
       .queue-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
@@ -345,7 +378,7 @@
         font-size: 12px; line-height: 1.5; padding: 9px 12px; border-radius: var(--r-sm);
         background: rgba(0,0,0,.2); border: 1px solid var(--border); color: var(--text2);
       }
-      .result-message.is-failed { border-color: rgba(239,68,68,.18); background: var(--danger-bg); color: #fca5a5; }
+      .result-message.is-failed { border-color: rgba(192,133,133,.22); background: var(--danger-bg); color: var(--danger); }
 
       /* ─── Badges ─── */
       .badge {
@@ -355,11 +388,11 @@
         white-space: nowrap; flex-shrink: 0;
       }
       .badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-      .badge.pending, .badge.scheduled { border-color: rgba(245,158,11,.25); background: var(--warn-bg); color: var(--warn); }
-      .badge.ready, .badge.verification { border-color: rgba(167,139,250,.25); background: var(--purple-bg); color: var(--purple); }
-      .badge.posted, .badge.accepted { border-color: rgba(34,197,94,.25); background: var(--ok-bg); color: var(--ok); }
-      .badge.publishing { border-color: rgba(37,244,238,.25); background: var(--cyan-bg); color: var(--cyan); }
-      .badge.failed { border-color: rgba(239,68,68,.2); background: var(--danger-bg); color: #fca5a5; }
+      .badge.pending, .badge.scheduled { border-color: rgba(184,160,119,.26); background: var(--warn-bg); color: var(--warn); }
+      .badge.ready, .badge.verification { border-color: rgba(163,163,184,.26); background: var(--purple-bg); color: var(--purple); }
+      .badge.posted, .badge.accepted { border-color: rgba(134,176,146,.26); background: var(--ok-bg); color: var(--ok); }
+      .badge.publishing { border-color: rgba(212,212,216,.24); background: var(--cyan-bg); color: var(--cyan); }
+      .badge.failed { border-color: rgba(192,133,133,.24); background: var(--danger-bg); color: var(--danger); }
 
       /* ─── Schedule Form ─── */
       .schedule-form { display: grid; gap: 14px; }
@@ -380,7 +413,7 @@
       /* ─── Unaudited Notice ─── */
       .unaudited-note {
         padding: 11px 14px; border-radius: var(--r-sm);
-        border: 1px solid rgba(245,158,11,.22); background: var(--warn-bg);
+        border: 1px solid rgba(184,160,119,.24); background: var(--warn-bg);
         font-size: 12px; color: var(--warn); line-height: 1.5;
       }
       .unaudited-note strong { font-weight: 700; }
@@ -393,11 +426,11 @@
       }
       .empty-state p { margin-top: 4px; font-size: 16px; font-weight: 750; color: var(--text2); }
       .empty-state span { font-size: 12px; }
-      .empty-state .empty-icon { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid rgba(254,44,85,.25); border-radius: 13px; background: rgba(254,44,85,.08); color: #ff6e8a; font-size: 22px; font-weight: 300; }
+      .empty-state .empty-icon { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid var(--border2); border-radius: 13px; background: var(--surface2); color: var(--text2); font-size: 22px; font-weight: 300; }
 
       /* ─── History ─── */
       .history-panel {
-        overflow: hidden; background: linear-gradient(145deg, rgba(20,23,33,.84), rgba(12,14,21,.8)); border: 1px solid var(--border); border-radius: var(--r); backdrop-filter: blur(22px); box-shadow: 0 14px 42px rgba(0,0,0,.14);
+        overflow: hidden; background: linear-gradient(145deg, rgba(24,24,28,.84), rgba(14,14,17,.8)); border: 1px solid var(--border); border-radius: var(--r); backdrop-filter: blur(22px); box-shadow: 0 14px 42px rgba(0,0,0,.14);
       }
       .history-panel > summary {
         display: flex; align-items: center; justify-content: space-between;
@@ -489,11 +522,11 @@
       const displayResultLabel = (result) => {
         const tone = String((result && result.tone) || '').toLowerCase();
         const label = String((result && result.stateLabel) || '').toLowerCase();
-        if (tone === 'failed' || label.includes('failed')) return 'Failed';
-        if (tone === 'verification' || label.includes('verification')) return 'Needs verification';
-        if (tone === 'accepted' || label.includes('posted') || label.includes('accepted')) return 'Posted / API accepted';
+        if (tone === 'failed' || label.includes('failed')) return 'Needs Review';
+        if (tone === 'verification' || label.includes('verification')) return 'Manual Review';
+        if (tone === 'accepted' || label.includes('posted') || label.includes('accepted')) return 'Published';
         if (tone === 'publishing' || label.includes('publishing')) return 'Publishing';
-        return 'Scheduled';
+        return 'Queued';
       };
       const captionPreview = (post) => helpers.fullCaption(post) || 'No caption';
       const selectedPrivacy = (post) => {
@@ -512,17 +545,17 @@
               <div class="brand-mark">C</div>
               <div class="brand-text">
                 <div class="brand-title">CHANTER</div>
-                <div class="brand-sub">Auto Poster</div>
+                <div class="brand-sub">AutoPoster</div>
               </div>
             </div>
             <div class="brand-context">
-              <span>Publishing operations</span>
-              <p>Schedule and monitor TikTok content</p>
+              <span>Command Center</span>
+              <p>Prepare, release, and review TikTok campaigns</p>
             </div>
           </div>
           <div class="topbar-actions">
             <% if (tiktokConfigured) { %>
-              <div class="pill pill-ok"><span class="dot"></span>TikTok Connected</div>
+              <div class="pill pill-ok"><span class="dot"></span>Channel Connected</div>
               <% if (creatorInfo) { %>
                 <div class="pill pill-creator">
                   <img src="<%= creatorInfo.creator_avatar_url || '/assets/chanter-logo.png' %>" alt="" />
@@ -530,15 +563,15 @@
                 </div>
               <% } %>
             <% } else { %>
-              <div class="pill pill-warn"><span class="dot"></span>Manual Mode</div>
-              <a class="btn btn-primary" href="/connect/tiktok">Connect TikTok</a>
+              <div class="pill pill-warn"><span class="dot"></span>Channel Required</div>
+              <a class="btn btn-primary" href="/connect/tiktok">Connect Channel</a>
             <% } %>
             <a class="btn btn-prompt-evolver" href="#prompt-evolver">Prompt Evolver</a>
-            <a class="btn btn-dashboard" href="/private/autoposter/dashboard">Open Dashboard</a>
+            <a class="btn btn-dashboard" href="/private/autoposter/dashboard">Command Center</a>
             <% if (tiktokConfigured) { %>
-              <a class="btn btn-ghost btn-disconnect" href="/disconnect/tiktok">Disconnect</a>
+              <a class="btn btn-ghost btn-disconnect" href="/disconnect/tiktok">Remove Channel</a>
             <% } %>
-            <form class="logout-form" action="/logout" method="post"><button class="btn btn-ghost" type="submit">Log out</button></form>
+            <form class="logout-form" action="/logout" method="post"><button class="btn btn-ghost" type="submit">End Session</button></form>
 
             <% if (enableInstagram) { %>
               <%
@@ -557,16 +590,29 @@
         </div>
       </header>
 
+      <nav class="flow-strip" aria-label="Campaign flow">
+        <span><i>01</i>Access</span>
+        <span><i>02</i>Publishing Channel</span>
+        <span><i>03</i>Creative Asset</span>
+        <span><i>04</i>Editorial Caption</span>
+        <span><i>05</i>Discovery Tags</span>
+        <span><i>06</i>Release Window</span>
+        <span><i>07</i>Preflight Check</span>
+        <span><i>08</i>Release Queue</span>
+        <span><i>09</i>Publishing Evidence</span>
+        <span><i>10</i>Signal Review</span>
+      </nav>
+
       <% if (tiktokAccounts.length > 0) { %>
-        <section class="account-context" aria-label="Active TikTok account">
+        <section class="account-context" aria-label="Publishing channel">
           <div class="account-context-copy">
-            <span class="account-context-label">Active TikTok account</span>
-            <strong><%= activeTikTokAccount && activeTikTokAccount.username ? `@${activeTikTokAccount.username}` : (activeTikTokAccount && activeTikTokAccount.displayName) || 'TikTok account' %></strong>
-            <small><%= activeTikTokAccount && activeTikTokAccount.connected ? 'Connected and used for this queue' : 'Disconnected - history is view only until reconnected' %></small>
+            <span class="account-context-label">Publishing Channel</span>
+            <strong><%= activeTikTokAccount && activeTikTokAccount.username ? `@${activeTikTokAccount.username}` : (activeTikTokAccount && activeTikTokAccount.displayName) || 'TikTok channel' %></strong>
+            <small><%= activeTikTokAccount && activeTikTokAccount.connected ? 'Connected — used for this release queue' : 'Disconnected — the publishing log is view only until reconnected' %></small>
           </div>
           <form class="account-selector" action="/private/autoposter/account" method="post">
             <label>
-              Switch account
+              Switch channel
               <select name="accountId" onchange="this.form.submit()">
                 <% tiktokAccounts.forEach(function(account) { %>
                   <option value="<%= account.accountId %>" <%= activeTikTokAccount && activeTikTokAccount.accountId === account.accountId ? 'selected' : '' %>>
@@ -577,7 +623,7 @@
             </label>
           </form>
           <div class="account-connect-flow">
-            <a class="btn btn-secondary" href="/connect/tiktok?new=1">Switch / Connect another</a>
+            <a class="btn btn-secondary" href="/connect/tiktok?new=1">Connect Another Channel</a>
             <small>TikTok may reuse its current browser login. Log out of TikTok first or use another browser/incognito window to connect a different account.</small>
           </div>
         </section>
@@ -623,16 +669,16 @@
         <section class="panel panel-upload">
           <div class="panel-head panel-head-rich">
             <div>
-              <span class="panel-kicker">Content intake</span>
-              <h2>Add Media</h2>
-              <p>Upload polished assets and prepare the TikTok copy.</p>
+              <span class="panel-kicker">Campaign intake</span>
+              <h2>Creative Asset</h2>
+              <p>Attach the creative asset and prepare the editorial copy.</p>
             </div>
             <span class="panel-step">01</span>
           </div>
           <form class="upload-form" action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
             <div class="form-grid">
               <label class="wide upload-zone">
-                <span class="field-heading">Media files</span>
+                <span class="field-heading">Creative asset files</span>
                 <span class="field-note">Choose images or MP4, MOV, and WebM videos. Multiple files are supported.</span>
                 <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple data-media-upload />
               </label>
@@ -678,56 +724,85 @@
                 <input type="url" name="publicMediaUrl" placeholder="https://example.com/media.jpg" data-public-media-url />
               </label>
               <label>
-                Caption
-                <textarea name="caption" placeholder="Write a caption…" data-caption-input></textarea>
+                Editorial Caption
+                <textarea name="caption" placeholder="Write the editorial caption…" data-caption-input></textarea>
               </label>
               <label>
-                Hashtags
+                Discovery Tags
                 <textarea name="hashtags" placeholder="#chanter #viral" data-hashtags-input></textarea>
               </label>
             </div>
-            <div class="actions upload-actions"><button type="submit" class="btn btn-primary btn-create" <%= !tiktokConfigured ? 'disabled' : '' %>>Create &amp; Schedule</button></div>
+            <div class="actions upload-actions"><button type="submit" class="btn btn-primary btn-create" <%= !tiktokConfigured ? 'disabled' : '' %>>Prepare Campaign</button></div>
           </form>
         </section>
 
         <section class="panel panel-schedule">
           <div class="panel-head panel-head-rich">
             <div>
-              <span class="panel-kicker">Automation</span>
-              <h2>Post Schedule</h2>
-              <p>Set the daily publishing window for queued posts.</p>
+              <span class="panel-kicker">Publishing engine</span>
+              <h2>Release Window</h2>
+              <p>Set the daily release window for queued campaigns.</p>
             </div>
             <span class="panel-step">02</span>
           </div>
           <div class="schedule-clock">
-            <span>Current daily time</span>
+            <span>Daily release time</span>
             <strong><%= settings.dailyPostTime %></strong>
             <small>Your configured application timezone</small>
           </div>
           <form class="schedule-settings" action="/settings" method="post">
             <label>
-              Update daily time
+              Update release time
               <input type="time" name="dailyPostTime" value="<%= settings.dailyPostTime %>" required />
             </label>
-            <div class="actions"><button type="submit" class="btn btn-primary">Save time</button></div>
+            <div class="actions"><button type="submit" class="btn btn-primary">Save Release Window</button></div>
           </form>
           <div class="schedule-divider"></div>
           <form class="rebuild-form" action="/schedule" method="post">
-            <p><span class="status-dot"></span>Rebuild applies the daily time to pending queue items.</p>
+            <p><span class="status-dot"></span>Rebuild applies the release window to queued campaigns.</p>
             <div class="actions">
-              <button type="submit" class="btn btn-secondary" <%= !tiktokConfigured ? 'disabled' : '' %>>Rebuild queue</button>
+              <button type="submit" class="btn btn-secondary" <%= !tiktokConfigured ? 'disabled' : '' %>>Rebuild Release Queue</button>
             </div>
           </form>
         </section>
       </div>
 
-      <!-- ─── Active Queue ─── -->
-      <section class="queue-section" aria-label="Queue">
+      <!-- ─── Preflight Check ─── -->
+      <section
+        class="panel preflight-panel"
+        aria-label="Preflight check"
+        data-preflight
+        data-channel-connected="<%= tiktokConfigured ? 'true' : 'false' %>"
+        data-release-window="<%= settings.dailyPostTime || '' %>"
+      >
+        <div class="panel-head panel-head-rich">
+          <div>
+            <span class="panel-kicker">Preflight check</span>
+            <h2>Preflight</h2>
+            <p>Confirm the campaign is complete before it enters the release queue.</p>
+          </div>
+          <span class="panel-step">03</span>
+        </div>
+        <ul class="preflight-list">
+          <li data-check="channel">Publishing Channel connected<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="auth">Channel authorization active<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="asset">Creative Asset attached<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="caption">Editorial Caption present<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="window">Release Window configured<span class="preflight-state" data-state-label>Checking</span></li>
+        </ul>
+        <div class="preflight-verdict" data-preflight-verdict>
+          <span data-preflight-message>Run preflight to confirm this campaign is ready.</span>
+          <div class="actions"><button type="button" class="btn btn-secondary" data-run-preflight>Run Preflight</button></div>
+        </div>
+      </section>
+
+      <!-- ─── Release Queue ─── -->
+      <section class="queue-section" aria-label="Release queue">
         <div class="section-head">
           <div>
-            <span class="section-kicker">Publishing pipeline</span>
-            <h2>Queue</h2>
-            <p>Review scheduled posts and adjust their publishing details.</p>
+            <span class="section-kicker">Release pipeline</span>
+            <h2>Release Queue</h2>
+            <p>Review queued campaigns and adjust their release details.</p>
           </div>
           <span class="count count-prominent"><%= activePosts.length %> active</span>
         </div>
@@ -735,8 +810,8 @@
         <% if (activePosts.length === 0) { %>
           <div class="empty-state">
             <span class="empty-icon" aria-hidden="true">+</span>
-            <p>Your publishing queue is clear</p>
-            <span>Add media above to prepare the next TikTok post.</span>
+            <p>Your release queue is clear</p>
+            <span>Attach a creative asset above to prepare the next campaign.</span>
           </div>
         <% } %>
 
@@ -804,23 +879,23 @@
                 >
                   <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
 
-                  <!-- ① Title (required by TikTok) -->
+                  <!-- ① Editorial Caption (required by TikTok as the post title) -->
                   <label>
-                    Title
-                    <span class="field-note">Required — visible on TikTok post page. Shown to your audience.</span>
-                    <input type="text" name="caption" value="<%= post.caption || '' %>" placeholder="Add a title…" maxlength="150" required />
+                    Editorial Caption
+                    <span class="field-note">Required — visible on the TikTok post page. Shown to your audience.</span>
+                    <input type="text" name="caption" value="<%= post.caption || '' %>" placeholder="Add the editorial caption…" maxlength="150" required />
                   </label>
 
-                  <!-- ② Caption / Hashtags -->
+                  <!-- ② Discovery Tags -->
                   <label>
-                    Hashtags
+                    Discovery Tags
                     <input type="text" name="hashtags" value="<%= post.hashtags || '' %>" placeholder="#chanter #viral" />
                   </label>
 
-                  <!-- ③ Schedule + Privacy row -->
+                  <!-- ③ Release Window + Privacy row -->
                   <div class="schedule-row">
                     <label>
-                      <span class="field-note">Scheduled time (your local timezone).</span>
+                      <span class="field-note">Release window (your local timezone).</span>
                       <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
                     </label>
                     <label>
@@ -834,7 +909,7 @@
                         <% }); %>
                       </select>
                     </label>
-                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="submit" class="btn btn-primary">Save Campaign</button>
                   </div>
 
                   <!-- ④ Interaction Ability (TikTok Required UX #2c) -->
@@ -941,15 +1016,15 @@
                 <% } %>
 
                 <div class="card-actions">
-                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post now? This ignores the schedule.');">
+                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Publish now? This ignores the release window.');">
                     <input type="hidden" name="force" value="1" />
-                    <button type="submit" class="btn btn-secondary">Post now</button>
+                    <button type="submit" class="btn btn-secondary">Publish Now</button>
                   </form>
                   <% if (enableInstagram && instagramStatus.readyToPublish) { %>
                     <form class="inline-action" action="/api/instagram/publish" method="post" data-instagram-publish-form>
                       <input type="hidden" name="postId" value="<%= post.id %>" />
                       <input type="hidden" name="dryRun" value="1" />
-                      <button type="submit" class="btn btn-cyan">Test Instagram</button>
+                      <button type="submit" class="btn btn-cyan">Instagram Publish Test</button>
                     </form>
                   <% } %>
                   <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
@@ -962,18 +1037,18 @@
         </div>
       </section>
 
-      <!-- ─── History ─── -->
+      <!-- ─── Publishing Log ─── -->
       <details class="history-panel">
         <summary>
           <span class="history-title">
             <span class="history-icon" aria-hidden="true"></span>
-            <span><small>Archive</small><strong>Post history</strong></span>
+            <span><small>Archive</small><strong>Publishing Log</strong></span>
           </span>
-          <span class="history-summary-meta"><span class="count"><%= historyPosts.length %> posted</span><span class="history-chevron" aria-hidden="true"></span></span>
+          <span class="history-summary-meta"><span class="count"><%= historyPosts.length %> published</span><span class="history-chevron" aria-hidden="true"></span></span>
         </summary>
         <div class="history-list">
           <% if (historyPosts.length === 0) { %>
-            <div class="history-empty">No posted history</div>
+            <div class="history-empty">No published campaigns yet</div>
           <% } %>
           <% historyPosts.forEach(function(post) { %>
             <% const mediaPath = helpers.mediaPath(post); %>
@@ -1011,7 +1086,7 @@
                   </form>
                 </div>
                 <% if (result.hasDebug) { %>
-                  <details class="advanced"><summary>Audit details</summary><div class="advanced-body"><pre><%= result.debugJson %></pre></div></details>
+                  <details class="advanced"><summary>Publishing Evidence</summary><div class="advanced-body"><pre><%= result.debugJson %></pre></div></details>
                 <% } %>
               </div>
             </article>
@@ -1351,6 +1426,66 @@
           body.style.display = toggle.checked ? '' : 'none';
         });
       });
+
+      // Preflight check — client-side readiness review of the intake form.
+      // Uses only server-rendered booleans; no tokens or secrets are exposed.
+      (() => {
+        const panel = document.querySelector('[data-preflight]');
+        if (!panel) return;
+        const uploadForm = document.querySelector('[data-upload-form]');
+        const mediaInput = uploadForm ? uploadForm.querySelector('[data-media-upload]') : null;
+        const publicUrlInput = uploadForm ? uploadForm.querySelector('[data-public-media-url]') : null;
+        const captionInput = uploadForm ? uploadForm.querySelector('[data-caption-input]') : null;
+        const verdict = panel.querySelector('[data-preflight-verdict]');
+        const message = panel.querySelector('[data-preflight-message]');
+        const channelConnected = panel.dataset.channelConnected === 'true';
+        const releaseWindow = String(panel.dataset.releaseWindow || '').trim();
+
+        const setCheck = (name, pass, passLabel, blockedLabel) => {
+          const item = panel.querySelector(`[data-check="${name}"]`);
+          if (!item) return;
+          item.dataset.state = pass ? 'pass' : 'blocked';
+          const label = item.querySelector('[data-state-label]');
+          if (label) label.textContent = pass ? passLabel : blockedLabel;
+        };
+
+        const runPreflight = () => {
+          const hasAsset = Boolean(
+            (mediaInput && mediaInput.files && mediaInput.files.length > 0) ||
+            (publicUrlInput && publicUrlInput.value.trim())
+          );
+          const hasCaption = Boolean(captionInput && captionInput.value.trim());
+          const hasWindow = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(releaseWindow);
+
+          setCheck('channel', channelConnected, 'Connected', 'Channel Required');
+          setCheck('auth', channelConnected, 'Authorized', 'Not Authorized');
+          setCheck('asset', hasAsset, 'Attached', 'Asset Required');
+          setCheck('caption', hasCaption, 'Present', 'Caption Required');
+          setCheck('window', hasWindow, 'Configured', 'Window Required');
+
+          const blockedReason = !channelConnected ? 'Channel Required — connect a publishing channel first.'
+            : !hasAsset ? 'Asset Required — attach a creative asset or public media URL.'
+            : !hasCaption ? 'Caption Required — write an editorial caption or enable Auto Caption.'
+            : !hasWindow ? 'Release Window Required — set a daily release time.'
+            : '';
+
+          if (verdict) verdict.dataset.tone = blockedReason ? 'blocked' : 'ready';
+          if (message) {
+            message.textContent = blockedReason
+              ? `Blocked — ${blockedReason}`
+              : 'Ready to publish — prepare the campaign to enter the release queue.';
+          }
+        };
+
+        const runButton = panel.querySelector('[data-run-preflight]');
+        if (runButton) runButton.addEventListener('click', runPreflight);
+        [mediaInput, publicUrlInput, captionInput].forEach((input) => {
+          if (!input) return;
+          input.addEventListener('input', runPreflight);
+          input.addEventListener('change', runPreflight);
+        });
+        runPreflight();
+      })();
     </script>
   </body>
 </html>
