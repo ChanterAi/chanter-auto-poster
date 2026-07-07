@@ -1,8 +1,22 @@
-# CHANTER Auto Poster
+# CHANTER AutoPoster
 
-Local Node.js + Express MVP for a personal TikTok photo content workflow. Upload a batch of images, edit captions and hashtags, schedule one post per day, and either publish through an approved TikTok Content Posting API setup or mark the next due item as ready for manual posting. Instagram Graph API publishing is available as a separate test-first module.
+Protected Node.js + Express product surface for the CHANTER content workflow. Upload images or videos, prepare captions/hashtags, optionally generate Auto Caption and Auto Music output, schedule releases for one or more connected TikTok channels, review the Release Queue, and submit due items through TikTok's approved Content Posting API path.
 
-This app does not scrape TikTok, bypass TikTok security, or automate unofficial account behavior.
+AutoPoster is the first CHANTER commercial/public product candidate, but the operating language is intentionally conservative: TikTok API acceptance is not the same as a verified live public post unless TikTok returns a public post URL or an operator verifies it manually.
+
+This app does not scrape TikTok, bypass TikTok security, automate unofficial account behavior, or guarantee final publication outside TikTok's own API and moderation flow.
+
+## Current Product Scope
+
+- Image and video upload through a protected admin surface.
+- Cloudinary-backed durable media URLs with HTTPS public URL fallback.
+- Multi-account TikTok connection and active-channel selection.
+- Multi-channel campaign scheduling when multiple target channels are selected.
+- Max Scheduler start-time plus per-channel release offset.
+- Release Queue views for active channel and all channels.
+- Auto Caption and Auto Music for uploaded videos when providers/tools are configured.
+- Manual verification and manual-post fallback when API publication cannot be verified.
+- Optional Instagram dry-run/test path; keep Instagram disabled unless explicitly configured.
 
 ## Install
 
@@ -55,64 +69,35 @@ On Windows PowerShell:
 Copy-Item .env.example .env
 ```
 
-Optional variables:
+`.env.example` is the source of truth for runtime variable names. It contains no real secrets.
 
-```env
-PORT=3010
-FIREBASE_PROJECT_ID=
-FIREBASE_CLIENT_EMAIL=
-FIREBASE_PRIVATE_KEY=
+Required for normal protected operation:
 
-CLOUDINARY_CLOUD_NAME=
-CLOUDINARY_API_KEY=
-CLOUDINARY_API_SECRET=
+- `ADMIN_PASSWORD`
+- `CRON_SECRET`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_CLIENT_EMAIL`
+- `FIREBASE_PRIVATE_KEY`
+- `CLOUDINARY_CLOUD_NAME`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
+- `TIKTOK_CLIENT_KEY`
+- `TIKTOK_CLIENT_SECRET`
+- `TIKTOK_REDIRECT_URI`
 
-AI_PROVIDER=gemini
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
-OPENAI_API_KEY=
-OPENAI_CAPTION_MODEL=gpt-5.5
-OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
-QWEN_API_KEY=
-QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-QWEN_MODEL=qwen-vl-max
-AUTO_CAPTION_REQUEST_TIMEOUT_MS=120000
-AUTO_CAPTION_FFMPEG_TIMEOUT_MS=120000
-AUTO_CAPTION_MAX_AUDIO_SECONDS=600
-AUTO_MUSIC_BACKGROUND_VOLUME=0.20
-AUTO_MUSIC_FADE_SECONDS=0.8
-AUTO_MUSIC_RENDER_TIMEOUT_MS=600000
-AUTO_MUSIC_TOKEN_TTL_MINUTES=30
-AUTO_MUSIC_TOKEN_SECRET=
+Required for deployed scheduled publishing:
 
-TIKTOK_CLIENT_KEY=
-TIKTOK_CLIENT_SECRET=
-TIKTOK_REDIRECT_URI=http://localhost:3010/auth/tiktok/callback
-TIKTOK_SCOPES=user.info.basic,video.publish
-TIKTOK_CONTENT_POST_INIT_URL=https://open.tiktokapis.com/v2/post/publish/content/init/
-TIKTOK_PRIVACY_LEVEL=SELF_ONLY
+- `APP_URL`, set to the Render web-service origin.
+- `PUBLIC_BASE_URL`, set only when local media paths must resolve to a public HTTPS origin.
+- Matching `CRON_SECRET` on both the Render web service and cron service.
 
-META_APP_ID=
-META_APP_SECRET=
-META_REDIRECT_URI=http://localhost:3010/auth/instagram/callback
-META_GRAPH_VERSION=v24.0
-INSTAGRAM_SCOPES=instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement
-META_ACCESS_TOKEN=
-INSTAGRAM_BUSINESS_ACCOUNT_ID=
-FACEBOOK_PAGE_ID=
-INSTAGRAM_TEST_MODE=true
-INSTAGRAM_PUBLISH_ENABLED=false
-INSTAGRAM_STATUS_POLL_ATTEMPTS=5
-INSTAGRAM_STATUS_POLL_INTERVAL_MS=3000
+Optional providers and integrations:
 
-PUBLIC_BASE_URL=https://chanterr.com
-APP_URL=https://chanter-auto-poster.onrender.com
-APP_TIME_ZONE=Asia/Nicosia
-TZ=Asia/Nicosia
-CRON_SECRET=use-the-same-long-random-value-on-web-and-cron
-```
+- Auto Caption: one or more of `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `QWEN_API_KEY`.
+- Auto Music: local `music-library` plus FFmpeg/FFprobe, with optional `AUTO_MUSIC_TOKEN_SECRET`.
+- Instagram: keep `ENABLE_INSTAGRAM=false`, `INSTAGRAM_TEST_MODE=true`, and `INSTAGRAM_PUBLISH_ENABLED=false` unless the Meta app is fully configured and public publishing is intentionally enabled.
 
-`PUBLIC_BASE_URL` is only a fallback. For testing, paste a per-post `publicImageUrl` such as `https://chanterr.com/media/tiktok-posts/test-image.png` into the queue item.
+`PUBLIC_BASE_URL` is only a fallback. For testing, paste a per-post `publicMediaUrl` such as `https://chanterr.com/media/tiktok-posts/test-image.png` into the queue item.
 
 ## Auto Caption Engine
 
@@ -177,6 +162,17 @@ POST https://open.tiktokapis.com/v2/post/publish/content/init/
 
 The image URL sent to TikTok must be HTTPS and publicly accessible. Localhost callback URLs are okay for OAuth testing, but localhost image URLs are not okay for TikTok posting.
 
+## TikTok Publish Result Truth
+
+TikTok Content Posting API responses can mean different things:
+
+- `API accepted`: AutoPoster submitted the request and TikTok accepted the API payload.
+- `Needs manual verification`: TikTok accepted the request but did not return a public URL, or the job needs operator review.
+- `Posted verified`: only use this when a public TikTok URL is returned or an operator verifies the post inside TikTok.
+- `Failed`: TikTok, media storage, auth, validation, or network handling rejected the attempt.
+
+For compatibility, Firestore still uses the existing `posted` status after a successful API response. The visible UI and public demo language must treat that state as API acceptance unless a public URL or manual verification confirms the final post.
+
 ## Instagram Setup
 
 Instagram support is parallel to TikTok. The existing scheduler still publishes through TikTok only; Instagram is triggered through the dedicated dashboard test button or API endpoint.
@@ -238,17 +234,27 @@ Use `publishType` values `photo`, `reel`, or `story`. Every Instagram OAuth, dis
 
 If TikTok API credentials or a public image URL are not configured, the scheduler still works locally:
 
-1. Uploaded images are queued and auto-scheduled.
+1. Uploaded media is queued and scheduled.
 2. The scheduler checks every minute.
-3. When a pending post is due, it is marked `ready`.
-4. The dashboard shows `Open image` and `Copy caption` controls.
+3. When a pending item is due and cannot be API-published, it is marked `ready`.
+4. The dashboard shows media and caption controls for manual verification.
 5. After posting manually in TikTok, click `Mark posted manually`.
 
 ## Render Scheduling
 
 `render.yaml` defines a web service and a Render Cron Job that calls `/api/cron/tick` every minute. Set `APP_URL` on the cron service to the Render web-service URL. Both services must use the same `CRON_SECRET`; the Blueprint environment group handles this when deployed from `render.yaml`.
 
-There is no in-process timer. Firestore is the source of truth, so a sleeping or restarted web service recovers overdue `scheduled` jobs on the next external tick. Each job is atomically changed to `processing` before TikTok publishing, then to `posted` or `failed`.
+There is no in-process timer. Firestore is the source of truth, so a sleeping or restarted web service recovers overdue `scheduled` jobs on the next external tick. Each job is atomically changed to `processing` before TikTok submission, then to the existing compatibility state (`posted` for API acceptance or `failed` for terminal failure). The UI must still distinguish API acceptance from externally verified live publication.
+
+Render runtime checklist:
+
+- Web service: set admin, Firebase, Cloudinary, TikTok, optional provider, and optional Instagram variables from `.env.example`.
+- Cron service: set `APP_URL` to the web service URL and share the same `CRON_SECRET`.
+- Firebase: deploy Firestore indexes before enabling cron.
+- TikTok: use the deployed `TIKTOK_REDIRECT_URI`, not the local callback.
+- Media: configure Cloudinary for durable uploads; use `PUBLIC_BASE_URL` only for existing public HTTPS media.
+- Secrets: never expose API keys or OAuth tokens through `VITE_` variables or frontend code.
+- Optional/legacy aliases in `.env.example` exist for compatibility and should stay blank unless the deployment explicitly needs them.
 
 Deploy the required Firestore indexes before enabling the cron job:
 
@@ -280,6 +286,22 @@ curl -H "x-cron-secret: $CRON_SECRET" "$APP_URL/api/storage/health?write=1"
 The Add Media form also accepts an HTTPS Public Media URL without a file. When one file and a public URL are submitted together, the URL is used automatically if Cloudinary exhausts its upload retries.
 
 Posts uploaded before this storage change may still reference Render-local `/uploads/...` paths. Re-upload those pending items after deployment if their media is no longer present.
+
+## Public Proof Language
+
+Safe public/demo language:
+
+- "TikTok accepted the publish request."
+- "Scheduled through CHANTER AutoPoster."
+- "Needs manual verification."
+- "Release prepared for the selected TikTok channel."
+
+Unsafe unless externally verified:
+
+- "Guaranteed posted."
+- "Fully published live."
+- "Public TikTok URL confirmed."
+- "Posted to TikTok" when only API acceptance is known.
 
 ## Project Structure
 

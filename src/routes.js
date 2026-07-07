@@ -735,7 +735,7 @@ router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(asyn
   const scheduledAt = post.scheduledAt ? new Date(post.scheduledAt) : null;
 
   if (!forcePostNow && scheduledAt && scheduledAt.getTime() > Date.now()) {
-    redirectWithNotice(res, `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}. It will publish automatically.`);
+    redirectWithNotice(res, `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}. AutoPoster will submit it when due, then show whether TikTok accepted it or needs verification.`);
     return;
   }
 
@@ -743,7 +743,7 @@ router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(asyn
   // scheduler uses (force: true just skips the "is it due yet" check) —
   // so a double-click here can't trigger a double-publish either.
   const result = await scheduler.processPost(req.params.id, { force: true });
-  if (result.ok) { redirectWithNotice(res, 'TikTok accepted the publish request. Review Post Result for details.'); return; }
+  if (result.ok) { redirectWithNotice(res, 'TikTok accepted the publish request. Review Post Result for verification details.'); return; }
   if (result.mode === 'manual') { redirectWithNotice(res, 'Needs manual verification. Review Post Result for details.'); return; }
   if (result.mode === 'skipped') { redirectWithNotice(res, 'Already publishing — give it a moment and check the result below.'); return; }
   redirectWithNotice(res, `TikTok attempt failed: ${result.reason || 'Unknown error'}`);
@@ -1065,8 +1065,11 @@ function buildPostResultView(post) {
     stateLabel = 'Needs manual verification'; tone = 'verification';
     message = (lastResult && lastResult.reason) || 'Open the media and verify or post inside TikTok.';
   } else if (status === 'posted' && isApiAccepted) {
-    stateLabel = 'Posted / API accepted'; tone = shareUrl ? 'accepted' : 'verification';
-    message = shareUrl ? 'TikTok returned a public post URL.' : 'TikTok accepted the publish request, but no public post URL was returned. Please verify inside TikTok.';
+    stateLabel = shareUrl ? 'Posted verified' : 'API accepted';
+    tone = shareUrl ? 'accepted' : 'verification';
+    message = shareUrl
+      ? 'TikTok returned a public post URL. Treat this as verified by returned URL.'
+      : 'TikTok accepted the publish request, but no public post URL was returned. Please verify inside TikTok.';
   } else if (status === 'posted') {
     stateLabel = 'Posted manually'; tone = 'accepted';
     message = (lastResult && lastResult.reason) || 'This item was marked posted manually.';
