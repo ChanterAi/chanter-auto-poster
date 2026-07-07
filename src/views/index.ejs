@@ -166,15 +166,6 @@
       .compliance-banner strong { font-weight: 700; }
       .compliance-banner a { color: inherit; text-decoration: underline; }
 
-      /* ─── AIM flow strip ─── */
-      .flow-strip {
-        display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center;
-        margin: -18px 0 30px; padding: 12px 18px;
-        border: 1px solid var(--border); border-radius: 14px; background: rgba(15,15,18,.55);
-      }
-      .flow-strip span { display: inline-flex; align-items: center; gap: 7px; color: var(--text3); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
-      .flow-strip span i { font: 500 10px 'DM Mono', monospace; font-style: normal; color: var(--text3); opacity: .7; }
-
       /* ─── Preflight ─── */
       .preflight-panel { margin-bottom: 42px; }
       .preflight-list { display: grid; gap: 8px; list-style: none; }
@@ -593,14 +584,22 @@
       const privacyOptions = Array.isArray(creatorInfo && creatorInfo.privacy_level_options) && creatorInfo.privacy_level_options.length > 0
         ? creatorInfo.privacy_level_options
         : ['SELF_ONLY'];
-      const displayResultLabel = (result) => {
+      // Client-facing status vocabulary: Ready, Scheduled, Posting, Needs
+      // attention, Posted. Keeps result.tone (drives badge color) untouched.
+      const displayResultLabel = (result, post) => {
         const tone = String((result && result.tone) || '').toLowerCase();
-        const label = String((result && result.stateLabel) || '').toLowerCase();
-        if (tone === 'failed' || label.includes('failed')) return 'Needs Review';
-        if (tone === 'verification' || label.includes('verification')) return 'Manual Review';
-        if (tone === 'accepted' || label.includes('posted') || label.includes('accepted')) return 'Published';
-        if (tone === 'publishing' || label.includes('publishing')) return 'Publishing';
-        return 'Queued';
+        if (tone === 'failed' || tone === 'verification') return 'Needs attention';
+        if (tone === 'accepted') return 'Posted';
+        if (tone === 'publishing') return 'Posting';
+        return (post && post.scheduledAt) ? 'Scheduled' : 'Ready';
+      };
+      const statusWord = (status) => {
+        const value = String(status || 'pending').toLowerCase();
+        if (value === 'posted') return 'Posted';
+        if (value === 'processing') return 'Posting';
+        if (value === 'failed' || value === 'ready') return 'Needs attention';
+        if (value === 'scheduled') return 'Scheduled';
+        return 'Ready';
       };
       const captionPreview = (post) => helpers.fullCaption(post) || 'No caption';
       const selectedPrivacy = (post) => {
@@ -664,25 +663,12 @@
         </div>
       </header>
 
-      <nav class="flow-strip" aria-label="Campaign flow">
-        <span><i>01</i>Access</span>
-        <span><i>02</i>Publishing Channel</span>
-        <span><i>03</i>Creative Asset</span>
-        <span><i>04</i>Editorial Caption</span>
-        <span><i>05</i>Discovery Tags</span>
-        <span><i>06</i>Release Window</span>
-        <span><i>07</i>Preflight Check</span>
-        <span><i>08</i>Release Queue</span>
-        <span><i>09</i>Publishing Evidence</span>
-        <span><i>10</i>Signal Review</span>
-      </nav>
-
       <% if (tiktokAccounts.length > 0) { %>
         <section class="account-context" aria-label="Publishing channel">
           <div class="account-context-copy">
             <span class="account-context-label">Publishing Channel</span>
             <strong><%= activeTikTokAccount && activeTikTokAccount.username ? `@${activeTikTokAccount.username}` : (activeTikTokAccount && activeTikTokAccount.displayName) || 'TikTok channel' %></strong>
-            <small><%= activeTikTokAccount && activeTikTokAccount.connected ? 'Connected — used for this release queue' : 'Disconnected — the publishing log is view only until reconnected' %></small>
+            <small><%= activeTikTokAccount && activeTikTokAccount.connected ? 'Connected' : 'Disconnected — reconnect to post from this channel' %></small>
           </div>
           <form class="account-selector" action="/private/autoposter/account" method="post">
             <label>
@@ -698,7 +684,7 @@
           </form>
           <div class="account-connect-flow">
             <a class="btn btn-secondary" href="/connect/tiktok?new=1">Connect Another Channel</a>
-            <small>TikTok may reuse its current browser login. Log out of TikTok first or use another browser/incognito window to connect a different account.</small>
+            <small>Use a private browser window to connect a different TikTok account.</small>
           </div>
         </section>
       <% } %>
@@ -719,7 +705,7 @@
       %>
       <% if (showUnauditedWarning) { %>
         <div class="unaudited-note">
-          <strong>App not yet reviewed by TikTok:</strong> Until your TikTok Developer app passes the audit, all posts are restricted to <code>SELF_ONLY</code> privacy and up to 5 users per 24 h window. To lift this, <a href="https://developers.tiktok.com/doc/content-sharing-guidelines/" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;">complete the TikTok audit</a>.
+          <strong>Awaiting TikTok review:</strong> posts are private (Only Me) and limited to 5 viewers a day until review is complete. <a href="https://developers.tiktok.com/doc/content-sharing-guidelines/" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;">Learn more</a>.
         </div>
       <% } %>
 
@@ -743,17 +729,17 @@
         <section class="panel panel-upload">
           <div class="panel-head panel-head-rich">
             <div>
-              <span class="panel-kicker">Campaign intake</span>
-              <h2>Creative Asset</h2>
-              <p>Attach the creative asset and prepare the editorial copy.</p>
+              <span class="panel-kicker">New post</span>
+              <h2>Media</h2>
+              <p>Add a photo or video and write the caption.</p>
             </div>
             <span class="panel-step">01</span>
           </div>
           <form class="upload-form" action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
             <div class="form-grid">
               <label class="wide upload-zone">
-                <span class="field-heading">Creative asset files</span>
-                <span class="field-note">Choose images or MP4, MOV, and WebM videos. Multiple files are supported.</span>
+                <span class="field-heading">Photo or video</span>
+                <span class="field-note">Images or MP4, MOV, WebM video. You can add more than one.</span>
                 <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple data-media-upload />
               </label>
               <% if (tiktokAccounts.length > 0) { %>
@@ -762,7 +748,7 @@
                     <span class="field-heading">Target Publishing Channels</span>
                     <button type="button" class="channel-select-all" data-select-all-channels>Select all connected</button>
                   </div>
-                  <span class="field-note">The campaign creates one release job per selected channel. Disconnected channels cannot be scheduled.</span>
+                  <span class="field-note">Posts to every channel you select. Disconnected channels can't be scheduled.</span>
                   <div class="channel-options">
                     <% tiktokAccounts.forEach(function(channel) { %>
                       <%
@@ -792,9 +778,9 @@
 
                 <div class="wide schedule-plan" data-schedule-plan>
                   <div class="channel-picker-head">
-                    <span class="field-heading">Release Plan</span>
+                    <span class="field-heading">Custom start time</span>
                   </div>
-                  <span class="field-note">Optional. Set an exact campaign start date and time — the first selected channel publishes then, and each following channel publishes one offset later, in the order selected above. Leave blank to use the daily Release Window instead.</span>
+                  <span class="field-note">Optional. Set an exact start time — each channel posts a few minutes after the last. Leave blank to use the daily posting time instead.</span>
                   <div class="schedule-plan-inputs">
                     <label>
                       Start date
@@ -803,10 +789,10 @@
                     <label>
                       Start time
                       <input type="time" name="startTime" data-schedule-start-time />
-                      <small>Local browser time (<span data-schedule-tz>—</span>). Stored as UTC.</small>
+                      <small>Your local time (<span data-schedule-tz>—</span>).</small>
                     </label>
                     <label>
-                      Offset between channels (minutes)
+                      Minutes between channels
                       <input type="number" name="offsetMinutes" min="0" step="1" value="<%= defaultOffsetMinutes %>" data-schedule-offset />
                     </label>
                   </div>
@@ -818,7 +804,7 @@
                 <label class="auto-caption-row">
                   <span class="auto-caption-copy">
                     <strong>Auto Caption</strong>
-                    <span>Analyze five video frames and optional speech before creating the scheduled job.</span>
+                    <span>Writes a caption for you from the video.</span>
                   </span>
                   <input
                     type="checkbox"
@@ -829,13 +815,13 @@
                   />
                 </label>
                 <p class="auto-caption-status" data-auto-caption-status aria-live="polite">
-                  <%= autoCaptionConfigured ? 'Turn on Auto Caption, then choose a video.' : 'Auto Caption is unavailable until an AI provider key is configured.' %>
+                  <%= autoCaptionConfigured ? 'Turn on Auto Caption, then choose a video.' : 'Auto Caption isn\'t set up yet.' %>
                 </p>
                 <div class="auto-music-divider" aria-hidden="true"></div>
                 <label class="auto-caption-row">
                   <span class="auto-caption-copy">
                     <strong>Auto Music</strong>
-                    <span>Select and embed background music in the first uploaded video before scheduling.</span>
+                    <span>Adds background music to your video.</span>
                   </span>
                   <input
                     type="checkbox"
@@ -846,21 +832,21 @@
                   />
                 </label>
                 <p class="auto-caption-status" data-auto-music-status aria-live="polite">
-                  <%= autoMusicConfigured ? 'Turn on Auto Music, then choose a video.' : 'Auto Music is unavailable until the local music library is configured.' %>
+                  <%= autoMusicConfigured ? 'Turn on Auto Music, then choose a video.' : 'Auto Music isn\'t set up yet.' %>
                 </p>
                 <input type="hidden" name="autoMusicToken" value="" data-auto-music-token />
               </div>
               <label class="wide url-field">
                 Public Media URL
-                <span class="field-note">Optional HTTPS fallback when the asset is already hosted.</span>
+                <span class="field-note">Optional — use if your file is already hosted online.</span>
                 <input type="url" name="publicMediaUrl" placeholder="https://example.com/media.jpg" data-public-media-url />
               </label>
               <label>
-                Editorial Caption
-                <textarea name="caption" placeholder="Write the editorial caption…" data-caption-input></textarea>
+                Caption
+                <textarea name="caption" placeholder="Write a caption…" data-caption-input></textarea>
               </label>
               <label>
-                Discovery Tags
+                Hashtags
                 <textarea name="hashtags" placeholder="#chanter #viral" data-hashtags-input></textarea>
               </label>
             </div>
@@ -871,29 +857,29 @@
         <section class="panel panel-schedule">
           <div class="panel-head panel-head-rich">
             <div>
-              <span class="panel-kicker">Publishing engine</span>
-              <h2>Release Window</h2>
-              <p>Set the daily release window for queued campaigns.</p>
+              <span class="panel-kicker">Daily schedule</span>
+              <h2>Posting Time</h2>
+              <p>Choose when queued posts go out each day.</p>
             </div>
             <span class="panel-step">02</span>
           </div>
           <div class="schedule-clock">
-            <span>Daily release time</span>
+            <span>Daily posting time</span>
             <strong><%= settings.dailyPostTime %></strong>
-            <small>Your configured application timezone</small>
+            <small>Your app's timezone</small>
           </div>
           <form class="schedule-settings" action="/settings" method="post">
             <label>
-              Update release time
+              Change posting time
               <input type="time" name="dailyPostTime" value="<%= settings.dailyPostTime %>" required />
             </label>
-            <div class="actions"><button type="submit" class="btn btn-primary">Save Release Window</button></div>
+            <div class="actions"><button type="submit" class="btn btn-primary">Save Time</button></div>
           </form>
           <div class="schedule-divider"></div>
           <form class="rebuild-form" action="/schedule" method="post">
-            <p><span class="status-dot"></span>Rebuild applies the release window to queued campaigns.</p>
+            <p><span class="status-dot"></span>Applies this time to everything already in the queue.</p>
             <div class="actions">
-              <button type="submit" class="btn btn-secondary" <%= !tiktokConfigured ? 'disabled' : '' %>>Rebuild Release Queue</button>
+              <button type="submit" class="btn btn-secondary" <%= !tiktokConfigured ? 'disabled' : '' %>>Reschedule Queue</button>
             </div>
           </form>
         </section>
@@ -911,20 +897,20 @@
           <div>
             <span class="panel-kicker">Preflight check</span>
             <h2>Preflight</h2>
-            <p>Confirm the campaign is complete before it enters the release queue.</p>
+            <p>Make sure everything is ready before you post.</p>
           </div>
           <span class="panel-step">03</span>
         </div>
         <ul class="preflight-list">
-          <li data-check="channel">Target Publishing Channels selected<span class="preflight-state" data-state-label>Checking</span></li>
-          <li data-check="auth">Selected channels authorized<span class="preflight-state" data-state-label>Checking</span></li>
-          <li data-check="asset">Creative Asset attached<span class="preflight-state" data-state-label>Checking</span></li>
-          <li data-check="caption">Editorial Caption present<span class="preflight-state" data-state-label>Checking</span></li>
-          <li data-check="window">Release Window configured<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="channel">Channel selected<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="auth">Channel connected<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="asset">Media added<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="caption">Caption written<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="window">Posting time set<span class="preflight-state" data-state-label>Checking</span></li>
         </ul>
         <ul class="preflight-channels" data-preflight-channels aria-label="Per-channel preflight"></ul>
         <div class="preflight-verdict" data-preflight-verdict>
-          <span data-preflight-message>Run preflight to confirm this campaign is ready.</span>
+          <span data-preflight-message>Check readiness before you post.</span>
           <div class="actions"><button type="button" class="btn btn-secondary" data-run-preflight>Run Preflight</button></div>
         </div>
       </section>
@@ -934,9 +920,9 @@
       <section class="queue-section" aria-label="Release queue">
         <div class="section-head">
           <div>
-            <span class="section-kicker">Release pipeline</span>
+            <span class="section-kicker">Queue</span>
             <h2>Release Queue</h2>
-            <p>Review queued campaigns and adjust their release details.</p>
+            <p>Everything waiting to post.</p>
           </div>
           <span class="count count-prominent"><%= activePosts.length %> active</span>
         </div>
@@ -966,7 +952,7 @@
                 <% } %>
                 <ul class="campaign-summary-jobs">
                   <% campaign.jobs.forEach(function(job) { %>
-                    <li><%= job.username ? `@${job.username}` : 'Channel unassigned' %> &middot; <%= job.status %></li>
+                    <li><%= job.username ? `@${job.username}` : 'Channel unassigned' %> &middot; <%= statusWord(job.status) %></li>
                   <% }); %>
                 </ul>
               </article>
@@ -977,8 +963,8 @@
         <% if (activePosts.length === 0) { %>
           <div class="empty-state">
             <span class="empty-icon" aria-hidden="true">+</span>
-            <p>Your release queue is clear</p>
-            <span>Attach a creative asset above to prepare the next campaign.</span>
+            <p>Nothing queued yet</p>
+            <span>Add a photo or video above to create your next post.</span>
           </div>
         <% } %>
 
@@ -1021,7 +1007,7 @@
                     <h3><%= post.originalName %></h3>
                     <p class="queue-meta"><%= helpers.formatDateTime(post.scheduledAt) %> &middot; <%= post.username ? `@${post.username}` : 'Channel unassigned' %><%= post.campaignId ? ` · Campaign ${post.campaignId.slice(0, 8)}` : '' %> &middot; Job <%= post.id.slice(0, 8) %></p>
                   </div>
-                  <span class="badge <%= result.tone %>" data-result-badge><%= displayResultLabel(result) %></span>
+                  <span class="badge <%= result.tone %>" data-result-badge><%= displayResultLabel(result, post) %></span>
                 </div>
 
                 <p class="caption-preview"><%= captionPreview(post) %></p>
@@ -1046,23 +1032,23 @@
                 >
                   <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
 
-                  <!-- ① Editorial Caption (required by TikTok as the post title) -->
+                  <!-- ① Caption (required by TikTok as the post title) -->
                   <label>
-                    Editorial Caption
-                    <span class="field-note">Required — visible on the TikTok post page. Shown to your audience.</span>
-                    <input type="text" name="caption" value="<%= post.caption || '' %>" placeholder="Add the editorial caption…" maxlength="150" required />
+                    Caption
+                    <span class="field-note">Shown on your TikTok post.</span>
+                    <input type="text" name="caption" value="<%= post.caption || '' %>" placeholder="Add a caption…" maxlength="150" required />
                   </label>
 
-                  <!-- ② Discovery Tags -->
+                  <!-- ② Hashtags -->
                   <label>
-                    Discovery Tags
+                    Hashtags
                     <input type="text" name="hashtags" value="<%= post.hashtags || '' %>" placeholder="#chanter #viral" />
                   </label>
 
-                  <!-- ③ Release Window + Privacy row -->
+                  <!-- ③ Posting time + Privacy row -->
                   <div class="schedule-row">
                     <label>
-                      <span class="field-note">Release window (your local timezone).</span>
+                      <span class="field-note">Posting time (your local timezone).</span>
                       <input type="datetime-local" name="scheduledAt" value="<%= helpers.dateTimeInput(post.scheduledAt) %>" />
                     </label>
                     <label>
@@ -1081,7 +1067,7 @@
 
                   <!-- ④ Interaction Ability (TikTok Required UX #2c) -->
                   <% if (tiktokConfigured) { %>
-                    <span class="section-label">Interaction ability</span>
+                    <span class="section-label">Interactions</span>
                     <div class="interaction-controls">
                       <%# Allow Comment — always shown %>
                       <div class="check-row <%= commentDisabled ? 'disabled-row' : '' %>">
@@ -1122,7 +1108,7 @@
                   <% if (tiktokConfigured) { %>
                     <div class="disclosure-section" data-disclosure-section>
                       <div class="disclosure-header">
-                        <span>Content Disclosure Setting</span>
+                        <span>Content Disclosure</span>
                         <div class="toggle-wrap">
                           <label class="toggle">
                             <input type="checkbox" name="contentDisclosure" id="cd_<%= post.id %>" value="1" data-disclosure-toggle />
@@ -1133,16 +1119,15 @@
                       </div>
                       <div class="disclosure-body" data-disclosure-body style="display:none;">
                         <p class="disclosure-note">
-                          Indicate if your content promotes yourself, a brand, product, or service.
-                          If enabled, TikTok will label this post as "Promotional content".
+                          Turn this on if the post promotes a brand or product. TikTok will label it as promotional.
                         </p>
                         <div class="check-row">
                           <input type="checkbox" id="yourBrand_<%= post.id %>" name="yourBrand" value="1" />
-                          <label for="yourBrand_<%= post.id %>">Your Brand — promoting your own business</label>
+                          <label for="yourBrand_<%= post.id %>">Your own brand or business</label>
                         </div>
                         <div class="check-row">
                           <input type="checkbox" id="brandedContent_<%= post.id %>" name="brandedContent" value="1" />
-                          <label for="brandedContent_<%= post.id %>">Branded Content — promoting a third-party brand</label>
+                          <label for="brandedContent_<%= post.id %>">Someone else's brand or product</label>
                         </div>
                       </div>
                     </div>
@@ -1150,7 +1135,7 @@
 
                   <!-- Advanced -->
                   <details class="advanced">
-                    <summary>Advanced / URLs</summary>
+                    <summary>Advanced</summary>
                     <div class="advanced-body">
                       <label>
                         Public Media URL
@@ -1183,7 +1168,7 @@
                 <% } %>
 
                 <div class="card-actions">
-                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Publish now? This ignores the release window.');">
+                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post now? This skips the scheduled time.');">
                     <input type="hidden" name="force" value="1" />
                     <button type="submit" class="btn btn-secondary">Publish Now</button>
                   </form>
@@ -1215,7 +1200,7 @@
         </summary>
         <div class="history-list">
           <% if (historyPosts.length === 0) { %>
-            <div class="history-empty">No published campaigns yet</div>
+            <div class="history-empty">Nothing posted yet</div>
           <% } %>
           <% historyPosts.forEach(function(post) { %>
             <% const mediaPath = helpers.mediaPath(post); %>
@@ -1244,7 +1229,7 @@
                     <h3><%= post.originalName %></h3>
                     <p class="queue-meta"><%= helpers.formatDateTime(post.postedAt || post.scheduledAt) %> &middot; <%= post.username ? `@${post.username}` : 'Channel unassigned' %><%= post.campaignId ? ` · Campaign ${post.campaignId.slice(0, 8)}` : '' %></p>
                   </div>
-                  <span class="badge <%= result.tone %>"><%= displayResultLabel(result) %></span>
+                  <span class="badge <%= result.tone %>"><%= displayResultLabel(result, post) %></span>
                 </div>
                 <p class="caption-preview"><%= captionPreview(post) %></p>
                 <div class="card-actions">
@@ -1253,7 +1238,7 @@
                   </form>
                 </div>
                 <% if (result.hasDebug) { %>
-                  <details class="advanced"><summary>Publishing Evidence</summary><div class="advanced-body"><pre><%= result.debugJson %></pre></div></details>
+                  <details class="advanced"><summary>Details</summary><div class="advanced-body"><pre><%= result.debugJson %></pre></div></details>
                 <% } %>
               </div>
             </article>
@@ -1297,8 +1282,8 @@
             const card = form.closest('[data-post-card]');
             const badge = card ? card.querySelector('[data-result-badge]') : null;
             const btn = form.querySelector('button');
-            if (btn) { btn.disabled = true; btn.textContent = 'Publishing…'; }
-            if (badge) { badge.className = 'badge publishing'; badge.textContent = 'Publishing'; }
+            if (btn) { btn.disabled = true; btn.textContent = 'Posting…'; }
+            if (badge) { badge.className = 'badge publishing'; badge.textContent = 'Posting'; }
           });
         });
 
@@ -1659,7 +1644,7 @@
             return;
           }
           if (sources === 0) {
-            planLine.textContent = `${channels} ${channels === 1 ? 'channel' : 'channels'} selected — attach a creative asset to plan the release jobs.`;
+            planLine.textContent = `${channels} ${channels === 1 ? 'channel' : 'channels'} selected — add a photo or video to plan this post.`;
             return;
           }
           planLine.dataset.tone = 'ready';
@@ -1704,20 +1689,20 @@
           const hasWindow = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(releaseWindow);
 
           setCheck('channel', hasTargets, hasPicker && targets.length > 0 ? `${targets.length} selected` : 'Selected', 'Channel Required');
-          setCheck('auth', allAuthorized, 'Authorized', hasTargets ? 'Reconnect Required' : 'Channel Required');
-          setCheck('asset', hasAsset, 'Attached', 'Asset Required');
-          setCheck('caption', hasCaption, 'Present', 'Caption Required');
-          setCheck('window', hasWindow, 'Configured', 'Window Required');
+          setCheck('auth', allAuthorized, 'Connected', hasTargets ? 'Reconnect Required' : 'Channel Required');
+          setCheck('asset', hasAsset, 'Added', 'Asset Required');
+          setCheck('caption', hasCaption, 'Written', 'Caption Required');
+          setCheck('window', hasWindow, 'Set', 'Time Required');
 
           const blockedReason = !hasTargets ? 'Channel Required — select at least one publishing channel.'
             : !allAuthorized ? 'Reconnect Required — a selected channel is no longer authorized.'
-            : !hasAsset ? 'Asset Required — attach a creative asset or public media URL.'
-            : !hasCaption ? 'Caption Required — write an editorial caption or enable Auto Caption.'
-            : !hasWindow ? 'Release Window Required — set a daily release time.'
+            : !hasAsset ? 'Asset Required — add a photo, video, or public media URL.'
+            : !hasCaption ? 'Caption Required — write a caption or enable Auto Caption.'
+            : !hasWindow ? 'Posting Time Required — set a daily posting time.'
             : '';
           const shortReason = !hasAsset ? 'Asset Required'
             : !hasCaption ? 'Caption Required'
-            : !hasWindow ? 'Window Required'
+            : !hasWindow ? 'Time Required'
             : '';
 
           renderChannelList(shortReason);
@@ -1726,11 +1711,11 @@
           if (verdict) verdict.dataset.tone = blockedReason ? 'blocked' : 'ready';
           if (message) {
             if (blockedReason) {
-              message.textContent = `Blocked — ${blockedReason}`;
+              message.textContent = `Needs attention — ${blockedReason}`;
             } else if (hasPicker) {
-              message.textContent = `Ready to publish — ${targets.length} ${targets.length === 1 ? 'channel' : 'channels'} will receive this campaign.`;
+              message.textContent = `Ready to post — ${targets.length} ${targets.length === 1 ? 'channel' : 'channels'} will receive this post.`;
             } else {
-              message.textContent = 'Ready to publish — prepare the campaign to enter the release queue.';
+              message.textContent = 'Ready to post.';
             }
           }
         };
@@ -1794,11 +1779,11 @@
           const selected = channelOptions.filter((option) => option.checked && !option.disabled);
 
           if (!dateValue || !timeValue) {
-            addRow('Set a start date and time to preview the release plan, or leave blank to use the daily Release Window.');
+            addRow('Set a start date and time to preview the plan, or leave blank to use the daily posting time.');
             return;
           }
           if (selected.length === 0) {
-            addRow('Select at least one publishing channel to preview the release plan.', 'blocked');
+            addRow('Select at least one publishing channel to preview the plan.', 'blocked');
             return;
           }
           if (!Number.isFinite(offsetMinutes) || offsetMinutes < 0) {

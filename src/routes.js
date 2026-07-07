@@ -580,7 +580,7 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
         return;
       }
       if (!target.connected) {
-        redirectWithNotice(res, `${accountLabel(target)} needs to be reconnected before campaigns can be scheduled to it.`);
+        redirectWithNotice(res, `${accountLabel(target)} needs to be reconnected before it can post.`);
         return;
       }
       resolved.push(target);
@@ -648,24 +648,24 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
   }
 
   const usedFallback = created.some((post) => post.storageFallback);
-  const sourceNotice = usedFallback ? ' Cloudinary upload failed, so the submitted public URL was used.' : '';
+  const sourceNotice = usedFallback ? ' Upload failed, so the public URL was used instead.' : '';
   const musicNotice = created.some((post) => post.autoMusicApplied)
-    ? ' Background music was embedded in the final video.'
-    : (req.body.autoMusicToken ? ' Prepared music was unavailable, so the original video was used.' : '');
+    ? ' Background music was added.'
+    : (req.body.autoMusicToken ? ' Music could not be added, so the original video was used.' : '');
   const channelNotice = targetAccounts.length > 1
     ? ` across ${targetAccounts.length} channels`
     : ` for ${accountLabel(targetAccounts[0])}`;
   const scheduleNotice = useMaxScheduler
-    ? ` First release ${maxSchedulePlan.baseAt} (UTC), offset ${maxSchedulePlan.offsetMinutes}m between channels.`
+    ? ` First post at ${viewHelpers.formatDateTime(maxSchedulePlan.baseAt)}, ${maxSchedulePlan.offsetMinutes}m apart per channel.`
     : '';
-  redirectWithNotice(res, `Created ${created.length} release ${created.length === 1 ? 'job' : 'jobs'}${channelNotice}. Scheduled ${scheduledCount}.${scheduleNotice}${sourceNotice}${musicNotice}`);
+  redirectWithNotice(res, `Created ${created.length} ${created.length === 1 ? 'post' : 'posts'}${channelNotice}. ${scheduledCount} scheduled.${scheduleNotice}${sourceNotice}${musicNotice}`);
 }));
 
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
   const dailyPostTime = String(req.body.dailyPostTime || '').trim();
   if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dailyPostTime)) { redirectWithNotice(res, 'Use a valid daily posting time.'); return; }
   await storage.saveSettings({ dailyPostTime });
-  redirectWithNotice(res, `Schedule set to ${dailyPostTime}.`);
+  redirectWithNotice(res, `Posting time set to ${dailyPostTime}.`);
 }));
 
 router.post('/schedule', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
@@ -735,7 +735,7 @@ router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(asyn
   const scheduledAt = post.scheduledAt ? new Date(post.scheduledAt) : null;
 
   if (!forcePostNow && scheduledAt && scheduledAt.getTime() > Date.now()) {
-    redirectWithNotice(res, `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}. AutoPoster will submit it when due, then show whether TikTok accepted it or needs verification.`);
+    redirectWithNotice(res, `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}. It will post automatically at that time.`);
     return;
   }
 
@@ -743,10 +743,10 @@ router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(asyn
   // scheduler uses (force: true just skips the "is it due yet" check) —
   // so a double-click here can't trigger a double-publish either.
   const result = await scheduler.processPost(req.params.id, { force: true });
-  if (result.ok) { redirectWithNotice(res, 'TikTok accepted the publish request. Review Post Result for verification details.'); return; }
-  if (result.mode === 'manual') { redirectWithNotice(res, 'Needs manual verification. Review Post Result for details.'); return; }
-  if (result.mode === 'skipped') { redirectWithNotice(res, 'Already publishing — give it a moment and check the result below.'); return; }
-  redirectWithNotice(res, `TikTok attempt failed: ${result.reason || 'Unknown error'}`);
+  if (result.ok) { redirectWithNotice(res, 'Posted. Check the status below to confirm.'); return; }
+  if (result.mode === 'manual') { redirectWithNotice(res, 'Needs attention — see the note on this post below.'); return; }
+  if (result.mode === 'skipped') { redirectWithNotice(res, 'Already posting — give it a moment and check the status below.'); return; }
+  redirectWithNotice(res, `Needs attention: ${result.reason || 'TikTok could not post this.'}`);
 }));
 
 router.post('/posts/:id/posted', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
@@ -1043,36 +1043,35 @@ function buildPostResultView(post) {
   const debugJson = getDebugJson(post);
 
   let stateLabel = 'Scheduled', tone = 'scheduled';
-  let message = post && post.scheduledAt ? `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}.` : 'Waiting for a schedule time.';
+  let message = post && post.scheduledAt ? `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}.` : 'Ready to schedule.';
 
   // NOTE: the Firestore status value is "processing" now (was "publishing"
-  // in the old file-based storage). tone/stateLabel/message are left as
-  // "publishing" below on purpose — that string only drives the CSS class
-  // and label text, which the view already expects, so the UI is visually
-  // identical to before.
+  // in the old file-based storage). tone/stateLabel are left as
+  // "publishing" below on purpose — that string only drives the CSS class,
+  // which the view already expects, so styling stays identical to before.
   if (status === 'processing') {
     stateLabel = 'Publishing'; tone = 'publishing';
-    message = 'Publishing to TikTok. Large videos can take a moment.';
+    message = 'Posting to TikTok — this can take a moment for larger videos.';
   } else if (status === 'failed' || (lastResult && lastResult.ok === false && lastResult.mode !== 'manual')) {
     stateLabel = 'Failed'; tone = 'failed';
     const rawReason = (lastResult && lastResult.reason) || '';
     const fullJson = lastResult ? JSON.stringify(lastResult) : '';
     const isUnaudited = rawReason.includes('unaudited_client_can_only_post_to_private_accounts') || rawReason.includes('403') || fullJson.includes('unaudited_client_can_only_post_to_private_accounts');
     message = isUnaudited
-      ? 'TikTok blocked this because the app is not reviewed yet. Until approval, test posting may require a private TikTok account.'
-      : rawReason || 'TikTok rejected the publish request.';
+      ? 'TikTok needs this account set to private until app review is complete.'
+      : rawReason || "TikTok couldn't post this. Try again.";
   } else if (status === 'ready' || (lastResult && lastResult.mode === 'manual' && status !== 'posted')) {
     stateLabel = 'Needs manual verification'; tone = 'verification';
-    message = (lastResult && lastResult.reason) || 'Open the media and verify or post inside TikTok.';
+    message = (lastResult && lastResult.reason) || 'Check the media, then confirm it inside TikTok.';
   } else if (status === 'posted' && isApiAccepted) {
     stateLabel = shareUrl ? 'Posted verified' : 'API accepted';
     tone = shareUrl ? 'accepted' : 'verification';
     message = shareUrl
-      ? 'TikTok returned a public post URL. Treat this as verified by returned URL.'
-      : 'TikTok accepted the publish request, but no public post URL was returned. Please verify inside TikTok.';
+      ? 'TikTok confirmed this post is live.'
+      : "TikTok accepted this post. Confirm it's live inside the app.";
   } else if (status === 'posted') {
     stateLabel = 'Posted manually'; tone = 'accepted';
-    message = (lastResult && lastResult.reason) || 'This item was marked posted manually.';
+    message = (lastResult && lastResult.reason) || 'Marked as posted.';
   }
 
   return { stateLabel, tone, message, metadata, shareUrl, publishId, debugJson, hasDebug: Boolean(debugJson), hasAttempt: Boolean(lastResult), statusCheckAvailable: false };
