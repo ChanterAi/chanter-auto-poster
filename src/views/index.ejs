@@ -399,7 +399,8 @@
 
       /* ─── Release Queue view mode ─── */
       .queue-view-toggle { display: flex; gap: 8px; margin-bottom: 10px; }
-      .queue-view-toggle .btn { height: 32px; padding: 0 13px; font-size: 11px; }
+      .queue-view-toggle .btn { height: 32px; padding: 0 13px; font-size: 11px; transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
+      [data-queue-view-region][aria-busy="true"] { opacity: .6; pointer-events: none; transition: opacity .12s ease; }
       .queue-view-note {
         margin-bottom: 16px; padding: 10px 14px; border-radius: var(--r-sm);
         border: 1px solid var(--border); background: rgba(255,255,255,.02);
@@ -929,6 +930,7 @@
       </section>
 
       <!-- ─── Release Queue ─── -->
+      <div data-queue-view-region>
       <section class="queue-section" aria-label="Release queue">
         <div class="section-head">
           <div>
@@ -940,12 +942,12 @@
         </div>
 
         <% if (tiktokAccounts.length > 0) { %>
-          <div class="queue-view-toggle" role="group" aria-label="Release queue view">
-            <a class="btn <%= queueView === 'all' ? 'btn-primary' : 'btn-secondary' %>" href="?queueView=all">All Channels</a>
-            <a class="btn <%= queueView === 'active' ? 'btn-primary' : 'btn-secondary' %>" href="?queueView=active">Active Channel</a>
+          <div class="queue-view-toggle" data-queue-view-toggle role="group" aria-label="Release queue view">
+            <a class="btn <%= queueView === 'all' ? 'btn-primary' : 'btn-secondary' %>" href="?queueView=all" data-queue-view-link="all" aria-pressed="<%= queueView === 'all' ? 'true' : 'false' %>">All Channels</a>
+            <a class="btn <%= queueView === 'active' ? 'btn-primary' : 'btn-secondary' %>" href="?queueView=active" data-queue-view-link="active" aria-pressed="<%= queueView === 'active' ? 'true' : 'false' %>">Active Channel</a>
           </div>
           <% if (queueView === 'active') { %>
-            <p class="queue-view-note">Showing jobs for active channel only. Switch to All Channels to view all campaign jobs.</p>
+            <p class="queue-view-note" data-queue-view-note>Showing jobs for active channel only. Switch to All Channels to view all campaign jobs.</p>
           <% } %>
         <% } %>
 
@@ -1258,14 +1260,78 @@
           <% }); %>
         </div>
       </details>
+      </div>
     </div>
 
     <script type="module" src="/autoposter-dashboard/assets/prompt-evolver-main.js"></script>
     <script>
-      // Timezone offset
-      document.querySelectorAll('[data-timezone-offset]').forEach(el => {
-        el.value = String(new Date().getTimezoneOffset());
-      });
+      // Per-card / per-form behaviors, scoped to a root element so they can
+      // be re-run after the Release Queue view toggle swaps in fresh
+      // content without a full page reload (see the toggle IIFE near the
+      // bottom of this script). Called once with `document` on initial
+      // load, exactly as before.
+      function hydrateQueueRegion(root) {
+        root.querySelectorAll('[data-timezone-offset]').forEach(el => {
+          el.value = String(new Date().getTimezoneOffset());
+        });
+
+        // Edit form: public media URL validation
+        root.querySelectorAll('[data-edit-form]').forEach(form => {
+          const input = form.querySelector('[data-public-media-url]');
+          if (!input) return;
+          const validate = () => {
+            const mediaType = form.dataset.mediaType;
+            const hasLocal = form.dataset.hasLocalMedia === 'true';
+            const hasUrl = input.value.trim().length > 0;
+            const missing = mediaType === 'photo' && !hasLocal && !hasUrl;
+            input.setCustomValidity(missing ? 'Add a Public Media URL for photo posts.' : '');
+            return !missing;
+          };
+          input.addEventListener('input', validate);
+          form.addEventListener('submit', e => { if (!validate()) { e.preventDefault(); input.reportValidity(); } });
+        });
+
+        // Publish form: optimistic badge
+        root.querySelectorAll('[data-publish-form]').forEach(form => {
+          form.addEventListener('submit', () => {
+            const card = form.closest('[data-post-card]');
+            const badge = card ? card.querySelector('[data-result-badge]') : null;
+            const btn = form.querySelector('button');
+            if (btn) { btn.disabled = true; btn.textContent = 'Publishing…'; }
+            if (badge) { badge.className = 'badge publishing'; badge.textContent = 'Publishing'; }
+          });
+        });
+
+        <% if (enableInstagram) { %>
+          // Instagram test form
+          root.querySelectorAll('[data-instagram-publish-form]').forEach(form => {
+            form.addEventListener('submit', () => {
+              const btn = form.querySelector('button');
+              if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
+            });
+          });
+        <% } %>
+
+        // Missing media thumbnails
+        root.querySelectorAll('[data-preview-media]').forEach(media => {
+          const mark = () => { const t = media.closest('.queue-thumb'); if (t) t.classList.add('is-missing'); };
+          media.addEventListener('error', mark);
+          if (media.tagName === 'IMG' && media.complete && media.naturalWidth === 0) mark();
+        });
+
+        // Content Disclosure toggle shows/hides body
+        root.querySelectorAll('[data-disclosure-toggle]').forEach(toggle => {
+          const section = toggle.closest('[data-disclosure-section]');
+          if (!section) return;
+          const body = section.querySelector('[data-disclosure-body]');
+          if (!body) return;
+          toggle.addEventListener('change', () => {
+            body.style.display = toggle.checked ? '' : 'none';
+          });
+        });
+      }
+
+      hydrateQueueRegion(document);
 
       // File kind helper
       function getFileKind(file) {
@@ -1546,61 +1612,6 @@
         });
       });
 
-      // Edit form: public media URL validation
-      document.querySelectorAll('[data-edit-form]').forEach(form => {
-        const input = form.querySelector('[data-public-media-url]');
-        if (!input) return;
-        const validate = () => {
-          const mediaType = form.dataset.mediaType;
-          const hasLocal = form.dataset.hasLocalMedia === 'true';
-          const hasUrl = input.value.trim().length > 0;
-          const missing = mediaType === 'photo' && !hasLocal && !hasUrl;
-          input.setCustomValidity(missing ? 'Add a Public Media URL for photo posts.' : '');
-          return !missing;
-        };
-        input.addEventListener('input', validate);
-        form.addEventListener('submit', e => { if (!validate()) { e.preventDefault(); input.reportValidity(); } });
-      });
-
-      // Publish form: optimistic badge
-      document.querySelectorAll('[data-publish-form]').forEach(form => {
-        form.addEventListener('submit', () => {
-          const card = form.closest('[data-post-card]');
-          const badge = card ? card.querySelector('[data-result-badge]') : null;
-          const btn = form.querySelector('button');
-          if (btn) { btn.disabled = true; btn.textContent = 'Publishing…'; }
-          if (badge) { badge.className = 'badge publishing'; badge.textContent = 'Publishing'; }
-        });
-      });
-
-      <% if (enableInstagram) { %>
-        // Instagram test form
-        document.querySelectorAll('[data-instagram-publish-form]').forEach(form => {
-          form.addEventListener('submit', () => {
-            const btn = form.querySelector('button');
-            if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
-          });
-        });
-      <% } %>
-
-      // Missing media thumbnails
-      document.querySelectorAll('[data-preview-media]').forEach(media => {
-        const mark = () => { const t = media.closest('.queue-thumb'); if (t) t.classList.add('is-missing'); };
-        media.addEventListener('error', mark);
-        if (media.tagName === 'IMG' && media.complete && media.naturalWidth === 0) mark();
-      });
-
-      // Content Disclosure toggle shows/hides body
-      document.querySelectorAll('[data-disclosure-toggle]').forEach(toggle => {
-        const section = toggle.closest('[data-disclosure-section]');
-        if (!section) return;
-        const body = section.querySelector('[data-disclosure-body]');
-        if (!body) return;
-        toggle.addEventListener('change', () => {
-          body.style.display = toggle.checked ? '' : 'none';
-        });
-      });
-
       // Preflight check — client-side readiness review of the intake form.
       // Validates every selected target channel. Uses only server-rendered
       // booleans and public channel handles; no tokens or secrets are exposed.
@@ -1828,6 +1839,89 @@
         });
         channelOptions.forEach((option) => option.addEventListener('change', render));
         render();
+      })();
+
+      // Release Queue view toggle — instant feedback, no full page reload.
+      // The toggle stays a real link (?queueView=all|active): with JS
+      // disabled, or if the background fetch below ever fails, it falls
+      // back to a normal navigation and the server renders the requested
+      // view exactly as before. With JS available, clicking it updates the
+      // pressed button and the explanatory copy immediately (no network
+      // wait), pushes the new URL, then swaps in the freshly fetched
+      // queue/history content in the background.
+      (() => {
+        // Deliberately not the exact server copy: the real explanatory
+        // sentence only ever comes from the server-rendered (or freshly
+        // fetched) markup, so a no-JS page load and a fetch failure both
+        // still show the authoritative text with no client-side copy to
+        // keep in sync. This is just the instant, in-between placeholder
+        // while that real content loads (typically well under a second).
+        const SWITCHING_NOTE = 'Switching view…';
+
+        const setOptimisticState = (region, view) => {
+          region.querySelectorAll('[data-queue-view-link]').forEach((link) => {
+            const isSelected = link.dataset.queueViewLink === view;
+            link.classList.toggle('btn-primary', isSelected);
+            link.classList.toggle('btn-secondary', !isSelected);
+            link.setAttribute('aria-pressed', String(isSelected));
+          });
+          let note = region.querySelector('[data-queue-view-note]');
+          if (view === 'active') {
+            if (!note) {
+              const toggle = region.querySelector('[data-queue-view-toggle]');
+              if (toggle) {
+                note = document.createElement('p');
+                note.className = 'queue-view-note';
+                note.setAttribute('data-queue-view-note', '');
+                toggle.insertAdjacentElement('afterend', note);
+              }
+            }
+            if (note) note.textContent = SWITCHING_NOTE;
+          } else if (note) {
+            note.remove();
+          }
+        };
+
+        const bindToggleLinks = (region) => {
+          region.querySelectorAll('[data-queue-view-link]').forEach((link) => {
+            link.addEventListener('click', (event) => {
+              if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              const view = link.dataset.queueViewLink;
+              const url = new URL(link.getAttribute('href'), window.location.href);
+              setOptimisticState(region, view);
+              history.pushState({ queueView: view }, '', url);
+              loadQueueView(url);
+            });
+          });
+        };
+
+        const loadQueueView = async (url) => {
+          const currentRegion = document.querySelector('[data-queue-view-region]');
+          if (!currentRegion) { window.location.href = url; return; }
+          currentRegion.setAttribute('aria-busy', 'true');
+          try {
+            const response = await fetch(url, { headers: { Accept: 'text/html' } });
+            if (!response.ok) throw new Error(`Release Queue request failed: ${response.status}`);
+            const html = await response.text();
+            const nextRegion = new DOMParser().parseFromString(html, 'text/html').querySelector('[data-queue-view-region]');
+            if (!nextRegion) throw new Error('Release Queue region missing from response');
+            currentRegion.replaceWith(nextRegion);
+            bindToggleLinks(nextRegion);
+            hydrateQueueRegion(nextRegion);
+          } catch (error) {
+            window.location.href = url;
+          } finally {
+            if (currentRegion.isConnected) currentRegion.removeAttribute('aria-busy');
+          }
+        };
+
+        const initialRegion = document.querySelector('[data-queue-view-region]');
+        if (initialRegion) bindToggleLinks(initialRegion);
+
+        window.addEventListener('popstate', () => {
+          loadQueueView(window.location.href);
+        });
       })();
     </script>
   </body>
