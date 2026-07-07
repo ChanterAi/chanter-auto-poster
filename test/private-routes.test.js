@@ -136,6 +136,17 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
     const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
   });
   t.after(() => new Promise((resolve) => server.close(resolve)));
+  // Defensive isolation: this file runs as its own process (node --test
+  // gives every test file a fresh process/module cache), but restore the
+  // env vars this file sets on top of whatever the runner provided anyway,
+  // so nothing here can ever depend on process-level state surviving past
+  // this test.
+  const envSnapshot = {
+    ADMIN_PASSWORD: process.env.ADMIN_PASSWORD,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    ENABLE_INSTAGRAM: process.env.ENABLE_INSTAGRAM
+  };
+  t.after(() => { Object.assign(process.env, envSnapshot); });
 
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -243,6 +254,21 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.deepEqual(dashboardData.accounts.map((account) => account.id), ['account-a', 'account-b']);
   assert.deepEqual(dashboardData.jobs.map((job) => job.accountId).sort(), ['account-a', 'account-b']);
 
+  // Re-assert the "not configured" mock immediately before the call it
+  // guards. This assertion must fail closed (503) purely from this test's
+  // own setup, never from state left over by anything that ran earlier —
+  // in this test or, in principle, in the route layer itself.
+  instagram.publishInstagramMedia = async () => ({
+    ok: false,
+    success: false,
+    platform: 'instagram',
+    code: 'INSTAGRAM_NOT_CONFIGURED',
+    message: 'Instagram publishing is not configured. Add the required Meta API keys to enable publishing.',
+    missing: missingInstagramKeys,
+    mode: 'api',
+    published: false,
+    reason: 'Instagram publishing is not configured.'
+  });
   const blockedInstagramPublish = await fetch(`${baseUrl}/api/instagram/publish`, {
     method: 'POST',
     headers: {

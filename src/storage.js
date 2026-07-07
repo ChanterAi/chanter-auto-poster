@@ -650,6 +650,38 @@ async function autoSchedulePosts(userId, postIds, accountId) {
   return count;
 }
 
+/**
+ * Apply a Max Scheduler plan (see maxScheduler.js) to freshly created posts.
+ * Every post matching a plan channel's accountId gets that channel's exact
+ * scheduledAt, plus the campaign-level bookkeeping fields
+ * (campaignStartAt/channelOffsetMinutes/channelOrder) used for display only.
+ * Posts whose accountId has no matching plan channel are left untouched
+ * (defensive — the caller already validates targets against the plan).
+ */
+async function applyExplicitSchedule(userId, posts, plan) {
+  const planByAccount = new Map((plan && plan.channels ? plan.channels : []).map((channel) => [channel.accountId, channel]));
+  const db = getFirestore();
+  const batch = db.batch();
+  let count = 0;
+
+  for (const post of Array.isArray(posts) ? posts : []) {
+    const planChannel = planByAccount.get(post.accountId);
+    if (!planChannel) continue;
+    batch.update(postsCollection().doc(post.id), {
+      scheduledAt: Timestamp.fromDate(new Date(planChannel.scheduledAt)),
+      campaignStartAt: Timestamp.fromDate(new Date(plan.baseAt)),
+      channelOffsetMinutes: planChannel.offsetMinutes,
+      channelOrder: planChannel.order,
+      status: 'scheduled',
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    count += 1;
+  }
+
+  if (count > 0) await batch.commit();
+  return count;
+}
+
 async function reschedulePendingQueue(userId, accountId) {
   const ownerId = userId || DEFAULT_USER_ID;
   const posts = await getPosts(ownerId, accountId);
@@ -826,6 +858,7 @@ module.exports = {
   deletePost,
   movePost,
   autoSchedulePosts,
+  applyExplicitSchedule,
   reschedulePendingQueue,
   getCounts,
   DEFAULT_USER_ID

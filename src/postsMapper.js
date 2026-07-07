@@ -46,6 +46,12 @@ function postFromDoc(doc) {
     // Parent campaign link for multi-channel scheduling. Older documents
     // have no campaignId; '' keeps them rendering as standalone jobs.
     campaignId: data.campaignId || '',
+    // Max Scheduler metadata. Older documents (and legacy autoSchedulePosts
+    // jobs) have none of these; the defaults keep them rendering exactly as
+    // they did before this field existed.
+    campaignStartAt: toIsoOrNull(data.campaignStartAt),
+    channelOffsetMinutes: Number.isFinite(Number(data.channelOffsetMinutes)) ? Number(data.channelOffsetMinutes) : 0,
+    channelOrder: Number.isFinite(Number(data.channelOrder)) ? Number(data.channelOrder) : 0,
     originalName: data.originalName || '',
     fileName: data.fileName || '',
     mimeType: data.mimeType || '',
