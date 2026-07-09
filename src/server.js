@@ -3,8 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const routes = require('./routes');
+const clientRoutes = require('./clientRoutes');
 const storage = require('./storage');
 const { attachUser, csrfOriginCheck, requireAdminPage, validateAdminConfig } = require('./auth');
+const { attachClientSession } = require('./clientAuth');
 const { validateFirebaseConfig } = require('./firestore');
 const { configureCloudinary } = require('./cloudinary');
 
@@ -16,6 +18,7 @@ app.set('trust proxy', 1);
 
 app.use(express.urlencoded({ extended: true }));
 app.use(attachUser);
+app.use(attachClientSession);
 app.use(csrfOriginCheck);
 app.use(
   '/autoposter-dashboard',
@@ -24,6 +27,9 @@ app.use(
 );
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use('/uploads', requireAdminPage, express.static(config.uploadsDir));
+// Client portal routes are mounted before the admin router so their more
+// specific /client/* paths never fall through to admin-only middleware.
+app.use('/', clientRoutes);
 app.use('/', routes);
 
 app.use((error, req, res, next) => {

@@ -701,6 +701,19 @@
             <a class="btn btn-secondary" href="/connect/tiktok?new=1">Connect Another Channel</a>
             <small>Use a private browser window to connect a different TikTok account.</small>
           </div>
+          <% if (activeTikTokAccount) { %>
+            <div class="account-connect-flow">
+              <form action="/private/autoposter/account/<%= activeTikTokAccount.accountId %>/client-access" method="post" style="display:inline;">
+                <button class="btn btn-secondary" type="submit"><%= activeTikTokAccount.clientAccessEnabled ? 'Rotate Client Access Code' : 'Generate Client Access Code' %></button>
+              </form>
+              <% if (activeTikTokAccount.clientAccessEnabled) { %>
+                <form action="/private/autoposter/account/<%= activeTikTokAccount.accountId %>/client-access/revoke" method="post" style="display:inline;">
+                  <button class="btn btn-ghost" type="submit">Revoke Client Access</button>
+                </form>
+              <% } %>
+              <small>Client portal isolated at /client/autoposter — only this channel's own account and queue.</small>
+            </div>
+          <% } %>
         </section>
       <% } %>
 

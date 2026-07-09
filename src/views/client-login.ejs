@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>Client Access | <%= appName %></title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { display: grid; min-width: 320px; min-height: 100vh; margin: 0; place-items: center; background: radial-gradient(ellipse 60% 42% at 50% -10%, rgba(255,255,255,.04), transparent 70%), #09090b; color: #f5f5f4; }
+      .login-shell { width: min(100% - 32px,430px); }
+      .brand { display: flex; align-items: center; justify-content: center; gap: 11px; margin-bottom: 22px; }
+      .brand-mark { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 12px; background: #f5f5f4; color: #0a0a0b; box-shadow: 0 6px 20px rgba(0,0,0,.4); font-weight: 900; }
+      .brand-copy { display: grid; line-height: 1.1; }
+      .brand-copy strong { font-size: 14px; letter-spacing: .09em; }
+      .brand-copy span { margin-top: 4px; color: #71717a; font-size: 9px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+      .login-card { border: 1px solid rgba(255,255,255,.08); border-radius: 18px; background: linear-gradient(145deg,rgba(25,25,29,.96),rgba(14,14,17,.94)); box-shadow: 0 28px 90px rgba(0,0,0,.5); padding: 30px; }
+      .eyebrow { margin: 0 0 7px; color: #71717a; font-size: 9px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+      h1 { margin: 0; font-size: 27px; letter-spacing: -.035em; }
+      .intro { margin: 8px 0 24px; color: #a1a1aa; font-size: 13px; line-height: 1.55; }
+      .message { margin-bottom: 16px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; padding: 10px 12px; color: #c4c7d1; font-size: 12px; }
+      .message.error { border-color: rgba(192,133,133,.32); background: rgba(192,133,133,.09); color: #c08585; }
+      label { display: grid; gap: 7px; color: #a1a1aa; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+      input { width: 100%; min-height: 46px; border: 1px solid rgba(255,255,255,.1); border-radius: 11px; outline: none; background: rgba(0,0,0,.28); color: #fff; padding: 11px 13px; font: inherit; }
+      input:focus { border-color: rgba(255,255,255,.42); box-shadow: 0 0 0 3px rgba(255,255,255,.07); }
+      button { width: 100%; min-height: 46px; margin-top: 18px; border: 0; border-radius: 11px; background: #f5f5f4; box-shadow: 0 6px 18px rgba(0,0,0,.35); color: #0a0a0b; font: 750 13px inherit; cursor: pointer; }
+      button:hover { background: #ffffff; }
+      .security-note { margin: 18px 0 0; color: #71717a; font-size: 10px; line-height: 1.5; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <main class="login-shell">
+      <div class="brand"><span class="brand-mark">C</span><span class="brand-copy"><strong>CHANTER</strong><span>AutoPoster — Client</span></span></div>
+      <section class="login-card">
+        <p class="eyebrow">Client Access</p>
+        <h1>Your Posting Portal</h1>
+        <p class="intro">Enter the access code CHANTER gave you to view your TikTok posting schedule.</p>
+        <% if (notice) { %><div class="message"><%= notice %></div><% } %>
+        <% if (error) { %><div class="message error" role="alert"><%= error %></div><% } %>
+        <form action="/client/autoposter/login" method="post">
+          <label>Access code<input type="password" name="accessCode" autocomplete="off" autofocus required /></label>
+          <button type="submit">Continue</button>
+        </form>
+        <p class="security-note">Your session is stored in an expiring signed, HTTP-only cookie. This code only unlocks your own account.</p>
+      </section>
+    </main>
+  </body>
+</html>

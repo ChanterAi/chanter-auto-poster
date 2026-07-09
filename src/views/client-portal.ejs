@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title><%= appName %> — Your Posting Portal</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 320px; background: radial-gradient(ellipse 60% 42% at 50% -10%, rgba(255,255,255,.04), transparent 70%), #09090b; color: #f5f5f4; }
+      main { width: min(100% - 32px, 720px); margin: 0 auto; padding: 28px 0 60px; }
+      header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; gap: 12px; flex-wrap: wrap; }
+      .brand { display: flex; align-items: center; gap: 11px; }
+      .brand-mark { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 11px; background: #f5f5f4; color: #0a0a0b; font-weight: 900; }
+      .brand-copy { display: grid; line-height: 1.1; }
+      .brand-copy strong { font-size: 13px; letter-spacing: .09em; }
+      .brand-copy span { margin-top: 3px; color: #71717a; font-size: 9px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+      form.logout { margin: 0; }
+      .ghost-button { border: 1px solid rgba(255,255,255,.12); border-radius: 9px; background: transparent; color: #d4d4d8; padding: 9px 14px; font: 700 11px inherit; letter-spacing: .04em; cursor: pointer; }
+      .ghost-button:hover { border-color: rgba(255,255,255,.3); }
+      .message { margin-bottom: 18px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; padding: 11px 13px; color: #c4c7d1; font-size: 12px; }
+      section.card { border: 1px solid rgba(255,255,255,.08); border-radius: 16px; background: linear-gradient(145deg,rgba(25,25,29,.96),rgba(14,14,17,.94)); box-shadow: 0 20px 60px rgba(0,0,0,.35); padding: 22px; margin-bottom: 20px; }
+      .eyebrow { margin: 0 0 8px; color: #71717a; font-size: 9px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+      h1 { margin: 0; font-size: 22px; letter-spacing: -.02em; }
+      h2 { margin: 0 0 4px; font-size: 16px; letter-spacing: -.01em; }
+      .account-row { display: flex; align-items: center; gap: 14px; }
+      .avatar { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; background: #27272a; flex-shrink: 0; }
+      .avatar-fallback { width: 52px; height: 52px; border-radius: 50%; background: #27272a; display: grid; place-items: center; font-weight: 800; color: #71717a; flex-shrink: 0; }
+      .status-pill { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; font-weight: 700; letter-spacing: .03em; }
+      .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #71717a; }
+      .status-pill.connected .status-dot { background: #4ade80; }
+      .status-pill.disconnected .status-dot { background: #f87171; }
+      .status-note { margin: 10px 0 0; color: #a1a1aa; font-size: 12.5px; line-height: 1.55; }
+      .reconnect-note { margin: 12px 0 0; padding: 11px 13px; border: 1px solid rgba(248,113,113,.28); background: rgba(248,113,113,.08); border-radius: 10px; color: #f0a5a5; font-size: 12px; }
+      label { display: grid; gap: 7px; color: #a1a1aa; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 14px; }
+      input, textarea { width: 100%; border: 1px solid rgba(255,255,255,.1); border-radius: 11px; outline: none; background: rgba(0,0,0,.28); color: #fff; padding: 11px 13px; font: inherit; }
+      input[type="file"] { padding: 9px 10px; }
+      textarea { min-height: 90px; resize: vertical; }
+      input:focus, textarea:focus { border-color: rgba(255,255,255,.42); box-shadow: 0 0 0 3px rgba(255,255,255,.07); }
+      .hint { margin: -8px 0 14px; color: #71717a; font-size: 11px; }
+      button.primary { width: 100%; min-height: 46px; border: 0; border-radius: 11px; background: #f5f5f4; color: #0a0a0b; font: 750 13px inherit; cursor: pointer; }
+      button.primary:hover:not(:disabled) { background: #ffffff; }
+      button.primary:disabled { opacity: .55; cursor: not-allowed; }
+      button.small { border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: rgba(255,255,255,.04); color: #e4e4e7; padding: 7px 11px; font: 700 11px inherit; cursor: pointer; }
+      button.small:hover { border-color: rgba(255,255,255,.32); }
+      button.small.danger { border-color: rgba(248,113,113,.3); color: #f0a5a5; }
+      .queue-item { display: grid; grid-template-columns: 56px 1fr auto; gap: 13px; align-items: center; padding: 14px 0; border-top: 1px solid rgba(255,255,255,.06); }
+      .queue-item:first-of-type { border-top: none; }
+      .queue-thumb { width: 56px; height: 56px; border-radius: 10px; object-fit: cover; background: #27272a; }
+      .queue-caption { font-size: 13px; color: #e4e4e7; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+      .queue-status { display: inline-block; margin-top: 4px; font-size: 10px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; }
+      .queue-status.pending, .queue-status.scheduled { background: rgba(96,165,250,.14); color: #93c5fd; }
+      .queue-status.processing { background: rgba(250,204,21,.14); color: #fde68a; }
+      .queue-status.posted { background: rgba(74,222,128,.14); color: #86efac; }
+      .queue-status.failed { background: rgba(248,113,113,.14); color: #f0a5a5; }
+      .queue-status.ready { background: rgba(192,132,252,.14); color: #d8b4fe; }
+      .queue-message { margin: 4px 0 0; color: #a1a1aa; font-size: 11.5px; }
+      .queue-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+      .empty-state { padding: 26px 0; text-align: center; color: #71717a; font-size: 13px; }
+      .counts { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; }
+      .counts span { color: #a1a1aa; font-size: 11.5px; }
+      .counts strong { color: #f5f5f4; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="brand">
+          <span class="brand-mark">C</span>
+          <span class="brand-copy"><strong>CHANTER</strong><span>AutoPoster</span></span>
+        </div>
+        <form class="logout" action="/client/autoposter/logout" method="post">
+          <button class="ghost-button" type="submit">Log out</button>
+        </form>
+      </header>
+
+      <% if (notice) { %><div class="message"><%= notice %></div><% } %>
+
+      <section class="card">
+        <p class="eyebrow">TikTok Account</p>
+        <div class="account-row">
+          <% if (account.avatarUrl) { %>
+            <img class="avatar" src="<%= account.avatarUrl %>" alt="" />
+          <% } else { %>
+            <div class="avatar-fallback"><%= (account.username || 'T').charAt(0).toUpperCase() %></div>
+          <% } %>
+          <div>
+            <h2><%= account.username ? ('@' + account.username) : (account.displayName || 'TikTok account') %></h2>
+            <span class="status-pill <%= account.connected ? 'connected' : 'disconnected' %>">
+              <span class="status-dot"></span><%= account.connected ? 'Connected' : 'Disconnected' %>
+            </span>
+          </div>
+        </div>
+        <% if (account.connected) { %>
+          <p class="status-note">You are connected as <%= account.username ? ('@' + account.username) : 'this account' %>. Posts will publish only to this TikTok account.</p>
+          <% if (account.clientAccessUpdatedAt || account.updatedAt) { %>
+            <p class="status-note">Last refreshed: <%= helpers.formatDateTime(account.updatedAt) %></p>
+          <% } %>
+        <% } else { %>
+          <div class="reconnect-note">
+            Your TikTok connection has expired or was disconnected. Reconnect to keep posting.
+          </div>
+          <p class="status-note"><a href="/client/autoposter/tiktok/reconnect" class="ghost-button" style="display:inline-block;margin-top:10px;text-decoration:none;">Reconnect TikTok</a></p>
+        <% } %>
+      </section>
+
+      <section class="card">
+        <p class="eyebrow">Create Post</p>
+        <h2>Upload &amp; Schedule</h2>
+        <p class="hint" style="margin-top:6px;">Choose a photo or video, write a caption, and optionally pick a time. Leave the time blank to auto-schedule the next open slot.</p>
+        <form id="create-post-form" action="/client/autoposter/upload" method="post" enctype="multipart/form-data">
+          <label>Photo or video<input type="file" name="media" accept="image/*,video/*" <%= account.connected ? '' : 'disabled' %> /></label>
+          <label>Caption<textarea name="caption" maxlength="2200" required <%= account.connected ? '' : 'disabled' %>></textarea></label>
+          <label>Hashtags (optional)<input type="text" name="hashtags" placeholder="#example #tags" <%= account.connected ? '' : 'disabled' %> /></label>
+          <label>Schedule time (optional)<input type="datetime-local" name="scheduledAt" <%= account.connected ? '' : 'disabled' %> /></label>
+          <input type="hidden" name="timezoneOffsetMinutes" value="" />
+          <button class="primary" type="submit" <%= account.connected ? '' : 'disabled' %>>Schedule Post</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <p class="eyebrow">Queue &amp; History</p>
+        <h2>Your Posts</h2>
+        <div class="counts">
+          <span>Scheduled: <strong><%= counts.scheduled + counts.pending %></strong></span>
+          <span>Posted: <strong><%= counts.posted %></strong></span>
+          <span>Failed: <strong><%= counts.failed %></strong></span>
+        </div>
+        <% if (!posts || posts.length === 0) { %>
+          <div class="empty-state">No posts yet. Create your first post above.</div>
+        <% } else { %>
+          <% posts.forEach((post) => { const status = helpers.postStatus(post); const mediaPath = helpers.mediaPath(post); %>
+            <div class="queue-item">
+              <% if (mediaPath) { %>
+                <img class="queue-thumb" src="<%= mediaPath %>" alt="" />
+              <% } else { %>
+                <div class="queue-thumb"></div>
+              <% } %>
+              <div>
+                <div class="queue-caption"><%= post.caption || '(no caption)' %></div>
+                <span class="queue-status <%= status.tone %>"><%= status.label %></span>
+                <p class="queue-message"><%= status.message %></p>
+              </div>
+              <div class="queue-actions">
+                <% if (['pending','scheduled','ready'].includes(post.status)) { %>
+                  <form action="/client/autoposter/posts/<%= post.id %>/prepare" method="post">
+                    <button class="small" type="submit">Post Now</button>
+                  </form>
+                <% } %>
+                <% if (post.status === 'failed') { %>
+                  <form action="/client/autoposter/posts/<%= post.id %>/pending" method="post">
+                    <button class="small" type="submit">Retry</button>
+                  </form>
+                <% } %>
+                <% if (post.status !== 'processing') { %>
+                  <form action="/client/autoposter/posts/<%= post.id %>/delete" method="post" onsubmit="return confirm('Delete this post?');">
+                    <button class="small danger" type="submit">Delete</button>
+                  </form>
+                <% } %>
+              </div>
+            </div>
+          <% }); %>
+        <% } %>
+      </section>
+    </main>
+    <script>
+      (function () {
+        var form = document.getElementById('create-post-form');
+        if (!form) return;
+        var tz = form.querySelector('input[name="timezoneOffsetMinutes"]');
+        if (tz) tz.value = new Date().getTimezoneOffset();
+        form.addEventListener('submit', function () {
+          var button = form.querySelector('button[type="submit"]');
+          if (button) { button.disabled = true; button.textContent = 'Scheduling…'; }
+        });
+      })();
+    </script>
+  </body>
+</html>

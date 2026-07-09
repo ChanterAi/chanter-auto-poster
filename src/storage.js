@@ -13,6 +13,7 @@ const {
 } = require('./firestore');
 const { uploadMediaFile, destroyMediaAsset, checkCloudinaryHealth } = require('./cloudinary');
 const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore } = require('./postsMapper');
+const { generateAccessCode, parseAccessCode, verifyAccessSecret } = require('./clientAuth');
 
 const defaultSettings = {
   dailyPostTime: '09:00',
@@ -105,7 +106,12 @@ function tiktokAccountFromDoc(doc) {
     scope: data.scope || '',
     createdAt: data.createdAt || null,
     updatedAt: data.updatedAt || null,
-    connectedAt: data.connectedAt || null
+    connectedAt: data.connectedAt || null,
+    // Client portal access (see clientAuth.js). clientLoginId is a
+    // non-secret lookup key; only the secret's hash is ever stored.
+    clientLoginId: data.clientLoginId || '',
+    clientAccessEnabled: Boolean(data.clientLoginId) && data.clientAccessEnabled !== false,
+    clientAccessUpdatedAt: data.clientAccessUpdatedAt || null
   };
 }
 
@@ -209,6 +215,66 @@ async function disconnectTikTokAccount(userId, accountId) {
     updatedAt: Timestamp.now()
   }, { merge: true });
   return true;
+}
+
+// ── Client portal access codes ──────────────────────────────────────────
+// Deliberately separate from the TikTok OAuth tokens above: this is the
+// credential a *client* uses to reach their own scoped portal, never the
+// admin. See src/clientAuth.js for the hashing/signing scheme and
+// src/clientRoutes.js for how it's consumed.
+
+async function generateClientAccessCode(userId, accountId) {
+  const account = await getTikTokAccount(userId, accountId);
+  if (!account) return null;
+  const generated = generateAccessCode();
+  const now = Timestamp.now();
+  await tiktokAccountsCollection().doc(tiktokAccountDocId(accountId)).set({
+    clientLoginId: generated.clientLoginId,
+    clientAccessSecretHash: generated.secretHash,
+    clientAccessEnabled: true,
+    clientAccessCreatedAt: now,
+    clientAccessUpdatedAt: now
+  }, { merge: true });
+  return generated.code;
+}
+
+async function revokeClientAccessCode(userId, accountId) {
+  const account = await getTikTokAccount(userId, accountId);
+  if (!account) return false;
+  await tiktokAccountsCollection().doc(tiktokAccountDocId(accountId)).set({
+    clientAccessEnabled: false,
+    clientAccessUpdatedAt: Timestamp.now()
+  }, { merge: true });
+  return true;
+}
+
+// Resolves a pasted access code to exactly one account, or null. This is
+// the *only* lookup path that runs before any identity is known — it uses
+// an indexed equality query on the non-secret clientLoginId (never a
+// collection scan of all accounts), then verifies the secret's hash.
+// Fails closed on any missing/disabled/mismatched state.
+async function verifyClientAccessCode(rawCode) {
+  const parsed = parseAccessCode(rawCode);
+  if (!parsed) return null;
+  const snapshot = await tiktokAccountsCollection()
+    .where('clientLoginId', '==', parsed.clientLoginId)
+    .limit(1)
+    .get();
+  if (snapshot.empty) return null;
+  const doc = snapshot.docs[0];
+  const data = doc.data() || {};
+  if (data.clientAccessEnabled === false) return null;
+  if (!verifyAccessSecret(parsed.secret, parsed.clientLoginId, data.clientAccessSecretHash)) return null;
+  return tiktokAccountFromDoc(doc);
+}
+
+// Re-checked on every client-portal request (not just at login) so
+// disabling access takes effect immediately instead of waiting for the
+// session token to expire.
+async function resolveClientAccount(userId, accountId) {
+  const account = await getTikTokAccount(userId, accountId);
+  if (!account || account.clientAccessEnabled === false) return null;
+  return account;
 }
 
 // ── Posts ────────────────────────────────────────────────────────────────
@@ -847,6 +913,10 @@ module.exports = {
   saveTikTokAccount,
   updateTikTokAccountProfile,
   disconnectTikTokAccount,
+  generateClientAccessCode,
+  revokeClientAccessCode,
+  verifyClientAccessCode,
+  resolveClientAccount,
   getTikTokAuth,
   saveTikTokAuth,
   clearTikTokAuth,

@@ -13,6 +13,7 @@ const instagram = require('./instagram');
 const { parseDateTimeLocal } = require('./timeUtil');
 const { computeMaxSchedulePlan, DEFAULT_OFFSET_MINUTES } = require('./maxScheduler');
 const { summarizeCampaigns, latestCampaignChannelCount } = require('./campaignAccounting');
+const clientRoutes = require('./clientRoutes');
 const {
   clearAdminSessionCookie,
   requireAdminApi,
@@ -312,6 +313,35 @@ router.post('/private/autoposter/account', requireAdminPage, asyncRoute(async (r
   redirectWithNotice(res, `Active TikTok account changed to ${accountLabel(account)}.`);
 }));
 
+// Generates a brand-new client access code for one TikTok account and
+// shows it exactly once, in the response body (never in a URL/query
+// string, which would leak into browser history and server access logs).
+// Only the code's hash is ever persisted — see storage.generateClientAccessCode.
+router.post('/private/autoposter/account/:accountId/client-access', requireAdminPage, asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const accountId = String(req.params.accountId || '').trim();
+  const code = await storage.generateClientAccessCode(userId, accountId);
+  if (!code) {
+    redirectWithNotice(res, 'TikTok account not found.');
+    return;
+  }
+  const account = await storage.getTikTokAccount(userId, accountId);
+  res.set('Cache-Control', 'no-store');
+  res.render('client-access-generated', {
+    appName: config.appName,
+    account,
+    code,
+    accountLabelText: accountLabel(account)
+  });
+}));
+
+router.post('/private/autoposter/account/:accountId/client-access/revoke', requireAdminPage, asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const accountId = String(req.params.accountId || '').trim();
+  const revoked = await storage.revokeClientAccessCode(userId, accountId);
+  redirectWithNotice(res, revoked ? 'Client access revoked. The old code no longer works.' : 'TikTok account not found.');
+}));
+
 router.get('/connect/tiktok', requireAdminPage, (req, res) => {
   if (!config.tiktok.clientKey || !config.tiktok.clientSecret || !config.tiktok.redirectUri) {
     redirectWithNotice(res, 'Add TikTok client key, secret, and redirect URI to .env first.');
@@ -325,7 +355,23 @@ router.get('/connect/tiktok', requireAdminPage, (req, res) => {
   res.redirect(tiktok.buildTikTokAuthUrl(state));
 });
 
-router.get('/auth/tiktok/callback', requireAdminOAuth, asyncRoute(async (req, res) => {
+// TikTok's redirect_uri is a single fixed URL (config.tiktok.redirectUri),
+// so it's shared by the admin "connect a channel" flow below and the
+// client "reconnect my channel" flow in clientRoutes.js. The client flow
+// sets its own state cookie before redirecting to TikTok; if that cookie
+// is present, this dispatches to the client's isolated handler (which
+// enforces its own session + fail-closed account re-check) instead of
+// running the admin logic. Everything below this check is the original,
+// unmodified admin-only flow.
+router.get('/auth/tiktok/callback', asyncRoute(async (req, res) => {
+  if (parseCookies(req.headers.cookie)[clientRoutes.CLIENT_OAUTH_STATE_COOKIE]) {
+    await clientRoutes.handleTikTokReconnectCallback(req, res);
+    return;
+  }
+  if (!req.isAdmin) {
+    res.redirect('/admin-login?notice=Your+admin+session+expired.+Log+in+and+connect+TikTok+again.');
+    return;
+  }
   const expectedState = parseCookies(req.headers.cookie).tiktok_oauth_state;
   res.clearCookie('tiktok_oauth_state');
   if (req.query.error) {
@@ -882,7 +928,8 @@ function publicTikTokAccount(account) {
     username: account.username || '',
     displayName: account.displayName || '',
     avatarUrl: account.avatarUrl || '',
-    connected: Boolean(account.connected)
+    connected: Boolean(account.connected),
+    clientAccessEnabled: Boolean(account.clientAccessEnabled)
   };
 }
 
