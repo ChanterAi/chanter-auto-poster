@@ -316,6 +316,21 @@
       .auto-caption-status[data-tone="error"] { color: var(--danger); }
       .auto-music-divider { height: 1px; background: var(--border); margin: 2px 0; }
       .upload-actions { justify-content: flex-end; margin-top: 20px; }
+      .submit-feedback {
+        display: grid; gap: 9px; margin-top: 20px; padding: 13px 14px;
+        border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.03);
+      }
+      .submit-feedback[hidden] { display: none; }
+      .submit-feedback[data-tone="success"] { border-color: rgba(134,176,146,.28); background: var(--ok-bg); }
+      .submit-feedback[data-tone="error"] { border-color: rgba(192,133,133,.28); background: var(--danger-bg); }
+      .upload-progress { position: relative; height: 6px; border-radius: 999px; background: rgba(255,255,255,.07); overflow: hidden; }
+      .upload-progress-fill {
+        position: absolute; inset: 0 auto 0 0; width: 0%;
+        border-radius: inherit; background: var(--accent); transition: width .2s ease;
+      }
+      .submit-status { color: var(--text2); font-size: 12px; line-height: 1.5; }
+      .submit-feedback[data-tone="success"] .submit-status { color: var(--ok); }
+      .submit-feedback[data-tone="error"] .submit-status { color: var(--danger); }
       .btn-create { min-width: 190px; height: 44px !important; }
       .btn-create::after { content: "\2192"; font-size: 16px; transition: transform .18s; }
       .btn-create:hover::after { transform: translateX(2px); }
@@ -849,6 +864,12 @@
                 Hashtags
                 <textarea name="hashtags" placeholder="#chanter #viral" data-hashtags-input></textarea>
               </label>
+            </div>
+            <div class="submit-feedback" data-submit-feedback aria-live="polite" hidden>
+              <div class="upload-progress" data-upload-progress hidden>
+                <div class="upload-progress-fill" data-upload-progress-fill></div>
+              </div>
+              <p class="submit-status" data-submit-status></p>
             </div>
             <div class="actions upload-actions"><button type="submit" class="btn btn-primary btn-create" <%= !tiktokConfigured ? 'disabled' : '' %>>Prepare Campaign</button></div>
           </form>
@@ -1597,6 +1618,108 @@
         });
       });
 
+      // Fast Schedule intake — submits the campaign over XHR so the page
+      // keeps every setting (channels, start time, offset, hashtags) while
+      // showing real upload progress and an inline result instead of a full
+      // page reload. Registered after the validation/auto-caption submit
+      // listener above, so analysis still runs first; when that listener
+      // prevents the event to run analysis, this one stays out of the way
+      // and picks up the requestSubmit() it issues afterwards. The native
+      // form post to /upload remains the no-JS fallback (the server keeps
+      // redirect behavior for plain HTML posts).
+      document.querySelectorAll('[data-upload-form]').forEach(form => {
+        const feedback = form.querySelector('[data-submit-feedback]');
+        const progress = form.querySelector('[data-upload-progress]');
+        const progressFill = form.querySelector('[data-upload-progress-fill]');
+        const status = form.querySelector('[data-submit-status]');
+        const submitButton = form.querySelector('[type="submit"]');
+        const mediaInput = form.querySelector('[data-media-upload]');
+        const captionInput = form.querySelector('[data-caption-input]');
+        const musicTokenInput = form.querySelector('[data-auto-music-token]');
+        if (!feedback || !progress || !progressFill || !status || !submitButton || !mediaInput) return;
+        const submitLabel = submitButton.textContent;
+        let submitting = false;
+
+        const setFeedback = (tone, message, showProgress) => {
+          feedback.hidden = false;
+          feedback.dataset.tone = tone;
+          status.textContent = message;
+          progress.hidden = !showProgress;
+        };
+        const setProgress = (percent) => {
+          progressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+        };
+        const finishSubmit = () => {
+          submitting = false;
+          submitButton.disabled = false;
+          submitButton.textContent = submitLabel;
+        };
+        const resetPerPostFields = () => {
+          // Media, caption, and the prepared-music token belong to the post
+          // that was just scheduled. Channels, start time, offset, hashtags,
+          // and the Auto toggles stay put for the next post. The dispatched
+          // events let the existing validation/preflight/plan listeners
+          // recompute from the cleared fields.
+          mediaInput.value = '';
+          if (musicTokenInput) musicTokenInput.value = '';
+          if (captionInput) {
+            captionInput.value = '';
+            captionInput.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          mediaInput.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+
+        form.addEventListener('submit', (event) => {
+          if (event.defaultPrevented) return;
+          event.preventDefault();
+          if (submitting) return;
+          submitting = true;
+          submitButton.disabled = true;
+          submitButton.textContent = 'Scheduling…';
+          setFeedback('working', 'Uploading campaign media…', true);
+          setProgress(0);
+
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', form.action);
+          xhr.setRequestHeader('Accept', 'application/json');
+          xhr.upload.addEventListener('progress', (progressEvent) => {
+            if (!progressEvent.lengthComputable) return;
+            const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+            setProgress(percent);
+            status.textContent = percent >= 100
+              ? 'Preparing the campaign…'
+              : `Uploading campaign media… ${percent}%`;
+          });
+          xhr.addEventListener('load', () => {
+            finishSubmit();
+            let payload = null;
+            try { payload = JSON.parse(xhr.responseText); } catch (parseError) { payload = null; }
+            if (payload && payload.ok) {
+              setFeedback('success', payload.notice || 'Campaign scheduled.', false);
+              resetPerPostFields();
+              document.dispatchEvent(new CustomEvent('chanter:queue-refresh'));
+              return;
+            }
+            if (payload) {
+              setFeedback('error', payload.notice || 'The campaign could not be scheduled. Your entries are unchanged.', false);
+              return;
+            }
+            // Non-JSON response — most likely an expired session redirected
+            // to the login page. Follow it; the normal flow takes over.
+            if (xhr.responseURL && !xhr.responseURL.includes('/upload')) {
+              window.location.href = xhr.responseURL;
+              return;
+            }
+            setFeedback('error', 'The campaign could not be confirmed. Check the Release Queue below before retrying.', false);
+          });
+          xhr.addEventListener('error', () => {
+            finishSubmit();
+            setFeedback('error', 'Connection problem — nothing was scheduled. Your entries are unchanged.', false);
+          });
+          xhr.send(new FormData(form));
+        });
+      });
+
       // Preflight check — client-side readiness review of the intake form.
       // Validates every selected target channel. Uses only server-rendered
       // booleans and public channel handles; no tokens or secrets are exposed.
@@ -1905,6 +2028,13 @@
         if (initialRegion) bindToggleLinks(initialRegion);
 
         window.addEventListener('popstate', () => {
+          loadQueueView(window.location.href);
+        });
+
+        // Fast Schedule intake asks for a background queue refresh after a
+        // campaign is created, reusing the same fetch-and-swap path as the
+        // view toggle so new jobs appear without a page reload.
+        document.addEventListener('chanter:queue-refresh', () => {
           loadQueueView(window.location.href);
         });
       })();

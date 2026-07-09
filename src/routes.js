@@ -556,11 +556,11 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
   const files = req.files || [];
   const publicMediaUrl = String(req.body.publicMediaUrl || req.body.publicImageUrl || '').trim();
   if (publicMediaUrl && !isPublicHttpsUrl(publicMediaUrl)) {
-    redirectWithNotice(res, 'Public Media URL must be a valid HTTPS URL.');
+    respondWithNotice(req, res, 'Public Media URL must be a valid HTTPS URL.', false);
     return;
   }
   if (files.length === 0 && !publicMediaUrl) {
-    redirectWithNotice(res, 'Choose a media file or enter a Public Media URL.');
+    respondWithNotice(req, res, 'Choose a media file or enter a Public Media URL.', false);
     return;
   }
 
@@ -576,11 +576,11 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
     for (const channelId of requestedChannelIds) {
       const target = accountsById.get(channelId);
       if (!target) {
-        redirectWithNotice(res, 'One of the selected publishing channels was not found. Refresh and try again.');
+        respondWithNotice(req, res, 'One of the selected publishing channels was not found. Refresh and try again.', false);
         return;
       }
       if (!target.connected) {
-        redirectWithNotice(res, `${accountLabel(target)} needs to be reconnected before it can post.`);
+        respondWithNotice(req, res, `${accountLabel(target)} needs to be reconnected before it can post.`, false);
         return;
       }
       resolved.push(target);
@@ -611,7 +611,7 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
       }))
     });
     if (!maxSchedulePlan.ok) {
-      redirectWithNotice(res, maxSchedulePlan.reason);
+      respondWithNotice(req, res, maxSchedulePlan.reason, false);
       return;
     }
   }
@@ -658,7 +658,7 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
   const scheduleNotice = useMaxScheduler
     ? ` First post at ${viewHelpers.formatDateTime(maxSchedulePlan.baseAt)}, ${maxSchedulePlan.offsetMinutes}m apart per channel.`
     : '';
-  redirectWithNotice(res, `Created ${created.length} ${created.length === 1 ? 'post' : 'posts'}${channelNotice}. ${scheduledCount} scheduled.${scheduleNotice}${sourceNotice}${musicNotice}`);
+  respondWithNotice(req, res, `Created ${created.length} ${created.length === 1 ? 'post' : 'posts'}${channelNotice}. ${scheduledCount} scheduled.${scheduleNotice}${sourceNotice}${musicNotice}`);
 }));
 
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
@@ -888,6 +888,18 @@ function emptyPostCounts() {
 
 function redirectWithNotice(res, notice) {
   res.redirect(`/private/autoposter?notice=${encodeURIComponent(notice)}`);
+}
+
+// Fast Schedule intake: the campaign form submits over XHR with
+// `Accept: application/json` so the page can show inline progress and a
+// result without discarding form state. Plain HTML form posts (the no-JS
+// fallback) keep the redirect-with-notice behavior unchanged.
+function respondWithNotice(req, res, notice, ok = true) {
+  if (req.accepts(['html', 'json']) === 'json') {
+    res.status(ok ? 200 : 400).json({ ok, notice });
+    return;
+  }
+  redirectWithNotice(res, notice);
 }
 
 async function removeTemporaryUpload(filePath) {

@@ -323,4 +323,45 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   assert.match(dashboardSource, /option value="all">All channels<\/option>/);
   assert.match(dashboardSource, /accountFilter/);
   assert.match(dashboardSource, /summarizeDashboardCampaigns/);
+
+  // ── Fast Schedule intake: an XHR submit (Accept: application/json) gets
+  // inline JSON instead of a redirect, so the page can keep form state ────
+  const inlineBody = new FormData();
+  inlineBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  inlineBody.append('caption', 'Inline JSON drop');
+  inlineBody.append('targetChannels', 'chanter-open-id');
+  inlineBody.append('startDate', '2026-07-10');
+  inlineBody.append('startTime', '11:00');
+  inlineBody.append('timezoneOffsetMinutes', '0');
+  const inlineResponse = await fetch(`${baseUrl}/upload`, {
+    method: 'POST', redirect: 'manual',
+    headers: { Cookie: adminCookie, Accept: 'application/json' },
+    body: inlineBody
+  });
+  assert.equal(inlineResponse.status, 200, 'JSON-accepting intake submit responds inline instead of redirecting');
+  const inlinePayload = await inlineResponse.json();
+  assert.equal(inlinePayload.ok, true);
+  assert.match(inlinePayload.notice, /Created 1 post/);
+  assert.match(inlinePayload.notice, /1 scheduled/);
+  assert.doesNotMatch(JSON.stringify(inlinePayload), /secret-token|secret-refresh|access_token/);
+
+  // Preflight failures also answer inline — form state survives client-side.
+  const inlineBlockedBody = new FormData();
+  inlineBlockedBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  inlineBlockedBody.append('targetChannels', 'retired-open-id');
+  const inlineBlockedResponse = await fetch(`${baseUrl}/upload`, {
+    method: 'POST', redirect: 'manual',
+    headers: { Cookie: adminCookie, Accept: 'application/json' },
+    body: inlineBlockedBody
+  });
+  assert.equal(inlineBlockedResponse.status, 400);
+  const inlineBlockedPayload = await inlineBlockedResponse.json();
+  assert.equal(inlineBlockedPayload.ok, false);
+  assert.match(inlineBlockedPayload.notice, /reconnected/);
+
+  // The intake page ships the inline feedback surface the XHR path drives.
+  const intakeHtml = await (await fetch(`${baseUrl}/private/autoposter`, { headers: { Cookie: adminCookie } })).text();
+  assert.match(intakeHtml, /data-submit-feedback/);
+  assert.match(intakeHtml, /data-upload-progress-fill/);
+  assert.match(intakeHtml, /chanter:queue-refresh/);
 });
