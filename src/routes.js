@@ -133,6 +133,26 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     ? (await getCreatorInfoSafe(activeAccountId, userId)) || creatorInfoFromAccount(activeAccount)
     : creatorInfoFromAccount(activeAccount);
 
+  // Refresh stored profile when TikTok reports a renamed handle.
+  if (creatorInfo && creatorInfo.creator_username && activeAccount
+      && creatorInfo.creator_username !== activeAccount.username) {
+    const profile = {
+      username: creatorInfo.creator_username,
+      displayName: creatorInfo.creator_nickname || '',
+      avatarUrl: creatorInfo.creator_avatar_url || ''
+    };
+    try {
+      await storage.updateTikTokAccountProfile(userId, activeAccount.accountId, profile);
+    } catch (refreshError) {
+      console.warn('[routes] profile refresh after render load failed', refreshError.message);
+    }
+    activeAccount.username = profile.username;
+    activeAccount.displayName = profile.displayName;
+    activeAccount.avatarUrl = profile.avatarUrl;
+    // activeAccount is a reference into the accounts array, so mutating it
+    // updates the Switch Channel dropdown and Target Publishing Channels too.
+  }
+
   res.render('index', {
     appName: config.appName,
     posts,
