@@ -125,6 +125,11 @@ test('stale locked job is recovered to scheduled status on next tick', async () 
     userId: 'owner', platform: 'tiktok', accountId: 'acc-1', tiktokOpenId: 'acc-1',
     status: 'processing',
     scheduledAt: { toDate: () => new Date('2026-06-20T11:59:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:59:00.000Z') },
+    // A job can only ever reach 'processing' after passing the approval
+    // gate, so the recovery fixture carries the approval record it would
+    // have had when it was first claimed.
+    approvedAt: { toDate: () => new Date('2026-06-20T11:00:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:00:00.000Z') },
+    approvedBy: 'admin:owner',
     lockedAt: { toDate: () => staleTime, toMillis: () => staleTime.getTime() },
     lockedBy: 'old-worker-123',
     claimAttempts: 1,

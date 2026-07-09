@@ -12,7 +12,7 @@ const {
   FieldValue
 } = require('./firestore');
 const { uploadMediaFile, destroyMediaAsset, checkCloudinaryHealth } = require('./cloudinary');
-const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore } = require('./postsMapper');
+const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore, appendHistoryEntry } = require('./postsMapper');
 const { generateAccessCode, parseAccessCode, verifyAccessSecret } = require('./clientAuth');
 
 const defaultSettings = {
@@ -347,11 +347,6 @@ async function getRecentJobs(limit = 50) {
   return snapshot.docs.map(postFromDoc);
 }
 
-async function getMaxOrder(userId, accountId) {
-  const posts = await getPosts(userId, accountId);
-  return posts.reduce((max, post) => Math.max(max, Number(post.order || 0)), 0);
-}
-
 function nextOrderFor(orderByAccount, accountId) {
   const next = orderByAccount.get(accountId) || 1;
   orderByAccount.set(accountId, next + 1);
@@ -486,9 +481,33 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   // so evidence and the dashboard can group per-channel releases together.
   const campaignId = String(defaults.campaignId || '').trim() || randomUUID();
 
+  // Client-portal single-post scheduling records its own explicit approval
+  // at creation (the client filled in and submitted that one post). The
+  // admin batch intake never passes this — those jobs stay drafts until a
+  // human approves them in the Release Queue.
+  const selfApprove = defaults.selfApprove && String(defaults.selfApprove.approvedBy || '').trim()
+    ? { approvedBy: String(defaults.selfApprove.approvedBy).trim() }
+    : null;
+
+  // One posts read per target channel provides both the next queue order
+  // (what getMaxOrder used to derive from the same query) and the
+  // duplicate-detection keys for that channel's existing jobs.
   const orderByAccount = new Map();
+  const duplicateKeysByAccount = new Map();
   for (const target of targetAccounts) {
-    orderByAccount.set(target.accountId, (await getMaxOrder(ownerId, target.accountId)) + 1);
+    const existingPosts = await getPosts(ownerId, target.accountId);
+    const maxOrder = existingPosts.reduce((max, post) => Math.max(max, Number(post.order || 0)), 0);
+    orderByAccount.set(target.accountId, maxOrder + 1);
+    const keys = new Set();
+    for (const post of existingPosts) {
+      if (post.originalName && Number(post.fileSize || 0) > 0) {
+        keys.add(`file:${post.originalName}:${Number(post.fileSize)}`);
+      }
+      if (post.mediaSource === 'public_url' && post.publicMediaUrl) {
+        keys.add(`url:${post.publicMediaUrl}`);
+      }
+    }
+    duplicateKeysByAccount.set(target.accountId, keys);
   }
 
   const now = Timestamp.now();
@@ -552,6 +571,27 @@ async function addUploadedPosts(userId, files, defaults = {}) {
       const ref = postsCollection().doc(randomUUID());
       const publicMediaUrl = cloudinaryPublicId ? mediaUrl : fallbackUrl;
 
+      // Duplicate protection (warn, never block): same filename+size — or
+      // the same public URL — already queued/posted on this channel is
+      // surfaced on the draft for human review. Repeat posting of one
+      // asset can be intentional, so the reviewer decides, not the code.
+      const fileSize = file ? Number(file.size || 0) : 0;
+      const duplicateKey = file ? `file:${file.originalname}:${fileSize}` : `url:${fallbackUrl}`;
+      const accountDuplicateKeys = duplicateKeysByAccount.get(target.accountId);
+      const isDuplicate = file
+        ? fileSize > 0 && accountDuplicateKeys.has(duplicateKey)
+        : accountDuplicateKeys.has(duplicateKey);
+      accountDuplicateKeys.add(duplicateKey);
+      const duplicateWarning = isDuplicate
+        ? 'Possible duplicate: this channel already has a job with the same media. Posting the same content repeatedly can hurt account trust.'
+        : '';
+
+      let history = appendHistoryEntry([], 'created', `Draft created for @${target.username} (campaign ${campaignId.slice(0, 8)}).`);
+      history = appendHistoryEntry(history, 'validated', duplicateWarning || 'Media accepted and stored.');
+      if (selfApprove) {
+        history = appendHistoryEntry(history, 'approved', `Approved at creation by ${selfApprove.approvedBy}.`);
+      }
+
       const data = {
         userId: ownerId,
         platform: 'tiktok',
@@ -585,6 +625,13 @@ async function addUploadedPosts(userId, files, defaults = {}) {
           String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
         scheduledAt: null,
         status: 'pending',
+        // Approval gate: admin-intake jobs start unapproved (drafts) and
+        // are blocked from every publish path until a human approves them.
+        approvedAt: selfApprove ? now : null,
+        approvedBy: selfApprove ? selfApprove.approvedBy : null,
+        history,
+        fileSize,
+        duplicateWarning,
         order: nextOrderFor(orderByAccount, target.accountId),
         createdAt: now,
         updatedAt: now,
@@ -624,7 +671,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   }
 }
 
-async function updatePost(userId, id, patch, accountId) {
+async function updatePost(userId, id, patch, accountId, historyEvent) {
   const ownerId = userId || DEFAULT_USER_ID;
   const ref = postsCollection().doc(id);
   const snap = await ref.get();
@@ -636,7 +683,60 @@ async function updatePost(userId, id, patch, accountId) {
   if ('scheduledAt' in firestorePatch && !['processing', 'posted'].includes(snap.data().status)) {
     firestorePatch.status = firestorePatch.scheduledAt ? 'scheduled' : 'pending';
   }
+  if (historyEvent && historyEvent.event) {
+    firestorePatch.history = appendHistoryEntry(snap.data().history, historyEvent.event, historyEvent.detail);
+  }
   await ref.update({ ...firestorePatch, updatedAt: FieldValue.serverTimestamp() });
+  const updated = await ref.get();
+  return postFromDoc(updated);
+}
+
+// ── Approval gate ────────────────────────────────────────────────────────
+// The one write path that marks a job publishable. Workers (scheduler.js
+// claimPost) refuse to claim anything without a valid approvedAt, so a job
+// that never passes through here can never reach TikTok.
+
+const APPROVABLE_STATUSES = ['pending', 'scheduled', 'failed', 'ready'];
+
+async function approvePost(userId, id, { approvedBy } = {}, accountId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const ref = postsCollection().doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) return null;
+  if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  const post = postFromDoc(snap);
+  if (accountId && post.accountId !== accountId) return null;
+  // Only reviewable states can change approval; a job that is mid-publish
+  // or already posted keeps whatever approval record produced it.
+  if (!APPROVABLE_STATUSES.includes(post.status)) return null;
+
+  const reviewer = String(approvedBy || '').trim() || 'admin';
+  await ref.update({
+    approvedAt: Timestamp.now(),
+    approvedBy: reviewer,
+    history: appendHistoryEntry(snap.data().history, 'approved', `Approved by ${reviewer}.`),
+    updatedAt: FieldValue.serverTimestamp()
+  });
+  const updated = await ref.get();
+  return postFromDoc(updated);
+}
+
+async function revokePostApproval(userId, id, accountId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const ref = postsCollection().doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) return null;
+  if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  const post = postFromDoc(snap);
+  if (accountId && post.accountId !== accountId) return null;
+  if (!APPROVABLE_STATUSES.includes(post.status)) return null;
+
+  await ref.update({
+    approvedAt: null,
+    approvedBy: null,
+    history: appendHistoryEntry(snap.data().history, 'approval_revoked', 'Approval removed; publishing is blocked until re-approved.'),
+    updatedAt: FieldValue.serverTimestamp()
+  });
   const updated = await ref.get();
   return postFromDoc(updated);
 }
@@ -925,6 +1025,8 @@ module.exports = {
   clearInstagramAuth,
   addUploadedPosts,
   updatePost,
+  approvePost,
+  revokePostApproval,
   deletePost,
   movePost,
   autoSchedulePosts,

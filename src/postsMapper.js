@@ -5,6 +5,26 @@ const { Timestamp } = require('./firestore');
 
 const DEFAULT_USER_ID = config.defaultUserId;
 
+// Evidence log cap. Publish attempts are already bounded by
+// SCHEDULER_MAX_CLAIM_ATTEMPTS, so this is a belt-and-braces limit that
+// keeps a single document from growing without bound no matter what.
+const POST_HISTORY_LIMIT = 50;
+
+/**
+ * Append one evidence entry to a post's history array, returning a new
+ * capped array. Entries are plain JSON ({ at, event, detail? }) so they
+ * survive Firestore round-trips and render directly in the view. Callers
+ * must only pass already-safe strings — the same redacted reasons that go
+ * into errorMessage/lastResult — never raw API responses or tokens.
+ */
+function appendHistoryEntry(history, event, detail) {
+  const entry = { at: new Date().toISOString(), event: String(event || 'event').slice(0, 64) };
+  const cleanDetail = String(detail || '').trim();
+  if (cleanDetail) entry.detail = cleanDetail.slice(0, 300);
+  const base = Array.isArray(history) ? history : [];
+  return [...base, entry].slice(-POST_HISTORY_LIMIT);
+}
+
 function toTimestampOrNull(value) {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -77,6 +97,16 @@ function postFromDoc(doc) {
     privacyLevel: data.privacyLevel || 'SELF_ONLY',
     scheduledAt: toIsoOrNull(data.scheduledAt || data.scheduledTimeUTC),
     status: data.status || 'pending',
+    // Human-approval gate (see scheduler.js isExplicitlyApproved). A post
+    // is a draft until approvedAt holds a real Timestamp; anything
+    // missing, malformed, or corrupted maps to "not approved" on purpose.
+    approvedAt: toIsoOrNull(data.approvedAt),
+    approvedBy: typeof data.approvedBy === 'string' ? data.approvedBy : '',
+    approved: Boolean(toIsoOrNull(data.approvedAt)),
+    // Redacted evidence log: [{ at, event, detail? }, ...]
+    history: Array.isArray(data.history) ? data.history : [],
+    fileSize: Number(data.fileSize || 0),
+    duplicateWarning: data.duplicateWarning || '',
     order: Number(data.order || 0),
     createdAt: toIsoOrNull(data.createdAt),
     updatedAt: toIsoOrNull(data.updatedAt),
@@ -116,12 +146,17 @@ function mapPatchToFirestore(patch) {
   if ('readyAt' in result) {
     result.readyAt = toTimestampOrNull(result.readyAt);
   }
+  if ('approvedAt' in result) {
+    result.approvedAt = toTimestampOrNull(result.approvedAt);
+  }
 
   return result;
 }
 
 module.exports = {
   DEFAULT_USER_ID,
+  POST_HISTORY_LIMIT,
+  appendHistoryEntry,
   toTimestampOrNull,
   toIsoOrNull,
   postFromDoc,

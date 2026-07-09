@@ -473,6 +473,15 @@
       .badge.posted, .badge.accepted { border-color: rgba(134,176,146,.26); background: var(--ok-bg); color: var(--ok); }
       .badge.publishing { border-color: rgba(212,212,216,.24); background: var(--cyan-bg); color: var(--cyan); }
       .badge.failed { border-color: rgba(192,133,133,.24); background: var(--danger-bg); color: var(--danger); }
+      /* Approval gate chips — unapproved must be impossible to miss */
+      .badge.approval-required { border-color: rgba(192,133,133,.38); background: var(--danger-bg); color: var(--danger); }
+      .badge.approval-ok { border-color: rgba(134,176,146,.26); background: var(--ok-bg); color: var(--ok); }
+      .queue-badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+
+      /* ─── Evidence log ─── */
+      .evidence-list { list-style: none; display: grid; gap: 5px; }
+      .evidence-list li { font-size: 11px; color: var(--text3); line-height: 1.5; }
+      .evidence-list li strong { color: var(--text2); font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
 
       /* ─── Schedule Form ─── */
       .schedule-form { display: grid; gap: 14px; }
@@ -986,7 +995,7 @@
                 <% } %>
                 <ul class="campaign-summary-jobs">
                   <% campaign.jobs.forEach(function(job) { %>
-                    <li><%= job.username ? `@${job.username}` : 'Channel unassigned' %> &middot; <%= statusWord(job.status) %></li>
+                    <li><%= job.username ? `@${job.username}` : 'Channel unassigned' %> &middot; <%= statusWord(job.status) %><%= job.approved === false && job.status !== 'posted' ? ' · Awaiting approval' : '' %></li>
                   <% }); %>
                 </ul>
               </article>
@@ -1041,10 +1050,20 @@
                     <h3><%= post.originalName %></h3>
                     <p class="queue-meta"><%= helpers.formatDateTime(post.scheduledAt) %> &middot; <%= post.username ? `@${post.username}` : 'Channel unassigned' %><%= post.campaignId ? ` · Campaign ${post.campaignId.slice(0, 8)}` : '' %> &middot; Job <%= post.id.slice(0, 8) %></p>
                   </div>
-                  <span class="badge <%= result.tone %>" data-result-badge><%= displayResultLabel(result, post) %></span>
+                  <div class="queue-badges">
+                    <span class="badge <%= post.approved ? 'approval-ok' : 'approval-required' %>" data-approval-badge><%= post.approved ? 'Approved' : 'Approval required' %></span>
+                    <span class="badge <%= result.tone %>" data-result-badge><%= displayResultLabel(result, post) %></span>
+                  </div>
                 </div>
 
                 <p class="caption-preview"><%= captionPreview(post) %></p>
+
+                <% if (!post.approved) { %>
+                  <p class="result-message">Draft — awaiting approval. This post is blocked from publishing (scheduled and manual) until you approve it.</p>
+                <% } %>
+                <% if (post.duplicateWarning) { %>
+                  <p class="result-message is-failed"><%= post.duplicateWarning %></p>
+                <% } %>
 
                 <% if (result.message && result.tone === 'failed') { %>
                   <p class="result-message is-failed"><%= result.message %></p>
@@ -1190,6 +1209,16 @@
                       <% } %>
                       <% if (result.hasDebug) { %><pre><%= result.debugJson %></pre><% } %>
                       <% if (enableInstagram && igResult.hasDebug) { %><pre><%= igResult.debugJson %></pre><% } %>
+                      <% if (Array.isArray(post.history) && post.history.length > 0) { %>
+                        <div>
+                          <span class="section-label">Evidence log</span>
+                          <ul class="evidence-list">
+                            <% post.history.slice(-12).reverse().forEach(function(entry) { %>
+                              <li><strong><%= String(entry.event || '').replace(/_/g, ' ') %></strong> &middot; <%= entry.at ? helpers.formatDateTime(entry.at) : 'No time' %><%= entry.detail ? ` — ${entry.detail}` : '' %></li>
+                            <% }); %>
+                          </ul>
+                        </div>
+                      <% } %>
                     </div>
                   </details>
                 </form>
@@ -1202,9 +1231,22 @@
                 <% } %>
 
                 <div class="card-actions">
+                  <% if (!post.approved) { %>
+                    <form class="inline-action" action="/posts/<%= post.id %>/approve" method="post">
+                      <button type="submit" class="btn btn-primary">Approve</button>
+                    </form>
+                  <% } else { %>
+                    <form class="inline-action" action="/posts/<%= post.id %>/unapprove" method="post">
+                      <button type="submit" class="btn btn-ghost">Revoke Approval</button>
+                    </form>
+                  <% } %>
                   <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post now? This skips the scheduled time.');">
                     <input type="hidden" name="force" value="1" />
-                    <button type="submit" class="btn btn-secondary">Publish Now</button>
+                    <% if (post.approved) { %>
+                      <button type="submit" class="btn btn-secondary">Publish Now</button>
+                    <% } else { %>
+                      <button type="submit" class="btn btn-secondary" disabled title="Approve this post first — drafts cannot publish.">Publish Now</button>
+                    <% } %>
                   </form>
                   <% if (enableInstagram && instagramStatus.readyToPublish) { %>
                     <form class="inline-action" action="/api/instagram/publish" method="post" data-instagram-publish-form>

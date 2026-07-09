@@ -354,6 +354,11 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   // Queue cards render the premium action labels.
   assert.match(accountBHtml, /Publish Now/);
   assert.match(accountBHtml, /Save Campaign/);
+  // The unapproved queue job is visibly a draft: approval chip, Approve
+  // action, and a disabled Publish Now.
+  assert.match(accountBHtml, /Approval required/);
+  assert.match(accountBHtml, /\/posts\/post-b\/approve/);
+  assert.match(accountBHtml, /Draft — awaiting approval/);
 
   let savedPatch = null;
   let savedAccountId = null;
@@ -379,4 +384,69 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.ok(savedPatch);
   assert.equal(savedAccountId, 'account-a');
   assert.equal(Object.hasOwn(savedPatch, 'instagramMediaUrl'), false);
+
+  // ── Approval gate routes ──────────────────────────────────────────────
+  const approveCalls = [];
+  storage.approvePost = async (userId, postId, meta, accountId) => {
+    approveCalls.push({ postId, meta, accountId });
+    return { id: postId, approved: true, scheduledAt: null };
+  };
+  const approveResponse = await fetch(`${baseUrl}/posts/post-a/approve`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { Cookie: adminCookie }
+  });
+  assert.equal(approveResponse.status, 302);
+  assert.match(decodeURIComponent(approveResponse.headers.get('location')), /Approved\./);
+  assert.equal(approveCalls.length, 1);
+  assert.equal(approveCalls[0].postId, 'post-a');
+  assert.equal(approveCalls[0].meta.approvedBy, 'admin:owner');
+  assert.equal(approveCalls[0].accountId, 'account-a');
+
+  const revokeCalls = [];
+  storage.revokePostApproval = async (userId, postId, accountId) => {
+    revokeCalls.push({ postId, accountId });
+    return { id: postId, approved: false };
+  };
+  const revokeResponse = await fetch(`${baseUrl}/posts/post-a/unapprove`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { Cookie: adminCookie }
+  });
+  assert.equal(revokeResponse.status, 302);
+  assert.match(decodeURIComponent(revokeResponse.headers.get('location')), /Approval removed/);
+  assert.equal(revokeCalls.length, 1);
+
+  // Publish Now on an unapproved draft is refused before any publish
+  // attempt: scheduler.processPost must never be reached.
+  const scheduler = require('../src/scheduler');
+  const originalProcessPost = scheduler.processPost;
+  let processPostCalls = 0;
+  scheduler.processPost = async () => { processPostCalls += 1; return { ok: true }; };
+  t.after(() => { scheduler.processPost = originalProcessPost; });
+  storage.getPost = async (userId, id, accountId) => ({
+    id, accountId, status: 'scheduled', approved: false, scheduledAt: null
+  });
+  const blockedPrepare = await fetch(`${baseUrl}/posts/post-a/prepare`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: adminCookie },
+    body: new URLSearchParams({ force: '1' })
+  });
+  assert.equal(blockedPrepare.status, 302);
+  assert.match(decodeURIComponent(blockedPrepare.headers.get('location')), /Approve this post first/);
+  assert.equal(processPostCalls, 0);
+
+  // An approved post reaches the (mocked) publish path as before.
+  storage.getPost = async (userId, id, accountId) => ({
+    id, accountId, status: 'scheduled', approved: true, scheduledAt: null
+  });
+  const allowedPrepare = await fetch(`${baseUrl}/posts/post-a/prepare`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: adminCookie },
+    body: new URLSearchParams({ force: '1' })
+  });
+  assert.equal(allowedPrepare.status, 302);
+  assert.equal(processPostCalls, 1);
 });

@@ -725,7 +725,11 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
   const scheduleNotice = useMaxScheduler
     ? ` First post at ${viewHelpers.formatDateTime(maxSchedulePlan.baseAt)}, ${maxSchedulePlan.offsetMinutes}m apart per channel.`
     : '';
-  respondWithNotice(req, res, `Created ${created.length} ${created.length === 1 ? 'post' : 'posts'}${channelNotice}. ${scheduledCount} scheduled.${scheduleNotice}${sourceNotice}${musicNotice}`);
+  const duplicateCount = created.filter((post) => post.duplicateWarning).length;
+  const duplicateNotice = duplicateCount > 0
+    ? ` ${duplicateCount} flagged as ${duplicateCount === 1 ? 'a possible duplicate' : 'possible duplicates'} — check the warnings below.`
+    : '';
+  respondWithNotice(req, res, `Created ${created.length} ${created.length === 1 ? 'post' : 'posts'}${channelNotice}. ${scheduledCount} scheduled as ${scheduledCount === 1 ? 'a draft' : 'drafts'} — review and approve in the Release Queue before anything publishes.${scheduleNotice}${sourceNotice}${musicNotice}${duplicateNotice}`);
 }));
 
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
@@ -782,7 +786,8 @@ router.post('/posts/:id', requireConnectedTikTokAccount, asyncRoute(async (req, 
     postPatch.instagramMediaUrl = String(req.body.instagramMediaUrl || '').trim();
   }
 
-  await storage.updatePost(userId, req.params.id, postPatch, req.activeTikTokAccount.accountId);
+  await storage.updatePost(userId, req.params.id, postPatch, req.activeTikTokAccount.accountId,
+    { event: 'edited', detail: 'Caption, schedule, or settings updated in the Release Queue.' });
 
   redirectWithNotice(res, 'Saved.');
 }));
@@ -793,10 +798,43 @@ router.post('/posts/:id/move', requireConnectedTikTokAccount, asyncRoute(async (
   redirectWithNotice(res, moved ? 'Moved.' : 'Could not move item.');
 }));
 
+// ── Approval gate: the explicit human review actions ──
+// Approving is the only way a job becomes publishable; scheduler.claimPost
+// refuses unapproved jobs on every worker path, so these two routes are
+// the entire surface area a human uses to open or close the gate.
+router.post('/posts/:id/approve', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const approved = await storage.approvePost(userId, req.params.id, { approvedBy: `admin:${userId}` }, req.activeTikTokAccount.accountId);
+  if (!approved) {
+    redirectWithNotice(res, 'Could not approve this post. It may be posting, already posted, or not in this channel.');
+    return;
+  }
+  redirectWithNotice(res, approved.scheduledAt
+    ? `Approved. It will post at ${viewHelpers.formatDateTime(approved.scheduledAt)}.`
+    : 'Approved. Set a posting time or use Publish Now to release it.');
+}));
+
+router.post('/posts/:id/unapprove', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const revoked = await storage.revokePostApproval(userId, req.params.id, req.activeTikTokAccount.accountId);
+  redirectWithNotice(res, revoked
+    ? 'Approval removed. This post is blocked from publishing until you approve it again.'
+    : 'Could not change approval. The post may be posting, already posted, or not in this channel.');
+}));
+
 router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const post = await storage.getPost(userId, req.params.id, req.activeTikTokAccount.accountId);
   if (!post) { redirectWithNotice(res, 'Post not found.'); return; }
+
+  // Fail closed before any publish attempt: unapproved drafts can never be
+  // published, even by the manual Publish Now action. (scheduler.claimPost
+  // enforces the same gate transactionally — this check just gives the
+  // operator a clear message instead of a generic skip.)
+  if (!post.approved) {
+    redirectWithNotice(res, 'Approve this post first — drafts are blocked from publishing until a human approves them.');
+    return;
+  }
 
   const forcePostNow = String(req.body.force || '') === '1';
   const scheduledAt = post.scheduledAt ? new Date(post.scheduledAt) : null;
@@ -822,7 +860,8 @@ router.post('/posts/:id/posted', requireConnectedTikTokAccount, asyncRoute(async
   await storage.updatePost(userId, req.params.id, {
     status: 'posted', postedAt: now, readyAt: null,
     lastResult: { ok: true, mode: 'manual', reason: 'Marked posted manually', completedAt: now }
-  }, req.activeTikTokAccount.accountId);
+  }, req.activeTikTokAccount.accountId,
+  { event: 'marked_posted', detail: 'Marked posted manually by the operator; no API publish occurred.' });
   redirectWithNotice(res, 'Marked posted.');
 }));
 
@@ -839,7 +878,8 @@ router.post('/posts/:id/pending', requireConnectedTikTokAccount, asyncRoute(asyn
     claimAttempts: 0,
     lockedAt: null,
     lockedBy: null
-  }, req.activeTikTokAccount.accountId);
+  }, req.activeTikTokAccount.accountId,
+  { event: 'reset', detail: 'Returned to the queue by the operator; attempt counter cleared.' });
   redirectWithNotice(res, post.scheduledAt ? 'Back to schedule.' : 'Back to pending.');
 }));
 

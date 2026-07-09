@@ -121,6 +121,8 @@ test('successful publish stores publishId as a durable top-level field', async (
     userId: 'owner', platform: 'tiktok', accountId: 'acc-1', tiktokOpenId: 'acc-1',
     status: 'scheduled',
     scheduledAt: { toDate: () => new Date('2026-06-20T11:59:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:59:00.000Z') },
+    approvedAt: { toDate: () => new Date('2026-06-20T11:00:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:00:00.000Z') },
+    approvedBy: 'admin:owner',
     createdAt: { toDate: () => new Date(), toMillis: () => Date.now() },
     updatedAt: { toDate: () => new Date(), toMillis: () => Date.now() },
     claimAttempts: 0
@@ -146,6 +148,8 @@ test('failed publish stores redacted error metadata without raw response', async
     userId: 'owner', platform: 'tiktok', accountId: 'acc-1', tiktokOpenId: 'acc-1',
     status: 'scheduled',
     scheduledAt: { toDate: () => new Date('2026-06-20T11:59:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:59:00.000Z') },
+    approvedAt: { toDate: () => new Date('2026-06-20T11:00:00.000Z'), toMillis: () => Date.parse('2026-06-20T11:00:00.000Z') },
+    approvedBy: 'admin:owner',
     createdAt: { toDate: () => new Date(), toMillis: () => Date.now() },
     updatedAt: { toDate: () => new Date(), toMillis: () => Date.now() },
     claimAttempts: 0

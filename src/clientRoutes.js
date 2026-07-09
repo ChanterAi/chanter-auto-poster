@@ -246,12 +246,17 @@ router.post('/client/autoposter/upload', requireClientSession, clientUpload.sing
     publicMediaUrl,
     accountId: account.accountId,
     tiktokOpenId: account.open_id,
-    username: account.username
+    username: account.username,
+    // The client filled in and submitted this one post themselves — that
+    // is the explicit per-item human review the approval gate requires, so
+    // record it at creation. Batch admin intake never self-approves.
+    selfApprove: { approvedBy: `client:@${account.username || account.accountId}` }
   });
 
   const scheduledAt = parseDateTimeLocal(req.body.scheduledAt, req.body.timezoneOffsetMinutes);
   if (scheduledAt) {
-    await storage.updatePost(req.clientUserId, created[0].id, { scheduledAt }, account.accountId);
+    await storage.updatePost(req.clientUserId, created[0].id, { scheduledAt }, account.accountId,
+      { event: 'edited', detail: 'Client set the posting time at upload.' });
   } else {
     await storage.autoSchedulePosts(req.clientUserId, created.map((post) => post.id), account.accountId);
   }

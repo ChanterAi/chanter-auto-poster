@@ -3,7 +3,7 @@
 const { randomUUID } = require('crypto');
 const config = require('./config');
 const { postsCollection, getFirestore, Timestamp, FieldValue } = require('./firestore');
-const { postFromDoc, toTimestampOrNull } = require('./postsMapper');
+const { postFromDoc, toTimestampOrNull, appendHistoryEntry } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
 
@@ -87,6 +87,27 @@ function retryBackoffMs(attempts) {
   return RETRY_BACKOFF_MINUTES[index] * 60 * 1000;
 }
 
+// Human-approval gate. A job may only be claimed for publishing when
+// approvedAt holds a real, finite Timestamp — set by an explicit human
+// action (the admin Approve button, or a client scheduling their own
+// single post). Missing, malformed, or corrupted approval state all fail
+// closed: the job is never claimed and nothing is sent to TikTok.
+const APPROVAL_REQUIRED = 'APPROVAL_REQUIRED';
+const APPROVAL_BLOCKED_REASON =
+  'This job has not been approved. Approve it in the Release Queue before it can publish.';
+
+function isExplicitlyApproved(data) {
+  const approvedAt = data && data.approvedAt;
+  if (!approvedAt || typeof approvedAt.toMillis !== 'function') return false;
+  let millis;
+  try {
+    millis = approvedAt.toMillis();
+  } catch (error) {
+    return false;
+  }
+  return Number.isFinite(millis) && millis > 0;
+}
+
 // Track the last successful tick time for health monitoring.
 // This is in-memory only — it resets on restart, which is exactly what
 // we want: if the process just booted, we don't know when the last tick
@@ -162,6 +183,10 @@ async function runSchedulerTick({ now = new Date() } = {}) {
     due: 0,
     posted: 0,
     failed: 0,
+    // Due jobs that a human has not approved yet. Not failures — the gate
+    // is working as designed — but counted separately so a stuck queue is
+    // visible in /health and the cron response instead of silent.
+    blockedUnapproved: 0,
     errors: []
   };
 
@@ -200,6 +225,8 @@ async function runSchedulerTick({ now = new Date() } = {}) {
       const result = await processPost(job.id, { force: false, workerId, now: nowDate });
       if (result.ok) {
         summary.posted += 1;
+      } else if (result.code === APPROVAL_REQUIRED) {
+        summary.blockedUnapproved += 1;
       } else if (result.mode !== 'skipped') {
         summary.failed += 1;
         summary.errors.push({ id: job.id, error: result.reason || 'Unknown publish error' });
@@ -287,7 +314,8 @@ async function reclaimOne(ref) {
           failedAt: FieldValue.serverTimestamp(),
           errorMessage: reason,
           updatedAt: FieldValue.serverTimestamp(),
-          lastResult: { ok: false, mode: 'api', reason, completedAt: new Date().toISOString() }
+          lastResult: { ok: false, mode: 'api', reason, completedAt: new Date().toISOString() },
+          history: appendHistoryEntry(data.history, 'failed', reason)
         });
         return;
       }
@@ -298,6 +326,7 @@ async function reclaimOne(ref) {
         scheduledAt,
         lockedAt: null,
         lockedBy: null,
+        history: appendHistoryEntry(data.history, 'lock_reclaimed', 'Worker lock expired; job returned to the schedule for retry.'),
         updatedAt: FieldValue.serverTimestamp()
       });
     });
@@ -342,11 +371,18 @@ async function claimPost(id, { force, workerId, now = new Date() }) {
       return null;
     }
 
+    // Approval gate — applies to every publish path, including force mode
+    // (manual "Publish Now"). Fails closed on any missing/invalid state.
+    if (!isExplicitlyApproved(data)) {
+      return { blocked: APPROVAL_REQUIRED };
+    }
+
     tx.update(ref, {
       status: 'processing',
       lockedAt: FieldValue.serverTimestamp(),
       lockedBy: workerId,
       claimAttempts: FieldValue.increment(1),
+      history: appendHistoryEntry(data.history, 'publish_attempt', `Claimed by worker for publishing (attempt ${Number(data.claimAttempts || 0) + 1}).`),
       updatedAt: FieldValue.serverTimestamp()
     });
 
@@ -362,6 +398,16 @@ async function processPost(id, {
   now = new Date()
 } = {}) {
   const claimed = await claimPost(id, { force, workerId, now });
+  if (claimed && claimed.blocked === APPROVAL_REQUIRED) {
+    console.warn(`[JOB_BLOCKED_UNAPPROVED] id=${id}`);
+    return {
+      ok: false,
+      mode: 'blocked',
+      code: APPROVAL_REQUIRED,
+      postId: id,
+      reason: APPROVAL_BLOCKED_REASON
+    };
+  }
   if (!claimed) {
     return {
       ok: false,
@@ -456,6 +502,7 @@ async function finalize(id, workerId, result) {
         lockedAt: null,
         lockedBy: null,
         lastResult: { ...result, completedAt },
+        history: appendHistoryEntry(data.history, 'posted', publishId ? `TikTok accepted the publish (id ${publishId}).` : 'TikTok accepted the publish.'),
         updatedAt: FieldValue.serverTimestamp()
       };
       if (publishId) {
@@ -486,6 +533,7 @@ async function finalize(id, workerId, result) {
           lockedAt: null,
           lockedBy: null,
           lastResult: { ...safeResult, willRetry: true, attempts },
+          history: appendHistoryEntry(data.history, 'retry_scheduled', reason),
           updatedAt: FieldValue.serverTimestamp()
         });
       } else {
@@ -496,6 +544,7 @@ async function finalize(id, workerId, result) {
           lockedAt: null,
           lockedBy: null,
           lastResult: safeResult,
+          history: appendHistoryEntry(data.history, 'failed', reason),
           updatedAt: FieldValue.serverTimestamp()
         });
       }
@@ -574,9 +623,11 @@ module.exports = {
   publishNextPost,
   runSchedulerTick,
   processPost,
+  APPROVAL_REQUIRED,
   _private: {
     claimPost,
     findDueJobs,
+    isExplicitlyApproved,
     isTransientPublishFailure,
     retryBackoffMs,
     describeQueryError,

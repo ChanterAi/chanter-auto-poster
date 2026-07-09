@@ -44,14 +44,18 @@ const queueJobs = [
     username: '__chanter', campaignId: 'cmp12345678', status: 'scheduled',
     originalName: 'chanter-queued.jpg', mediaType: 'photo', mediaUrl: '/assets/chanter-logo.png',
     caption: 'Chanter queued', hashtags: '#chanter', privacyLevel: 'SELF_ONLY',
-    scheduledAt: new Date(Date.now() + 60_000).toISOString()
+    scheduledAt: new Date(Date.now() + 60_000).toISOString(),
+    // Seeded as human-approved: the Publish Now assertions below exercise
+    // the per-channel publish path, which only approved jobs may reach.
+    approved: true, approvedAt: new Date().toISOString(), approvedBy: 'admin:owner'
   },
   {
     id: 'job-cdwarrior-1', accountId: 'cdwarrior-open-id', tiktokOpenId: 'cdwarrior-open-id',
     username: '_cdwarrior', campaignId: 'cmp12345678', status: 'scheduled',
     originalName: 'cdwarrior-queued.jpg', mediaType: 'photo', mediaUrl: '/assets/chanter-logo.png',
     caption: 'CD Warrior queued', hashtags: '#cdw', privacyLevel: 'SELF_ONLY',
-    scheduledAt: new Date(Date.now() + 60_000).toISOString()
+    scheduledAt: new Date(Date.now() + 60_000).toISOString(),
+    approved: true, approvedAt: new Date().toISOString(), approvedBy: 'admin:owner'
   }
 ];
 

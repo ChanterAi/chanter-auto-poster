@@ -30,6 +30,8 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
     mediaUrl: 'https://res.cloudinary.com/test/video/upload/scheduled.mp4',
     status: 'scheduled',
     scheduledAt: timestamp('2026-06-20T11:59:00.000Z'),
+    approvedAt: timestamp('2026-06-20T10:30:00.000Z'),
+    approvedBy: 'admin:owner',
     createdAt: timestamp('2026-06-20T10:00:00.000Z'),
     updatedAt: timestamp('2026-06-20T10:00:00.000Z'),
     claimAttempts: 0
@@ -41,6 +43,8 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
     mediaUrl: 'https://cdn.example.com/story.mp4',
     status: 'scheduled',
     scheduledAt: timestamp('2026-06-20T11:57:00.000Z'),
+    approvedAt: timestamp('2026-06-20T08:30:00.000Z'),
+    approvedBy: 'admin:owner',
     createdAt: timestamp('2026-06-20T08:00:00.000Z'),
     updatedAt: timestamp('2026-06-20T08:00:00.000Z'),
     claimAttempts: 0
@@ -52,8 +56,24 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
     mediaUrl: 'https://cdn.example.com/legacy.jpg',
     status: 'scheduled',
     scheduledAt: timestamp('2026-06-20T11:58:00.000Z'),
+    approvedAt: timestamp('2026-06-20T09:30:00.000Z'),
+    approvedBy: 'admin:owner',
     createdAt: timestamp('2026-06-20T09:00:00.000Z'),
     updatedAt: timestamp('2026-06-20T09:00:00.000Z'),
+    claimAttempts: 0
+  }], ['unapproved-due-job', {
+    userId: 'owner',
+    platform: 'tiktok',
+    accountId: 'account-c',
+    tiktokOpenId: 'account-c',
+    username: 'account_c',
+    originalName: 'draft.mp4',
+    mediaType: 'video',
+    mediaUrl: 'https://res.cloudinary.com/test/video/upload/draft.mp4',
+    status: 'scheduled',
+    scheduledAt: timestamp('2026-06-20T11:56:00.000Z'),
+    createdAt: timestamp('2026-06-20T07:00:00.000Z'),
+    updatedAt: timestamp('2026-06-20T07:00:00.000Z'),
     claimAttempts: 0
   }]]);
   const queries = [];
@@ -178,10 +198,11 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
   assert.deepEqual(result, {
     ok: true,
     now: fixedNow.toISOString(),
-    checked: 3,
-    due: 3,
+    checked: 4,
+    due: 4,
     posted: 1,
     failed: 2,
+    blockedUnapproved: 1,
     errors: [
       {
         id: 'instagram-job',
@@ -196,6 +217,11 @@ test('cron tick atomically publishes a due scheduled Firestore job', async (t) =
   assert.equal(records.get('due-job').status, 'posted');
   assert.equal(records.get('due-job').lockedBy, null);
   assert.equal(records.get('due-job').claimAttempts, 1);
+  // Approval gate: the due-but-unapproved draft is untouched — never
+  // claimed, never published, no attempt recorded, not marked failed.
+  assert.equal(records.get('unapproved-due-job').status, 'scheduled');
+  assert.equal(records.get('unapproved-due-job').claimAttempts, 0);
+  assert.equal(records.get('unapproved-due-job').lockedBy, undefined);
   assert.equal(records.get('legacy-job').status, 'failed');
   assert.match(records.get('legacy-job').errorMessage, /unassigned/i);
   assert.equal(records.get('instagram-job').status, 'failed');
@@ -318,12 +344,69 @@ function dueTikTokRecord(overrides = {}) {
     mediaUrl: 'https://res.cloudinary.com/test/image/upload/due.jpg',
     status: 'scheduled',
     scheduledAt: timestamp('2026-06-20T11:59:00.000Z'),
+    approvedAt: timestamp('2026-06-20T10:30:00.000Z'),
+    approvedBy: 'admin:owner',
     createdAt: timestamp('2026-06-20T10:00:00.000Z'),
     updatedAt: timestamp('2026-06-20T10:00:00.000Z'),
     claimAttempts: 0,
     ...overrides
   };
 }
+
+test('approval gate blocks unapproved jobs on every publish path, including force', async (t) => {
+  const { scheduler, records, publishCalls } = createSchedulerHarness(t, {
+    record: dueTikTokRecord({ approvedAt: null, approvedBy: null }),
+    publishResult: { ok: true, mode: 'api', response: { data: { publish_id: 'must-never-happen' } } }
+  });
+
+  // Scheduled path (cron tick / due claim).
+  const scheduled = await scheduler.processPost('job-1', { now: new Date('2026-06-20T12:00:00.000Z') });
+  assert.equal(scheduled.ok, false);
+  assert.equal(scheduled.mode, 'blocked');
+  assert.equal(scheduled.code, 'APPROVAL_REQUIRED');
+  assert.match(scheduled.reason, /not been approved/i);
+
+  // Manual "Publish Now" path (force: true) must fail closed too.
+  const forced = await scheduler.processPost('job-1', { force: true, now: new Date('2026-06-20T12:00:00.000Z') });
+  assert.equal(forced.ok, false);
+  assert.equal(forced.code, 'APPROVAL_REQUIRED');
+
+  assert.equal(publishCalls.length, 0);
+  const record = records.get('job-1');
+  assert.equal(record.status, 'scheduled');
+  assert.equal(record.claimAttempts, 0);
+  assert.equal(record.lockedBy, undefined);
+});
+
+test('approval gate fails closed on corrupted approval state', async (t) => {
+  const { scheduler, publishCalls } = createSchedulerHarness(t, {
+    // A string is not a Timestamp — ambiguous/corrupted state must block.
+    record: dueTikTokRecord({ approvedAt: 'yes', approvedBy: 'admin:owner' }),
+    publishResult: { ok: true, mode: 'api', response: {} }
+  });
+
+  const result = await scheduler.processPost('job-1', { force: true, now: new Date('2026-06-20T12:00:00.000Z') });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'APPROVAL_REQUIRED');
+  assert.equal(publishCalls.length, 0);
+});
+
+test('isExplicitlyApproved accepts only real timestamps', () => {
+  const { isExplicitlyApproved } = require('../src/scheduler')._private;
+  const timestamp = (value) => ({
+    toDate: () => new Date(value),
+    toMillis: () => new Date(value).getTime()
+  });
+
+  assert.equal(isExplicitlyApproved({ approvedAt: timestamp('2026-06-20T10:00:00.000Z') }), true);
+  assert.equal(isExplicitlyApproved({}), false);
+  assert.equal(isExplicitlyApproved({ approvedAt: null }), false);
+  assert.equal(isExplicitlyApproved({ approvedAt: true }), false);
+  assert.equal(isExplicitlyApproved({ approvedAt: 'approved' }), false);
+  assert.equal(isExplicitlyApproved({ approvedAt: { toMillis: () => NaN } }), false);
+  assert.equal(isExplicitlyApproved({ approvedAt: { toMillis: () => { throw new Error('corrupt'); } } }), false);
+  assert.equal(isExplicitlyApproved(null), false);
+});
 
 test('transient publish failure reschedules with bounded backoff instead of failing', async (t) => {
   const { scheduler, records } = createSchedulerHarness(t, {
