@@ -5,6 +5,8 @@
 **Scope:** Full codebase audit before new feature work  
 **Constraints:** No new features, no destructive changes, no real TikTok posts, no production data modification
 
+> **STATUS UPDATE (2026-07-09):** This document is a historical audit journal. The P0/P1-1 security findings below (P0-1 CSRF, P0-2 git-tracked data files, P1-1 SHA-256 password hashing) were **fixed** (commit `584326e` and the P1 security loop) and later **independently re-verified as resolved** — see [`AUTPOSTER_P0_VERIFICATION_REPORT.md`](AUTPOSTER_P0_VERIFICATION_REPORT.md) (recorded in commit `415aadb`). Current code: `csrfOriginCheck` is globally mounted in `src/server.js`, password hashing uses `crypto.scryptSync` in `src/auth.js` (test-covered in `test/p1-security.test.js`), and `git ls-files data/` is empty. Known remaining LOW-severity follow-up: `GET /disconnect/tiktok` and `GET /disconnect/instagram` bypass the CSRF origin check (GET is safe-listed); convert to POST+CSRF in a future scoped loop. Original findings are preserved unedited below as audit history.
+
 ---
 
 ## 1. Executive Summary
@@ -17,6 +19,7 @@ CHANTER Auto Poster is a Node.js/Express application for scheduling and publishi
 **Security:** A few P0/P1 issues need attention before production hardening  
 
 The most critical finding is **missing CSRF protection** on all state-changing POST routes. Secondary concerns include git-tracked data files, SHA-256 for admin password hashing, and no retry path for failed posts from the UI.
+*(2026-07-09: the CSRF, git-tracked-data, and SHA-256 findings in this summary are RESOLVED and independently verified — see the status update above.)*
 
 ---
 
@@ -223,19 +226,19 @@ Same as above through step 11, then:
 
 ### P0 — Must Fix Before Using Seriously
 
-#### P0-1: No CSRF Protection on POST Routes
+#### P0-1: No CSRF Protection on POST Routes — ✅ RESOLVED (verified 2026-07-08, see `AUTPOSTER_P0_VERIFICATION_REPORT.md`)
 **Files:** `src/routes.js` (all POST routes), `src/server.js`  
 **Issue:** All state-changing operations (upload, delete, schedule, post-now, settings, account switching) accept simple form-encoded POSTs with no CSRF token. The admin session cookie uses `sameSite: 'lax'`, which still allows top-level navigation POSTs. A malicious site could craft a form that submits to the AutoPoster while the admin is logged in.  
 **Fix:** Add CSRF tokens to all forms, or change admin cookie to `sameSite: 'strict'`.
 
-#### P0-2: Git-Tracked Data Files
+#### P0-2: Git-Tracked Data Files — ✅ RESOLVED (removed in `584326e`, verified 2026-07-08)
 **Files:** `data/posts.json`, `data/settings.json`, `data/tiktok_auth.json`  
 **Issue:** These files are committed to git (verified via `git ls-files`) despite `data/*.json` being in `.gitignore`. They were committed before the gitignore rule was added. Currently they contain empty/default values, but if real OAuth tokens were ever written locally, they'd be in git history.  
 **Fix:** `git rm --cached data/*.json` and verify git history for any leaked secrets.
 
 ### P1 — Should Fix Soon
 
-#### P1-1: SHA-256 Used for Admin Password Hashing
+#### P1-1: SHA-256 Used for Admin Password Hashing — ✅ RESOLVED (now `scryptSync`, see P1 Security Loop section)
 **File:** `src/auth.js` → `verifyAdminPassword()`  
 **Issue:** Uses `createHash('sha256')` — a fast cryptographic hash, not a slow password hash.  
 **Fix:** Use `bcrypt` or Node.js `scrypt`.
