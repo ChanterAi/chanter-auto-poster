@@ -682,7 +682,7 @@
         <section class="account-context" aria-label="Publishing channel">
           <div class="account-context-copy">
             <span class="account-context-label">Publishing Channel</span>
-            <strong><%= activeTikTokAccount && activeTikTokAccount.username ? `@${activeTikTokAccount.username}` : (activeTikTokAccount && activeTikTokAccount.displayName) || 'TikTok channel' %></strong>
+            <strong><%= (creatorInfo && creatorInfo.creator_username) ? `@${creatorInfo.creator_username}` : (activeTikTokAccount && activeTikTokAccount.username) ? `@${activeTikTokAccount.username}` : (activeTikTokAccount && activeTikTokAccount.displayName) || 'TikTok channel' %></strong>
             <small><%= activeTikTokAccount && activeTikTokAccount.connected ? 'Connected' : 'Disconnected — reconnect to post from this channel' %></small>
           </div>
           <form class="account-selector" action="/private/autoposter/account" method="post">

@@ -341,6 +341,7 @@ router.get('/disconnect/tiktok', requireAdminPage, asyncRoute(async (req, res) =
     return;
   }
   await storage.disconnectTikTokAccount(userId, activeAccount.accountId);
+  res.clearCookie(ACTIVE_TIKTOK_ACCOUNT_COOKIE);
   redirectWithNotice(res, `${accountLabel(activeAccount)} disconnected. Its jobs and history were preserved.`);
 }));
 
