@@ -11,6 +11,7 @@ const autoCaption = require('./autoCaption');
 const autoMusic = require('./autoMusic');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
+const connectedAccounts = require('./connectedAccounts');
 const { DEFAULT_OFFSET_MINUTES } = require('./maxScheduler');
 const { summarizeCampaigns, latestCampaignChannelCount } = require('./campaignAccounting');
 const clientRoutes = require('./clientRoutes');
@@ -169,6 +170,32 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     // updates the Switch Channel dropdown and Target Publishing Channels too.
   }
 
+  // Canonical connected-account/provider readiness for the active channel,
+  // resolved through the same shared application service the Agent Runtime
+  // uses. The account view is the safe connected-account shape — no tokens.
+  let channelReadiness = null;
+  if (activeAccount) {
+    try {
+      const resolved = await applicationService.getConnectedAccount(context, { accountId: activeAccountId });
+      const connectedAccount = resolved.account;
+      channelReadiness = {
+        provider: resolved.provider,
+        account: connectedAccount,
+        connectionLabel: connectedAccount.connectionStatus === 'connected'
+          ? 'Connected'
+          : (connectedAccount.connectionStatus === 'reauthorization_required'
+              ? 'Reauthorization required'
+              : 'Disconnected'),
+        publishingLabel: connectedAccount.publishingReady
+          ? 'Ready to publish'
+          : connectedAccounts.describeReadinessBlocker(connectedAccount.readinessBlockers[0]),
+        lastVerifiedAt: connectedAccount.lastVerifiedAt
+      };
+    } catch (readinessError) {
+      console.warn('[routes] connected-account readiness unavailable', readinessError.message);
+    }
+  }
+
   res.render('index', {
     appName: config.appName,
     posts,
@@ -182,6 +209,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     tiktokAuthStatus,
     tiktokAccounts: accounts.map(publicTikTokAccount),
     activeTikTokAccount: activeAccount ? publicTikTokAccount(activeAccount) : null,
+    channelReadiness,
     enableInstagram: config.ENABLE_INSTAGRAM,
     autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
     autoMusicConfigured: autoMusic.isAutoMusicConfigured(),
@@ -999,6 +1027,8 @@ function publicTikTokAccount(account) {
     open_id: account.open_id,
     tiktokOpenId: account.open_id,
     platform: 'tiktok',
+    provider: 'tiktok',
+    connectedAccountId: connectedAccounts.connectionId('tiktok', account.accountId),
     username: account.username || '',
     displayName: account.displayName || '',
     avatarUrl: account.avatarUrl || '',

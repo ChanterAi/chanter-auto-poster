@@ -710,6 +710,13 @@
             <span class="account-context-label">Publishing Channel</span>
             <strong><%= (creatorInfo && creatorInfo.creator_username) ? `@${creatorInfo.creator_username}` : (activeTikTokAccount && activeTikTokAccount.username) ? `@${activeTikTokAccount.username}` : (activeTikTokAccount && activeTikTokAccount.displayName) || 'TikTok channel' %></strong>
             <small><%= activeTikTokAccount && activeTikTokAccount.connected ? 'Connected' : 'Disconnected — reconnect to post from this channel' %></small>
+            <% if (channelReadiness) { %>
+              <small data-channel-readiness>
+                Provider: <%= channelReadiness.provider.displayName %> (<%= channelReadiness.provider.implementationStatus %>)
+                · <%= channelReadiness.connectionLabel %>
+                · <%= channelReadiness.publishingLabel %><%= channelReadiness.lastVerifiedAt ? ` · Verified ${helpers.formatDateTime(channelReadiness.lastVerifiedAt)}` : '' %>
+              </small>
+            <% } %>
           </div>
           <form class="account-selector" action="/private/autoposter/account" method="post">
             <label>

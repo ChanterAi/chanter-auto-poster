@@ -82,6 +82,10 @@ function captionSummary(caption) {
 function queueItemView(post) {
   return {
     id: post.id,
+    // Canonical provider/connected-account identity (additive, safe
+    // metadata only — never tokens or credentials).
+    provider: post.provider || 'tiktok',
+    connectedAccountId: post.connectedAccountId || '',
     accountId: post.accountId,
     username: post.username,
     status: post.status,

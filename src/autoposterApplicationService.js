@@ -7,10 +7,12 @@
 const { createHash } = require('crypto');
 const storage = require('./storage');
 const mediaPolicy = require('./mediaPolicy');
+const providers = require('./providers');
+const connectedAccounts = require('./connectedAccounts');
 const { parseDateTimeLocal } = require('./timeUtil');
 const { computeMaxSchedulePlan } = require('./maxScheduler');
 
-const PROVIDER_TIKTOK = 'tiktok';
+const PROVIDER_TIKTOK = providers.PROVIDER_TIKTOK;
 const REQUEST_SOURCES = new Set(['website', 'runtime', 'internal_worker']);
 const DEFAULT_QUEUE_LIMIT = 100;
 const MAX_QUEUE_LIMIT = 1000;
@@ -25,6 +27,19 @@ class AutoPosterApplicationError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+// Provider-domain failures surface through the same application error type
+// every controller already knows how to render.
+function translateProviderError(error) {
+  if (error instanceof providers.ProviderError) {
+    return new AutoPosterApplicationError(error.message, {
+      status: error.status,
+      code: error.code,
+      details: error.details
+    });
+  }
+  return error;
 }
 
 function createExecutionContext(input = {}) {
@@ -129,6 +144,14 @@ function createAutoPosterApplicationService(dependencies = {}) {
   const now = dependencies.now || (() => Date.now());
   const maxSchedulePlanner = dependencies.computeMaxSchedulePlan || computeMaxSchedulePlan;
 
+  function toConnectedAccountView(account) {
+    try {
+      return connectedAccounts.toConnectedAccount(account, { now: now() });
+    } catch (error) {
+      throw translateProviderError(error);
+    }
+  }
+
   async function resolveOwnedAccounts(context, accountIds, { requireConnected = true } = {}) {
     if (accountIds.length === 0) {
       throw new AutoPosterApplicationError('Select a connected TikTok account before creating scheduled posts.');
@@ -147,6 +170,23 @@ function createAutoPosterApplicationService(dependencies = {}) {
         throw new AutoPosterApplicationError('Publishing channel needs to be reconnected before it can be scheduled.', {
           status: 409
         });
+      }
+      if (requireConnected) {
+        // Connection existence and publishing readiness are different: a
+        // connected channel may still be blocked (token expired without a
+        // refresh token, or a recorded scope that excludes video.publish).
+        const view = toConnectedAccountView(account);
+        if (!view.publishingReady) {
+          const blocker = view.readinessBlockers[0];
+          throw new AutoPosterApplicationError(
+            `Publishing channel is not ready: ${connectedAccounts.describeReadinessBlocker(blocker)}.`,
+            {
+              status: 409,
+              code: 'account_not_ready',
+              details: { accountId: view.accountId, blockers: view.readinessBlockers }
+            }
+          );
+        }
       }
       accounts.push(account);
     }
@@ -343,10 +383,19 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   async function schedulePost(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
-    const provider = String(input.provider || PROVIDER_TIKTOK).trim().toLowerCase();
-    if (provider !== PROVIDER_TIKTOK) {
-      throw new AutoPosterApplicationError(`Unsupported publishing provider: ${provider}.`);
+    // Provider gate: a request without a provider targets TikTok (the only
+    // active provider); an explicit provider must resolve through the
+    // registry and be schedulable. Unknown and non-active providers fail
+    // closed here, before any account, media, or queue work happens.
+    const requestedProvider = providers.normalizeStoredProviderId(input.provider);
+    let providerDefinition;
+    try {
+      providerDefinition = providers.assertSchedulableProvider(requestedProvider.providerId);
+      providers.assertProviderCapability(providerDefinition.id, 'schedulable');
+    } catch (error) {
+      throw translateProviderError(error);
     }
+    const provider = providerDefinition.id;
 
     const accountIds = normalizeAccountIds(context, input);
     const accounts = await resolveOwnedAccounts(context, accountIds);
@@ -694,11 +743,45 @@ function createAutoPosterApplicationService(dependencies = {}) {
     return { ok: true, count, accountId };
   }
 
+  // Shared connected-account resolution: the website and Agent Runtime both
+  // read channel identity/readiness through these operations, so neither
+  // surface can drift into its own account model. Responses are the safe
+  // connected-account view only — never raw account records with tokens.
+  async function getConnectedAccount(contextInput, input = {}) {
+    const context = createExecutionContext(contextInput);
+    const accountId = String(input.accountId || context.accountId || '').trim();
+    if (!accountId) throw new AutoPosterApplicationError('accountId is required.');
+    const account = await storageAdapter.getTikTokAccount(context.userId, accountId);
+    if (!account) {
+      throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
+        status: 404,
+        code: 'not_found'
+      });
+    }
+    const view = toConnectedAccountView(account);
+    return { account: view, provider: providers.getProviderSummary(view.provider) };
+  }
+
+  async function listConnectedAccounts(contextInput) {
+    const context = createExecutionContext(contextInput);
+    const accounts = await storageAdapter.getTikTokAccounts(context.userId);
+    const views = (Array.isArray(accounts) ? accounts : [])
+      .map((account) => toConnectedAccountView(account))
+      .filter(Boolean);
+    return {
+      accounts: views,
+      count: views.length,
+      provider: providers.getProviderSummary(PROVIDER_TIKTOK)
+    };
+  }
+
   return {
     approvePost,
     deleteMarkedPosts,
     deletePost,
+    getConnectedAccount,
     getPostStatus,
+    listConnectedAccounts,
     listQueue,
     markPostManually,
     rescheduleQueue,

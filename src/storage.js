@@ -18,6 +18,7 @@ const {
   isVideoUploadFile,
   isVideoMediaUrl
 } = require('./mediaPolicy');
+const providers = require('./providers');
 const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore, appendHistoryEntry, toTimestampOrNull } = require('./postsMapper');
 const { generateAccessCode, parseAccessCode, verifyAccessSecret } = require('./clientAuth');
 
@@ -463,6 +464,17 @@ function normalizeTargetAccounts(defaults) {
 
 async function addUploadedPosts(userId, files, defaults = {}) {
   const ownerId = userId || DEFAULT_USER_ID;
+  // Provider fail-closed chokepoint (defense in depth behind the
+  // application service): a missing provider keeps the documented TikTok
+  // compatibility default, but an explicit unknown provider is refused —
+  // no new write may silently fall back to TikTok.
+  const providerResolution = providers.normalizeStoredProviderId(defaults.provider || defaults.platform);
+  if (!providerResolution.known) {
+    const error = new Error(`Unsupported publishing provider: ${providerResolution.providerId}.`);
+    error.status = 400;
+    throw error;
+  }
+  const providerId = providerResolution.providerId;
   const targetAccounts = normalizeTargetAccounts(defaults);
   if (targetAccounts.length === 0) {
     const error = new Error('Select a connected TikTok account before creating scheduled posts');
@@ -646,11 +658,14 @@ async function addUploadedPosts(userId, files, defaults = {}) {
 
       const data = {
         userId: ownerId,
-        platform: String(defaults.platform || defaults.provider || 'tiktok').trim() || 'tiktok',
+        platform: providerId,
         // Backward-compatible provider/source metadata for the canonical
         // application contract. Older documents omit these and postsMapper
         // derives provider from platform without inventing a creation source.
-        provider: String(defaults.provider || defaults.platform || 'tiktok').trim() || 'tiktok',
+        provider: providerId,
+        // Canonical connected-account identity (provider:accountId). Legacy
+        // documents omit it; postsMapper derives the same composite on read.
+        connectedAccountId: `${providerId}:${target.accountId}`,
         creationSource: String(defaults.creationSource || '').trim(),
         createdBy: String(defaults.createdBy || '').trim(),
         correlationId: String(defaults.correlationId || '').trim(),

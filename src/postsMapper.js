@@ -61,12 +61,24 @@ function postFromDoc(doc) {
   const id = doc.id;
   const accountId = data.accountId || data.tiktokAccountId || data.tiktokOpenId || data.open_id || '';
   const tiktokOpenId = data.tiktokOpenId || data.open_id || (accountId !== 'legacy' ? accountId : '');
+  // Provider compatibility rule: a MISSING legacy provider value normalizes
+  // to TikTok; an EXPLICIT stored value is preserved as-is (even when
+  // unknown) so consumers can reject it instead of silently treating it as
+  // TikTok. providerSource records which case applied.
+  const explicitProvider = String(data.provider || data.platform || '').trim().toLowerCase();
+  const provider = explicitProvider || 'tiktok';
 
   return {
     id,
     userId: data.userId || DEFAULT_USER_ID,
     platform: data.platform || data.provider || 'tiktok',
-    provider: data.provider || data.platform || 'tiktok',
+    provider,
+    providerSource: explicitProvider ? 'explicit' : 'legacy_default',
+    // Canonical connected-account identity. New writes store it; legacy
+    // TikTok-assigned records derive the same composite so both read paths
+    // resolve one identity without a migration.
+    connectedAccountId: data.connectedAccountId
+      || (accountId && accountId !== 'legacy' ? `${provider}:${accountId}` : ''),
     creationSource: data.creationSource || '',
     createdBy: data.createdBy || '',
     correlationId: data.correlationId || '',

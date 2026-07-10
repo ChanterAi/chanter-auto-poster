@@ -190,6 +190,8 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
   assert.equal(listBody.items[0].id, 'post-1');
   assert.equal(listBody.items[0].approved, false);
   assert.equal(listBody.items[0].mediaUrl, undefined, 'raw media URLs are not exposed');
+  assert.equal(listBody.items[0].provider, 'tiktok', 'queue items expose canonical provider identity');
+  assert.equal(typeof listBody.items[0].connectedAccountId, 'string', 'connected-account identity is safe metadata');
 
   const unknownScope = await call('GET', '/api/runtime/queue?accountId=account-nope');
   assert.equal(unknownScope.status, 404);
@@ -270,6 +272,7 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
   assert.equal(scheduleBody.ok, true);
   assert.equal(scheduleBody.duplicate, false);
   assert.equal(scheduleBody.post.status, 'scheduled');
+  assert.equal(scheduleBody.post.provider, 'tiktok', 'runtime-created items carry canonical provider identity');
   assert.equal(scheduleBody.post.approved, false, 'runtime scheduling never grants approval');
   assert.equal(scheduleBody.post.scheduledAt, new Date(scheduledAt).toISOString());
   assert.equal(state.addUploadedPostsCalls.length, 1, 'exactly one queue item created');

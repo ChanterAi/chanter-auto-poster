@@ -17,9 +17,22 @@ const autoCaption = require('../src/autoCaption');
 const autoMusic = require('../src/autoMusic');
 const { attachUser } = require('../src/auth');
 
+// Canary token values: these must never appear in any rendered page or
+// JSON response. The connected-account/provider views are allowlist-based,
+// so a leak here means a broken security boundary, not a formatting bug.
+const CANARY_ACCESS_TOKEN = 'CANARY-ACCESS-TOKEN-9a8b7c6d5e4f3a2b';
+const CANARY_REFRESH_TOKEN = 'CANARY-REFRESH-TOKEN-2b3a4f5e6d7c8b9a';
+
 const accounts = [
-  { accountId: 'account-a', open_id: 'account-a', username: 'account_a', connected: true },
-  { accountId: 'account-b', open_id: 'account-b', username: 'account_b', connected: true }
+  {
+    accountId: 'account-a', open_id: 'account-a', username: 'account_a', connected: true,
+    access_token: CANARY_ACCESS_TOKEN, refresh_token: CANARY_REFRESH_TOKEN,
+    scope: 'user.info.basic,video.publish', connectedAt: '2026-07-01T00:00:00.000Z'
+  },
+  {
+    accountId: 'account-b', open_id: 'account-b', username: 'account_b', connected: true,
+    access_token: CANARY_ACCESS_TOKEN, refresh_token: CANARY_REFRESH_TOKEN
+  }
 ];
 const postsByAccount = {
   'account-a': [{
@@ -238,6 +251,20 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /Dry-run mode active/);
   assert.match(autoPosterHtml, /Add Meta API keys to enable Instagram publishing/);
 
+  // Provider/connected-account foundation: the page shows a truthful
+  // provider + readiness summary for the active channel, built from the
+  // safe connected-account view — and never leaks a credential.
+  assert.match(autoPosterHtml, /data-channel-readiness/);
+  assert.match(autoPosterHtml, /Provider: TikTok \(active\)/);
+  assert.match(autoPosterHtml, /Ready to publish/);
+  assert.doesNotMatch(autoPosterHtml, /CANARY-ACCESS-TOKEN/);
+  assert.doesNotMatch(autoPosterHtml, /CANARY-REFRESH-TOKEN/);
+  // No fake provider integrations: unsupported providers must not appear
+  // as connectable channels anywhere on the page.
+  assert.doesNotMatch(autoPosterHtml, /Connect YouTube/i);
+  assert.doesNotMatch(autoPosterHtml, /Connect LinkedIn/i);
+  assert.doesNotMatch(autoPosterHtml, /Connect Instagram/);
+
   assert.equal(dashboardResponse.status, 200);
   assert.match(dashboardHtml, /Command Center/);
 
@@ -255,6 +282,12 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.equal(dashboardData.selectedAccountId, 'account-a');
   assert.deepEqual(dashboardData.accounts.map((account) => account.id), ['account-a', 'account-b']);
   assert.deepEqual(dashboardData.jobs.map((job) => job.accountId).sort(), ['account-a', 'account-b']);
+  assert.deepEqual(dashboardData.accounts.map((account) => account.provider), ['tiktok', 'tiktok']);
+  assert.deepEqual(
+    dashboardData.accounts.map((account) => account.connectedAccountId),
+    ['tiktok:account-a', 'tiktok:account-b']
+  );
+  assert.doesNotMatch(JSON.stringify(dashboardData), /CANARY-/);
 
   // Re-assert the "not configured" mock immediately before the call it
   // guards. This assertion must fail closed (503) purely from this test's

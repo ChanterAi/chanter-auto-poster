@@ -6,6 +6,7 @@ const { postsCollection, getFirestore, Timestamp, FieldValue } = require('./fire
 const { postFromDoc, toTimestampOrNull, appendHistoryEntry } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
+const providers = require('./providers');
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
@@ -95,6 +96,11 @@ function retryBackoffMs(attempts) {
 const APPROVAL_REQUIRED = 'APPROVAL_REQUIRED';
 const APPROVAL_BLOCKED_REASON =
   'This job has not been approved. Approve it in the Release Queue before it can publish.';
+
+// Worker refusal code for jobs whose explicit provider has no publish
+// handler here. The refusal is terminal (no retry) and never falls back to
+// the TikTok publish path.
+const PROVIDER_UNSUPPORTED = 'PROVIDER_UNSUPPORTED';
 
 function isExplicitlyApproved(data) {
   const approvedAt = data && data.approvedAt;
@@ -418,10 +424,30 @@ async function processPost(id, {
   }
 
   console.log(`[POST_START] id=${id}`);
+  // Provider dispatch. postsMapper already normalizes a MISSING legacy
+  // provider to TikTok; an EXPLICIT provider value is honored as stored.
+  // Only providers with a real publish handler below may execute — an
+  // unknown or unimplemented explicit provider fails closed instead of
+  // falling through to the TikTok publish path.
+  const providerId = String(claimed.provider || claimed.platform || providers.PROVIDER_TIKTOK)
+    .trim()
+    .toLowerCase();
   let result;
   try {
-    if (String(claimed.platform || 'tiktok').toLowerCase() === 'instagram') {
+    if (providerId === providers.PROVIDER_INSTAGRAM) {
       result = await publishScheduledInstagramPost(claimed);
+    } else if (providerId !== providers.PROVIDER_TIKTOK) {
+      const definition = providers.getProviderDefinition(providerId);
+      const label = definition
+        ? `${definition.displayName} (${definition.implementationStatus})`
+        : `"${providerId}" (unknown)`;
+      console.warn(`[JOB_BLOCKED_PROVIDER] id=${id} provider=${providerId}`);
+      result = {
+        ok: false,
+        mode: 'blocked',
+        code: PROVIDER_UNSUPPORTED,
+        reason: `Publishing provider ${label} is not supported by this worker; publishing was blocked.`
+      };
     } else if (!claimed.accountId || claimed.accountId === 'legacy' || claimed.accountAssignment === 'legacy') {
       result = {
         ok: false,
@@ -624,6 +650,7 @@ module.exports = {
   runSchedulerTick,
   processPost,
   APPROVAL_REQUIRED,
+  PROVIDER_UNSUPPORTED,
   _private: {
     claimPost,
     findDueJobs,
