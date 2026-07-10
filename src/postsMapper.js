@@ -121,6 +121,10 @@ function postFromDoc(doc) {
     contentDisclosure: Boolean(data.contentDisclosure),
     yourBrand: Boolean(data.yourBrand),
     brandedContent: Boolean(data.brandedContent),
+    // Agent Runtime scheduling metadata (runtimeControlRoutes.js). Older
+    // documents have neither field; '' keeps them out of idempotency lookups.
+    runtimeIdempotencyKey: data.runtimeIdempotencyKey || '',
+    runtimeScheduledBy: data.runtimeScheduledBy || '',
     // Scheduler-only bookkeeping. Harmless to expose; nothing in routes.js
     // or the view currently reads these, but scheduler.js does.
     lockedAt: toIsoOrNull(data.lockedAt),

@@ -4,6 +4,7 @@ const path = require('path');
 const config = require('./config');
 const routes = require('./routes');
 const clientRoutes = require('./clientRoutes');
+const runtimeControlRoutes = require('./runtimeControlRoutes');
 const storage = require('./storage');
 const { attachUser, csrfOriginCheck, requireAdminPage, validateAdminConfig } = require('./auth');
 const { attachClientSession } = require('./clientAuth');
@@ -17,6 +18,10 @@ app.set('views', path.join(__dirname, 'views'));
 app.set('trust proxy', 1);
 
 app.use(express.urlencoded({ extended: true }));
+// Agent Runtime control surface: authenticated by a dedicated service token
+// (never cookies), so it mounts before the cookie/CSRF middleware — CSRF
+// protects cookie sessions and would wrongly reject server-to-server calls.
+app.use('/api/runtime', runtimeControlRoutes);
 app.use(attachUser);
 app.use(attachClientSession);
 app.use(csrfOriginCheck);

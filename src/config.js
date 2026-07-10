@@ -51,6 +51,12 @@ module.exports = {
   // already in place and just needs a real value plugged in later.
   defaultUserId: process.env.APP_DEFAULT_USER_ID || 'owner',
 
+  // Agent Runtime control surface (src/runtimeControlRoutes.js). No token
+  // means the /api/runtime/* routes refuse every request (fail closed).
+  runtimeControl: {
+    token: process.env.RUNTIME_CONTROL_TOKEN || ''
+  },
+
   scheduler: {
     // How long a post is allowed to sit in "processing" before the
     // watchdog assumes the worker crashed and reclaims it.
