@@ -403,6 +403,18 @@
       .count-prominent { border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,.035); padding: 6px 11px; color: var(--text2); }
       .queue-list { display: grid; gap: 18px; }
 
+      /* ─── Mark / Delete Marked toolbar ─── */
+      .mark-toolbar {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        margin-bottom: 16px; padding: 10px 14px;
+        border: 1px solid rgba(192,133,133,.24); border-radius: var(--r-sm); background: var(--danger-bg);
+      }
+      .mark-toolbar[hidden] { display: none; }
+      .mark-count { color: var(--text); font-size: 12px; font-weight: 700; }
+      .mark-status { color: var(--text2); font-size: 12px; }
+      .btn-mark[aria-pressed="true"] { border-color: rgba(192,133,133,.4); background: var(--danger-bg); color: var(--danger); }
+      .queue-card.is-marked { border-color: rgba(192,133,133,.45); }
+
       /* ─── Release Queue view mode ─── */
       .queue-view-toggle { display: flex; gap: 8px; margin-bottom: 10px; }
       .queue-view-toggle .btn { height: 32px; padding: 0 13px; font-size: 11px; transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
@@ -758,16 +770,16 @@
             <div>
               <span class="panel-kicker">New post</span>
               <h2>Media</h2>
-              <p>Add a photo or video and write the caption.</p>
+              <p>Add a video and write the caption. TikTok posting is video-only.</p>
             </div>
             <span class="panel-step">01</span>
           </div>
           <form class="upload-form" action="/upload" method="post" enctype="multipart/form-data" data-upload-form>
             <div class="form-grid">
               <label class="wide upload-zone">
-                <span class="field-heading">Photo or video</span>
-                <span class="field-note">Images or MP4, MOV, WebM video. You can add more than one.</span>
-                <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple data-media-upload data-reset-after-submit />
+                <span class="field-heading">Video</span>
+                <span class="field-note">MP4, MOV, or WebM video. You can add more than one. Images can't be scheduled.</span>
+                <input type="file" name="images" accept="video/mp4,video/quicktime,video/webm" multiple data-media-upload data-reset-after-submit />
               </label>
               <% if (tiktokAccounts.length > 0) { %>
                 <div class="wide channel-picker" data-channel-picker>
@@ -865,8 +877,8 @@
               </div>
               <label class="wide url-field">
                 Public Media URL
-                <span class="field-note">Optional — use if your file is already hosted online.</span>
-                <input type="url" name="publicMediaUrl" placeholder="https://example.com/media.jpg" data-public-media-url data-reset-after-submit />
+                <span class="field-note">Optional — use if your video is already hosted online. Must point to an MP4, MOV, or WebM file.</span>
+                <input type="url" name="publicMediaUrl" placeholder="https://example.com/media.mp4" data-public-media-url data-reset-after-submit />
               </label>
               <label>
                 Caption
@@ -957,8 +969,17 @@
             <h2>Release Queue</h2>
             <p>Everything waiting to post.</p>
           </div>
-          <span class="count count-prominent"><%= activePosts.length %> active</span>
+          <span class="count count-prominent" data-active-count><%= activePosts.length %> active</span>
         </div>
+
+        <% if (activePosts.length > 0) { %>
+          <div class="mark-toolbar" data-mark-toolbar hidden>
+            <span class="mark-count" data-mark-count>0 marked</span>
+            <button type="button" class="btn btn-danger" data-delete-marked disabled>Delete Marked</button>
+            <button type="button" class="btn btn-ghost" data-clear-marks disabled>Clear Marks</button>
+            <span class="mark-status" data-mark-status aria-live="polite"></span>
+          </div>
+        <% } %>
 
         <% if (tiktokAccounts.length > 0) { %>
           <div class="queue-view-toggle" data-queue-view-toggle role="group" aria-label="Release queue view">
@@ -997,7 +1018,7 @@
           <div class="empty-state">
             <span class="empty-icon" aria-hidden="true">+</span>
             <p>Nothing queued yet</p>
-            <span>Add a photo or video above to create your next post.</span>
+            <span>Add a video above to create your next post.</span>
           </div>
         <% } %>
 
@@ -1014,7 +1035,7 @@
               const duetDisabled = isPhoto || (creatorInfo && creatorInfo.duet_disabled);
               const stitchDisabled = isPhoto || (creatorInfo && creatorInfo.stitch_disabled);
             %>
-            <article class="queue-card" data-post-card>
+            <article class="queue-card" data-post-card data-post-id="<%= post.id %>">
               <!-- Thumbnail -->
               <% if (mediaPath) { %>
                 <a class="queue-thumb" href="<%= mediaPath %>" target="_blank" rel="noreferrer">
@@ -1245,9 +1266,10 @@
                       <button type="submit" class="btn btn-cyan">Instagram Publish Test</button>
                     </form>
                   <% } %>
-                  <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
+                  <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post" data-delete-form>
                     <button type="submit" class="btn btn-danger">Delete</button>
                   </form>
+                  <button type="button" class="btn btn-ghost btn-mark" data-mark-toggle aria-pressed="false">Mark</button>
                 </div>
               </div>
             </article>
@@ -1299,7 +1321,7 @@
                 </div>
                 <p class="caption-preview"><%= captionPreview(post) %></p>
                 <div class="card-actions">
-                  <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post">
+                  <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post" data-delete-form>
                     <button type="submit" class="btn btn-danger">Remove</button>
                   </form>
                 </div>
@@ -1404,6 +1426,111 @@
             body.style.display = toggle.checked ? '' : 'none';
           });
         });
+
+        // Single delete: block duplicate submissions. The server response
+        // (redirect + notice) is the only source of truth for the result.
+        root.querySelectorAll('[data-delete-form]').forEach(form => {
+          form.addEventListener('submit', (event) => {
+            if (event.defaultPrevented) return;
+            if (form.dataset.submitting === 'true') { event.preventDefault(); return; }
+            form.dataset.submitting = 'true';
+            const btn = form.querySelector('button[type="submit"]');
+            if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+          });
+        });
+
+        // Mark / Delete Marked — selection lives only in this page's DOM
+        // (no persistent "marked" state). Only ids the server confirms as
+        // deleted are removed; failures stay visible and stay marked.
+        const markToolbar = root.querySelector('[data-mark-toolbar]');
+        if (markToolbar) {
+          const countLabel = markToolbar.querySelector('[data-mark-count]');
+          const statusLabel = markToolbar.querySelector('[data-mark-status]');
+          const deleteButton = markToolbar.querySelector('[data-delete-marked]');
+          const clearButton = markToolbar.querySelector('[data-clear-marks]');
+          const markedCards = () => Array.from(root.querySelectorAll('[data-post-card].is-marked'));
+          let deleting = false;
+
+          const setStatus = (message) => { if (statusLabel) statusLabel.textContent = message || ''; };
+          const setCardMark = (card, marked) => {
+            card.classList.toggle('is-marked', marked);
+            const toggle = card.querySelector('[data-mark-toggle]');
+            if (toggle) {
+              toggle.setAttribute('aria-pressed', String(marked));
+              toggle.textContent = marked ? 'Marked' : 'Mark';
+            }
+          };
+          const refresh = () => {
+            const count = markedCards().length;
+            if (countLabel) countLabel.textContent = `${count} marked`;
+            deleteButton.textContent = count > 0 ? `Delete Marked (${count})` : 'Delete Marked';
+            deleteButton.disabled = deleting || count === 0;
+            clearButton.disabled = deleting || count === 0;
+            markToolbar.hidden = count === 0 && !(statusLabel && statusLabel.textContent);
+          };
+          const refreshActiveCount = () => {
+            const activeCount = root.querySelectorAll('[data-post-card]').length;
+            const countEl = root.querySelector('[data-active-count]');
+            if (countEl) countEl.textContent = `${activeCount} active`;
+          };
+
+          root.querySelectorAll('[data-mark-toggle]').forEach((button) => {
+            button.addEventListener('click', () => {
+              const card = button.closest('[data-post-card]');
+              if (!card || deleting) return;
+              setCardMark(card, !card.classList.contains('is-marked'));
+              setStatus('');
+              refresh();
+            });
+          });
+
+          clearButton.addEventListener('click', () => {
+            if (deleting) return;
+            markedCards().forEach((card) => setCardMark(card, false));
+            setStatus('');
+            refresh();
+          });
+
+          deleteButton.addEventListener('click', async () => {
+            const cards = markedCards();
+            if (deleting || cards.length === 0) return;
+            const confirmed = window.confirm(
+              `Delete ${cards.length} marked ${cards.length === 1 ? 'post' : 'posts'}? This permanently removes ${cards.length === 1 ? 'it' : 'them'} from the queue.`
+            );
+            if (!confirmed) return;
+            deleting = true;
+            setStatus('Deleting…');
+            refresh();
+            const ids = cards.map((card) => card.dataset.postId).filter(Boolean);
+            try {
+              const response = await fetch('/api/posts/delete-marked', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                body: JSON.stringify({ ids })
+              });
+              const payload = await response.json().catch(() => null);
+              if (!payload) throw new Error('unreadable response');
+              const deletedIds = new Set(Array.isArray(payload.deleted) ? payload.deleted : []);
+              cards.forEach((card) => { if (deletedIds.has(card.dataset.postId)) card.remove(); });
+              refreshActiveCount();
+              const failedCount = Array.isArray(payload.failed) ? payload.failed.length : 0;
+              if (deletedIds.size === 0) {
+                setStatus(payload.reason || 'Nothing was deleted. The marked posts are unchanged — try again.');
+              } else if (failedCount > 0) {
+                setStatus(`Deleted ${deletedIds.size} of ${ids.length}. ${failedCount} could not be deleted and ${failedCount === 1 ? 'is' : 'are'} still marked below.`);
+              } else {
+                setStatus(`Deleted ${deletedIds.size} ${deletedIds.size === 1 ? 'post' : 'posts'}.`);
+              }
+            } catch (error) {
+              setStatus('Delete failed — the request did not complete. The marked posts are unchanged.');
+            } finally {
+              deleting = false;
+              refresh();
+            }
+          });
+
+          refresh();
+        }
       }
 
       hydrateQueueRegion(document);
@@ -1417,6 +1544,16 @@
         if (/\.(png|jpe?g|webp|gif)$/i.test(n)) return 'photo';
         if (/\.(mp4|mov|webm)$/i.test(n)) return 'video';
         return '';
+      }
+
+      // Video-only URL check — mirrors the server's mediaPolicy rule.
+      function isVideoUrl(value) {
+        try {
+          const pathname = new URL(String(value || '')).pathname.toLowerCase();
+          return ['.mp4', '.mov', '.webm'].some(ext => pathname.endsWith(ext));
+        } catch (error) {
+          return false;
+        }
       }
 
       // Upload form validation
@@ -1450,9 +1587,10 @@
           let msg = '';
           let urlMsg = '';
           let channelMsg = '';
-          if (files.length === 0 && !publicUrl) msg = 'Choose a media file or enter a Public Media URL.';
-          else if (files.some(f => !getFileKind(f))) msg = 'Use image files or MP4, MOV, or WebM video files.';
+          if (files.length === 0 && !publicUrl) msg = 'Choose a video file or enter a Public Media URL.';
+          else if (files.some(f => getFileKind(f) !== 'video')) msg = 'TikTok posting is video-only. Choose MP4, MOV, or WebM video files.';
           if (publicUrl && !publicUrl.toLowerCase().startsWith('https://')) urlMsg = 'Public Media URL must use HTTPS.';
+          else if (publicUrl && !isVideoUrl(publicUrl)) urlMsg = 'Public Media URL must point directly to an MP4, MOV, or WebM video file.';
           if (channelBoxes.length > 0 && !channelBoxes.some(box => box.checked && !box.disabled)) {
             channelMsg = 'Select at least one publishing channel.';
           }
@@ -1836,7 +1974,7 @@
             return;
           }
           if (sources === 0) {
-            planLine.textContent = `${channels} ${channels === 1 ? 'channel' : 'channels'} selected — add a photo or video to plan this post.`;
+            planLine.textContent = `${channels} ${channels === 1 ? 'channel' : 'channels'} selected — add a video to plan this post.`;
             return;
           }
           planLine.dataset.tone = 'ready';
@@ -1888,7 +2026,7 @@
 
           const blockedReason = !hasTargets ? 'Channel Required — select at least one publishing channel.'
             : !allAuthorized ? 'Reconnect Required — a selected channel is no longer authorized.'
-            : !hasAsset ? 'Asset Required — add a photo, video, or public media URL.'
+            : !hasAsset ? 'Asset Required — add a video or a public video URL.'
             : !hasCaption ? 'Caption Required — write a caption or enable Auto Caption.'
             : !hasWindow ? 'Posting Time Required — set a daily posting time.'
             : '';

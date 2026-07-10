@@ -95,7 +95,7 @@ function makeTempFile(dir, name) {
     size: fs.statSync(filePath).size,
     filename: name,
     originalname: name,
-    mimetype: 'image/jpeg'
+    mimetype: 'video/mp4'
   };
 }
 
@@ -107,7 +107,7 @@ test('two-channel campaign creates one child job per channel with shared campaig
     cleanup();
   });
 
-  const created = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'campaign.jpg')], {
+  const created = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'campaign.mp4')], {
     caption: 'Two channel drop',
     hashtags: '#chanter',
     accounts: [
@@ -157,7 +157,7 @@ test('single-channel campaign keeps the legacy defaults contract and gains a cam
     cleanup();
   });
 
-  const created = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'solo.jpg')], {
+  const created = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'solo.mp4')], {
     caption: 'Single channel',
     accountId: 'chanter-open-id',
     tiktokOpenId: 'chanter-open-id',
@@ -180,7 +180,7 @@ test('duplicate and invalid channel entries are dropped; zero valid channels thr
     cleanup();
   });
 
-  const created = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'dedupe.jpg')], {
+  const created = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'dedupe.mp4')], {
     accounts: [
       { accountId: 'chanter-open-id', username: '__chanter' },
       { accountId: 'chanter-open-id', username: '__chanter' },

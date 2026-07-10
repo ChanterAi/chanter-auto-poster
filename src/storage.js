@@ -12,6 +12,12 @@ const {
   FieldValue
 } = require('./firestore');
 const { uploadMediaFile, destroyMediaAsset, checkCloudinaryHealth } = require('./cloudinary');
+const {
+  VIDEO_ONLY_UPLOAD_MESSAGE,
+  VIDEO_ONLY_URL_MESSAGE,
+  isVideoUploadFile,
+  isVideoMediaUrl
+} = require('./mediaPolicy');
 const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore, appendHistoryEntry } = require('./postsMapper');
 const { generateAccessCode, parseAccessCode, verifyAccessSecret } = require('./clientAuth');
 
@@ -464,9 +470,24 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     throw error;
   }
   const uploadFiles = Array.isArray(files) ? files : [];
+  // Video-only intake (defense in depth behind the route-level multer
+  // filters and URL checks): no creation path may mint a new photo job.
+  // Existing photo jobs are untouched — this guards writes only.
+  for (const file of uploadFiles) {
+    if (!isVideoUploadFile(file)) {
+      const error = new Error(VIDEO_ONLY_UPLOAD_MESSAGE);
+      error.status = 400;
+      throw error;
+    }
+  }
   const fallbackUrl = String(defaults.publicMediaUrl || defaults.publicImageUrl || '').trim();
   if (fallbackUrl && !isPublicHttpsUrl(fallbackUrl)) {
     const error = new Error('Public Media URL must be a valid HTTPS URL');
+    error.status = 400;
+    throw error;
+  }
+  if (fallbackUrl && !isVideoMediaUrl(fallbackUrl)) {
+    const error = new Error(VIDEO_ONLY_URL_MESSAGE);
     error.status = 400;
     throw error;
   }

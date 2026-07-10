@@ -108,9 +108,9 @@
       <section class="card">
         <p class="eyebrow">Create Post</p>
         <h2>Upload &amp; Schedule</h2>
-        <p class="hint" style="margin-top:6px;">Choose a photo or video, write a caption, and optionally pick a time. Leave the time blank to auto-schedule the next open slot.</p>
+        <p class="hint" style="margin-top:6px;">Choose a video (MP4, MOV, or WebM), write a caption, and optionally pick a time. Leave the time blank to auto-schedule the next open slot. TikTok posting is video-only.</p>
         <form id="create-post-form" action="/client/autoposter/upload" method="post" enctype="multipart/form-data">
-          <label>Photo or video<input type="file" name="media" accept="image/*,video/*" <%= account.connected ? '' : 'disabled' %> /></label>
+          <label>Video<input type="file" name="media" accept="video/mp4,video/quicktime,video/webm" <%= account.connected ? '' : 'disabled' %> /></label>
           <label>Caption<textarea name="caption" maxlength="2200" required <%= account.connected ? '' : 'disabled' %>></textarea></label>
           <label>Hashtags (optional)<input type="text" name="hashtags" placeholder="#example #tags" <%= account.connected ? '' : 'disabled' %> /></label>
           <label>Schedule time (optional)<input type="datetime-local" name="scheduledAt" <%= account.connected ? '' : 'disabled' %> /></label>
@@ -166,10 +166,32 @@
     </main>
     <script>
       (function () {
+        // Delete forms: block duplicate submissions after confirmation.
+        document.querySelectorAll('form[action$="/delete"]').forEach(function (deleteForm) {
+          deleteForm.addEventListener('submit', function (event) {
+            if (event.defaultPrevented) return; // confirm() was cancelled
+            if (deleteForm.dataset.submitting === 'true') { event.preventDefault(); return; }
+            deleteForm.dataset.submitting = 'true';
+            var deleteButton = deleteForm.querySelector('button[type="submit"]');
+            if (deleteButton) { deleteButton.disabled = true; deleteButton.textContent = 'Deleting…'; }
+          });
+        });
+
         var form = document.getElementById('create-post-form');
         if (!form) return;
         var tz = form.querySelector('input[name="timezoneOffsetMinutes"]');
         if (tz) tz.value = new Date().getTimezoneOffset();
+        // Video-only intake — mirrors the server-side mediaPolicy rule.
+        var media = form.querySelector('input[name="media"]');
+        if (media) {
+          media.addEventListener('change', function () {
+            var file = media.files && media.files[0];
+            var isVideo = !file
+              || String(file.type || '').toLowerCase().indexOf('video/') === 0
+              || /\.(mp4|mov|webm)$/i.test(String(file.name || ''));
+            media.setCustomValidity(isVideo ? '' : 'TikTok posting is video-only. Choose an MP4, MOV, or WebM video.');
+          });
+        }
         form.addEventListener('submit', function () {
           var button = form.querySelector('button[type="submit"]');
           if (button) { button.disabled = true; button.textContent = 'Scheduling…'; }

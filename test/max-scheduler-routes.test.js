@@ -222,7 +222,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
 
   // ── Max Scheduler: two channels, explicit start date/time, default offset ──
   const dualBody = new FormData();
-  dualBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  dualBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   dualBody.append('caption', 'Max Scheduler drop');
   dualBody.append('targetChannels', 'chanter-open-id');
   dualBody.append('targetChannels', 'cdwarrior-open-id');
@@ -249,7 +249,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
 
   // ── Custom offset (+10 minutes) ─────────────────────────────────────────
   const customOffsetBody = new FormData();
-  customOffsetBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  customOffsetBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   customOffsetBody.append('caption', 'Custom offset drop');
   customOffsetBody.append('targetChannels', 'chanter-open-id');
   customOffsetBody.append('targetChannels', 'cdwarrior-open-id');
@@ -266,7 +266,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
 
   // ── Preflight: Max Scheduler blocks a disconnected channel server-side ──
   const disconnectedBody = new FormData();
-  disconnectedBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  disconnectedBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   disconnectedBody.append('targetChannels', 'retired-open-id');
   const beforeDisconnected = addUploadedPostsCalls.length;
   const disconnectedResponse = await fetch(`${baseUrl}/upload`, {
@@ -278,7 +278,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
 
   // ── Single-channel campaign at an explicit start date/time ──────────────
   const soloBody = new FormData();
-  soloBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  soloBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   soloBody.append('caption', 'Solo Max Scheduler drop');
   soloBody.append('startDate', '2026-07-09');
   soloBody.append('startTime', '08:00');
@@ -328,7 +328,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   // ── Fast Schedule intake: an XHR submit (Accept: application/json) gets
   // inline JSON instead of a redirect, so the page can keep form state ────
   const inlineBody = new FormData();
-  inlineBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  inlineBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   inlineBody.append('caption', 'Inline JSON drop');
   inlineBody.append('targetChannels', 'chanter-open-id');
   inlineBody.append('startDate', '2026-07-10');
@@ -351,7 +351,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
 
   // Preflight failures also answer inline — form state survives client-side.
   const inlineBlockedBody = new FormData();
-  inlineBlockedBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  inlineBlockedBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   inlineBlockedBody.append('targetChannels', 'retired-open-id');
   const inlineBlockedResponse = await fetch(`${baseUrl}/upload`, {
     method: 'POST', redirect: 'manual',
@@ -367,7 +367,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   // The same retained admin/account session can immediately schedule post B.
   // Only B's media/caption reach storage; A's exact URL/time are not reused.
   const inlineNextBody = new FormData();
-  inlineNextBody.append('publicMediaUrl', 'https://cdn.example.com/post-b.jpg');
+  inlineNextBody.append('publicMediaUrl', 'https://cdn.example.com/post-b.mp4');
   inlineNextBody.append('caption', 'Post B');
   inlineNextBody.append('targetChannels', 'chanter-open-id');
   inlineNextBody.append('timezoneOffsetMinutes', '0');
@@ -380,7 +380,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   assert.equal((await inlineNextResponse.json()).ok, true);
   assert.equal(addUploadedPostsCalls.length, callsAfterPostA + 1);
   const postBCall = addUploadedPostsCalls.at(-1);
-  assert.equal(postBCall.defaults.publicMediaUrl, 'https://cdn.example.com/post-b.jpg');
+  assert.equal(postBCall.defaults.publicMediaUrl, 'https://cdn.example.com/post-b.mp4');
   assert.equal(postBCall.defaults.caption, 'Post B');
   assert.deepEqual(postBCall.defaults.accounts.map((item) => item.accountId), ['chanter-open-id']);
   assert.equal(applyExplicitScheduleCalls.length, explicitSchedulesAfterPostA, 'post B did not reuse post A\'s explicit start time');

@@ -97,7 +97,7 @@ function makeTempFile(dir, name, content) {
     size: fs.statSync(filePath).size,
     filename: name,
     originalname: name,
-    mimetype: 'image/jpeg'
+    mimetype: 'video/mp4'
   };
 }
 
@@ -108,7 +108,7 @@ test('admin intake creates unapproved drafts with an evidence history', async (t
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-approval-'));
   t.after(() => { fs.rmSync(tempDir, { recursive: true, force: true }); cleanup(); });
 
-  const [created] = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'draft.jpg', 'draft-media')], {
+  const [created] = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'draft.mp4', 'draft-media')], {
     caption: 'Draft post',
     ...accountDefaults
   });
@@ -127,7 +127,7 @@ test('client self-approval records approval and evidence at creation', async (t)
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-approval-'));
   t.after(() => { fs.rmSync(tempDir, { recursive: true, force: true }); cleanup(); });
 
-  const [created] = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'client.jpg', 'client-media')], {
+  const [created] = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'client.mp4', 'client-media')], {
     ...accountDefaults,
     selfApprove: { approvedBy: 'client:@account_a' }
   });
@@ -140,10 +140,10 @@ test('client self-approval records approval and evidence at creation', async (t)
 
 test('duplicate media on the same channel is flagged for review, never blocked', async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-approval-'));
-  const file = makeTempFile(tempDir, 'repeat.jpg', 'repeat-media');
+  const file = makeTempFile(tempDir, 'repeat.mp4', 'repeat-media');
   const { storage, cleanup } = installStorageMocks({
     seededDocs: [{
-      id: 'existing-job', userId: 'owner', accountId: 'account-a', originalName: 'repeat.jpg',
+      id: 'existing-job', userId: 'owner', accountId: 'account-a', originalName: 'repeat.mp4',
       fileSize: file.size, status: 'scheduled', order: 1, mediaSource: 'cloudinary'
     }]
   });
@@ -155,13 +155,13 @@ test('duplicate media on the same channel is flagged for review, never blocked',
   assert.match(validated.detail, /possible duplicate/i);
 
   // A different file on the same channel carries no warning.
-  const [fresh] = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'unique.jpg', 'other-media-bytes')], {
+  const [fresh] = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'unique.mp4', 'other-media-bytes')], {
     ...accountDefaults
   });
   assert.equal(fresh.duplicateWarning, '');
 
   // The same file on a different channel is intentional fan-out, not a duplicate.
-  const [otherChannel] = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'repeat2.jpg', 'repeat-media')], {
+  const [otherChannel] = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'repeat2.mp4', 'repeat-media')], {
     accountId: 'account-b', tiktokOpenId: 'account-b', username: 'account_b'
   });
   assert.equal(otherChannel.duplicateWarning, '');

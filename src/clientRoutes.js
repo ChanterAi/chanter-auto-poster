@@ -25,6 +25,12 @@ const scheduler = require('./scheduler');
 const tiktok = require('./tiktok');
 const { parseDateTimeLocal } = require('./timeUtil');
 const { clearClientSessionCookie, setClientSessionCookie } = require('./clientAuth');
+const {
+  VIDEO_ONLY_UPLOAD_MESSAGE,
+  VIDEO_ONLY_URL_MESSAGE,
+  isVideoUploadFile,
+  isVideoMediaUrl
+} = require('./mediaPolicy');
 
 const router = express.Router();
 const CLIENT_OAUTH_STATE_COOKIE = 'client_tiktok_oauth_state';
@@ -41,12 +47,26 @@ const clientUpload = multer({
     }
   }),
   fileFilter: (req, file, callback) => {
-    const mime = String(file.mimetype || '').toLowerCase();
-    if (mime.startsWith('image/') || mime.startsWith('video/')) { callback(null, true); return; }
-    callback(new Error('Only image and video uploads are supported.'));
+    if (isVideoUploadFile(file)) { callback(null, true); return; }
+    const error = new Error(VIDEO_ONLY_UPLOAD_MESSAGE);
+    error.status = 400;
+    callback(error);
   },
   limits: { files: 1, fileSize: 250 * 1024 * 1024 }
 });
+
+// Wraps clientUpload.single so a rejected file keeps the client on their
+// own portal with a truthful notice, instead of falling through to the
+// admin-facing error middleware.
+function clientUploadMedia(req, res, next) {
+  clientUpload.single('media')(req, res, (error) => {
+    if (error) {
+      redirectClientNotice(res, error.message || 'Upload failed.');
+      return;
+    }
+    next();
+  });
+}
 
 function defaultExtension(file) {
   const mime = String(file.mimetype || '').toLowerCase();
@@ -212,7 +232,7 @@ async function handleTikTokReconnectCallback(req, res) {
 
 // ── Create / schedule post ──────────────────────────────────────────────
 
-router.post('/client/autoposter/upload', requireClientSession, clientUpload.single('media'), asyncRoute(async (req, res) => {
+router.post('/client/autoposter/upload', requireClientSession, clientUploadMedia, asyncRoute(async (req, res) => {
   const account = req.clientAccount;
   if (!account.connected) {
     redirectClientNotice(res, 'Reconnect your TikTok account before scheduling a post.');
@@ -235,8 +255,12 @@ router.post('/client/autoposter/upload', requireClientSession, clientUpload.sing
     redirectClientNotice(res, 'Media URL must be a valid HTTPS URL.');
     return;
   }
+  if (publicMediaUrl && !isVideoMediaUrl(publicMediaUrl)) {
+    redirectClientNotice(res, VIDEO_ONLY_URL_MESSAGE);
+    return;
+  }
   if (!req.file && !publicMediaUrl) {
-    redirectClientNotice(res, 'Choose a photo or video to upload.');
+    redirectClientNotice(res, 'Choose a video to upload.');
     return;
   }
 

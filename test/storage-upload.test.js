@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-test('persists Cloudinary image/video URLs and keeps public URL fallback', async (t) => {
+test('persists Cloudinary video URLs, enforces video-only intake, and keeps public URL fallback', async (t) => {
   const firestorePath = require.resolve('../src/firestore');
   const cloudinaryPath = require.resolve('../src/cloudinary');
   const storagePath = require.resolve('../src/storage');
@@ -80,17 +80,17 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
     delete require.cache[cloudinaryPath];
   });
 
-  const imagePath = path.join(tempDir, 'small.jpg');
+  const webmPath = path.join(tempDir, 'small.webm');
   const videoPath = path.join(tempDir, 'small.mp4');
-  fs.writeFileSync(imagePath, Buffer.from('small-image'));
+  fs.writeFileSync(webmPath, Buffer.from('small-webm'));
   fs.writeFileSync(videoPath, Buffer.from('small-mp4'));
 
-  const [imagePost] = await storage.addUploadedPosts('owner', [{
-    path: imagePath,
-    size: fs.statSync(imagePath).size,
-    filename: 'small.jpg',
-    originalname: 'small.jpg',
-    mimetype: 'image/jpeg'
+  const [webmPost] = await storage.addUploadedPosts('owner', [{
+    path: webmPath,
+    size: fs.statSync(webmPath).size,
+    filename: 'small.webm',
+    originalname: 'small.webm',
+    mimetype: 'video/webm'
   }], accountDefaults);
   const [videoPost] = await storage.addUploadedPosts('owner', [{
     path: videoPath,
@@ -101,21 +101,47 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
   }], accountDefaults);
 
   assert.equal(uploadCalls.length, 2);
-  assert.equal(imagePost.mediaSource, 'cloudinary');
-  assert.equal(imagePost.mediaUrl, 'https://res.cloudinary.com/test/image/upload/image.jpg');
-  assert.equal(imagePost.mediaPath, imagePost.mediaUrl);
-  assert.equal(imagePost.cloudinaryPublicId, 'uploads/image');
-  assert.equal(imagePost.mediaStoragePath, '');
-  assert.equal(imagePost.status, 'pending');
-  assert.equal(imagePost.accountId, 'account-a');
-  assert.equal(imagePost.tiktokOpenId, 'account-a');
-  assert.equal(imagePost.username, 'account_a');
-  assert.equal(imagePost.scheduledAt, null);
+  assert.equal(webmPost.mediaSource, 'cloudinary');
+  assert.equal(webmPost.mediaUrl, 'https://res.cloudinary.com/test/video/upload/video.mp4');
+  assert.equal(webmPost.mediaPath, webmPost.mediaUrl);
+  assert.equal(webmPost.cloudinaryPublicId, 'uploads/video');
+  assert.equal(webmPost.mediaStoragePath, '');
+  assert.equal(webmPost.status, 'pending');
+  assert.equal(webmPost.accountId, 'account-a');
+  assert.equal(webmPost.tiktokOpenId, 'account-a');
+  assert.equal(webmPost.username, 'account_a');
+  assert.equal(webmPost.scheduledAt, null);
   assert.equal(committed[0].data.scheduledAt, null);
   assert.equal('scheduledTimeUTC' in committed[0].data, false);
   assert.equal(videoPost.mediaType, 'video');
   assert.equal(videoPost.mediaUrl, 'https://res.cloudinary.com/test/video/upload/video.mp4');
   assert.equal(videoPost.cloudinaryResourceType, 'video');
+
+  // Video-only intake: neither an image file nor an image URL can create a
+  // new TikTok job, and nothing is uploaded for a rejected request.
+  const imagePath = path.join(tempDir, 'small.jpg');
+  fs.writeFileSync(imagePath, Buffer.from('small-image'));
+  const uploadsBeforeRejection = uploadCalls.length;
+  const committedBeforeRejection = committed.length;
+  await assert.rejects(
+    storage.addUploadedPosts('owner', [{
+      path: imagePath,
+      size: fs.statSync(imagePath).size,
+      filename: 'small.jpg',
+      originalname: 'small.jpg',
+      mimetype: 'image/jpeg'
+    }], accountDefaults),
+    /video-only/i
+  );
+  await assert.rejects(
+    storage.addUploadedPosts('owner', [], {
+      ...accountDefaults,
+      publicMediaUrl: 'https://cdn.example.com/photo.jpg'
+    }),
+    /video-only/i
+  );
+  assert.equal(uploadCalls.length, uploadsBeforeRejection, 'rejected image intake uploaded nothing');
+  assert.equal(committed.length, committedBeforeRejection, 'rejected image intake committed nothing');
 
   const musicOriginalPath = path.join(tempDir, 'music-original.mov');
   const preparedPath = path.join(tempDir, 'auto-music-prepared.mp4');
@@ -195,12 +221,12 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
   assert.equal(originalFallbackPost.autoMusicApplied, false);
   assert.equal(originalFallbackPost.mediaUrl, 'https://res.cloudinary.com/test/video/upload/original.mov');
 
-  const restoredImagePost = require('../src/postsMapper').postFromDoc({
+  const restoredWebmPost = require('../src/postsMapper').postFromDoc({
     id: committed[0].ref.id,
     data: () => committed[0].data
   });
-  assert.equal(restoredImagePost.mediaUrl, imagePost.mediaUrl);
-  assert.equal(restoredImagePost.cloudinaryPublicId, imagePost.cloudinaryPublicId);
+  assert.equal(restoredWebmPost.mediaUrl, webmPost.mediaUrl);
+  assert.equal(restoredWebmPost.cloudinaryPublicId, webmPost.cloudinaryPublicId);
 
   uploadBehavior = async () => {
     const error = new Error('Cloudinary unavailable');
@@ -208,20 +234,20 @@ test('persists Cloudinary image/video URLs and keeps public URL fallback', async
     throw error;
   };
   const [fallbackPost] = await storage.addUploadedPosts('owner', [{
-    path: imagePath,
-    size: fs.statSync(imagePath).size,
-    filename: 'fallback.jpg',
-    originalname: 'fallback.jpg',
-    mimetype: 'image/jpeg'
-  }], { ...accountDefaults, publicMediaUrl: 'https://cdn.example.com/fallback.jpg' });
+    path: videoPath,
+    size: fs.statSync(videoPath).size,
+    filename: 'fallback.mp4',
+    originalname: 'fallback.mp4',
+    mimetype: 'video/mp4'
+  }], { ...accountDefaults, publicMediaUrl: 'https://cdn.example.com/fallback.mp4' });
   assert.equal(fallbackPost.mediaSource, 'public_url');
   assert.equal(fallbackPost.storageFallback, true);
-  assert.equal(fallbackPost.mediaUrl, 'https://cdn.example.com/fallback.jpg');
+  assert.equal(fallbackPost.mediaUrl, 'https://cdn.example.com/fallback.mp4');
 
   const callsBeforeUrlOnly = uploadCalls.length;
   const [urlOnlyPost] = await storage.addUploadedPosts('owner', [], {
     ...accountDefaults,
-    publicMediaUrl: 'https://cdn.example.com/public-only.jpg'
+    publicMediaUrl: 'https://cdn.example.com/public-only.mp4'
   });
   assert.equal(uploadCalls.length, callsBeforeUrlOnly);
   assert.equal(urlOnlyPost.mediaSource, 'public_url');

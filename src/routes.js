@@ -15,6 +15,12 @@ const { computeMaxSchedulePlan, DEFAULT_OFFSET_MINUTES } = require('./maxSchedul
 const { summarizeCampaigns, latestCampaignChannelCount } = require('./campaignAccounting');
 const clientRoutes = require('./clientRoutes');
 const {
+  VIDEO_ONLY_UPLOAD_MESSAGE,
+  VIDEO_ONLY_URL_MESSAGE,
+  isVideoUploadFile,
+  isVideoMediaUrl
+} = require('./mediaPolicy');
+const {
   clearAdminSessionCookie,
   requireAdminApi,
   requireAdminOAuth,
@@ -40,12 +46,26 @@ const upload = multer({
     }
   }),
   fileFilter: (req, file, callback) => {
-    const mime = String(file.mimetype || '').toLowerCase();
-    if (mime.startsWith('image/') || mime.startsWith('video/')) { callback(null, true); return; }
-    callback(new Error('Only image and video uploads are supported.'));
+    if (isVideoUploadFile(file)) { callback(null, true); return; }
+    const error = new Error(VIDEO_ONLY_UPLOAD_MESSAGE);
+    error.status = 400;
+    callback(error);
   },
   limits: { files: 100, fileSize: 250 * 1024 * 1024 }
 });
+
+// Wraps upload.array so a rejected file (e.g. an image) produces the same
+// notice/JSON contract as every other intake validation failure, instead
+// of falling through to the generic error middleware.
+function uploadCampaignMedia(req, res, next) {
+  upload.array('images')(req, res, (error) => {
+    if (error) {
+      respondWithNotice(req, res, error.message || 'Upload failed.', false);
+      return;
+    }
+    next();
+  });
+}
 
 const autoCaptionUpload = multer({
   storage: multer.diskStorage({
@@ -617,7 +637,7 @@ router.post(
   })
 );
 
-router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), asyncRoute(async (req, res) => {
+router.post('/upload', requireConnectedTikTokAccount, uploadCampaignMedia, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const account = req.activeTikTokAccount;
   const files = req.files || [];
@@ -626,8 +646,12 @@ router.post('/upload', requireConnectedTikTokAccount, upload.array('images'), as
     respondWithNotice(req, res, 'Public Media URL must be a valid HTTPS URL.', false);
     return;
   }
+  if (publicMediaUrl && !isVideoMediaUrl(publicMediaUrl)) {
+    respondWithNotice(req, res, VIDEO_ONLY_URL_MESSAGE, false);
+    return;
+  }
   if (files.length === 0 && !publicMediaUrl) {
-    respondWithNotice(req, res, 'Choose a media file or enter a Public Media URL.', false);
+    respondWithNotice(req, res, 'Choose a video file or enter a Public Media URL.', false);
     return;
   }
 
@@ -883,10 +907,53 @@ router.post('/posts/:id/pending', requireConnectedTikTokAccount, asyncRoute(asyn
   redirectWithNotice(res, post.scheduledAt ? 'Back to schedule.' : 'Back to pending.');
 }));
 
+// Delete is deliberately NOT scoped to the active channel: the Release
+// Queue's "All Channels" view and the Publishing Log render this form for
+// posts on every channel this admin owns (including legacy jobs with no
+// channel assignment), and all of them must be deletable from where they
+// are shown. Ownership is still enforced — storage.deletePost refuses any
+// post whose userId is not this admin's.
 router.post('/posts/:id/delete', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  await storage.deletePost(userId, req.params.id, req.activeTikTokAccount.accountId);
-  redirectWithNotice(res, 'Deleted.');
+  const deleted = await storage.deletePost(userId, req.params.id);
+  redirectWithNotice(res, deleted
+    ? 'Deleted.'
+    : 'Delete failed — this post could not be found in your account. It was not removed; refresh to see the current queue.');
+}));
+
+// Bulk deletion for the Mark/Delete Marked queue controls. Selection is
+// purely client-side (no persistent "marked" state); this endpoint reports
+// per-post truth so the UI removes only confirmed deletions and keeps
+// failures visible. Same ownership rule as single delete: storage.deletePost
+// scopes every id to this admin's userId.
+router.post('/api/posts/delete-marked', requireAdminApi, express.json({ limit: '64kb' }), asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const rawIds = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
+  const ids = [...new Set(rawIds.map((id) => String(id || '').trim()).filter(Boolean))];
+  if (ids.length === 0) {
+    res.status(400).json({ ok: false, reason: 'Select at least one post to delete.', deleted: [], failed: [] });
+    return;
+  }
+  if (ids.length > 200) {
+    res.status(400).json({ ok: false, reason: 'Too many posts selected — delete at most 200 at a time.', deleted: [], failed: [] });
+    return;
+  }
+
+  const userId = resolveUserId(req);
+  const deleted = [];
+  const failed = [];
+  for (const id of ids) {
+    try {
+      if (await storage.deletePost(userId, id)) {
+        deleted.push(id);
+      } else {
+        failed.push({ id, reason: 'Post not found in your account.' });
+      }
+    } catch (error) {
+      failed.push({ id, reason: error.message || 'Delete failed.' });
+    }
+  }
+  res.json({ ok: failed.length === 0, deleted, failed });
 }));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -181,7 +181,7 @@ test('multi-channel scheduling end-to-end at the route layer', async (t) => {
 
   // ── Scheduling: one channel ──────────────────────────────────────────────
   const singleBody = new FormData();
-  singleBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  singleBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   singleBody.append('caption', 'Solo release');
   singleBody.append('targetChannels', 'cdwarrior-open-id');
   const singleResponse = await fetch(`${baseUrl}/upload`, {
@@ -203,7 +203,7 @@ test('multi-channel scheduling end-to-end at the route layer', async (t) => {
 
   // ── Scheduling: two channels creates one child job per channel ──────────
   const dualBody = new FormData();
-  dualBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  dualBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   dualBody.append('caption', 'Dual release');
   dualBody.append('targetChannels', 'chanter-open-id');
   dualBody.append('targetChannels', 'cdwarrior-open-id');
@@ -229,7 +229,7 @@ test('multi-channel scheduling end-to-end at the route layer', async (t) => {
 
   // ── Preflight guards on the server: disconnected and unknown channels ───
   const disconnectedBody = new FormData();
-  disconnectedBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  disconnectedBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   disconnectedBody.append('targetChannels', 'retired-open-id');
   const disconnectedResponse = await fetch(`${baseUrl}/upload`, {
     method: 'POST',
@@ -242,7 +242,7 @@ test('multi-channel scheduling end-to-end at the route layer', async (t) => {
   assert.equal(addUploadedPostsCalls.length, 2, 'disconnected channel scheduled nothing');
 
   const unknownBody = new FormData();
-  unknownBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  unknownBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   unknownBody.append('targetChannels', 'ghost-open-id');
   const unknownResponse = await fetch(`${baseUrl}/upload`, {
     method: 'POST',
@@ -256,7 +256,7 @@ test('multi-channel scheduling end-to-end at the route layer', async (t) => {
 
   // ── Backward compatibility: no targetChannels falls back to the active channel ──
   const legacyBody = new FormData();
-  legacyBody.append('publicMediaUrl', 'https://cdn.example.com/asset.jpg');
+  legacyBody.append('publicMediaUrl', 'https://cdn.example.com/asset.mp4');
   legacyBody.append('caption', 'Legacy flow');
   const legacyResponse = await fetch(`${baseUrl}/upload`, {
     method: 'POST',
