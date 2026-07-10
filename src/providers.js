@@ -8,14 +8,18 @@
 // provider API. Callers (application service, scheduler worker, routes)
 // consult it and then use their existing execution paths.
 //
-// Provider #1 is TikTok: the only active provider. Instagram has a real but
-// env-gated partial integration (legacy singleton auth + manual test route +
-// worker path); it is never schedulable through the product queue. YouTube
-// and LinkedIn are reserved identifiers only — no adapter, no OAuth, no
-// posting support — and must fail closed everywhere.
+// Provider #1 is TikTok. Provider #2 is YouTube: a real integration
+// (server-side Google OAuth, encrypted token custody, resumable private
+// uploads via src/youtube.js) that is ACTIVE only when fully configured —
+// otherwise it stays implemented-but-disabled and fails closed. Instagram
+// has a real but env-gated partial integration (legacy singleton auth +
+// manual test route + worker path); it is never schedulable through the
+// product queue. LinkedIn is a reserved identifier only — no adapter, no
+// OAuth, no posting support — and must fail closed everywhere.
 
 const config = require('./config');
 const mediaPolicy = require('./mediaPolicy');
+const tokenVault = require('./tokenVault');
 
 const PROVIDER_TIKTOK = 'tiktok';
 const PROVIDER_INSTAGRAM = 'instagram';
@@ -51,6 +55,34 @@ function deepFreeze(value) {
   }
   return value;
 }
+
+/**
+ * YouTube configuration truth (single source — the adapter re-exports
+ * this). `configured` is true only when every piece of a REAL, safe flow
+ * exists: OAuth client credentials, the exact redirect URI, an encryption
+ * key for token custody, the enable flag, and the Part 3 private-only
+ * safety mode. Disabling YOUTUBE_PRIVATE_ONLY deliberately de-configures
+ * the provider: no non-private publishing path is implemented, so the
+ * provider halts rather than degrade. `missing` reports env var NAMES
+ * only, never values.
+ */
+function getYouTubeConfigStatus() {
+  const missing = [];
+  if (!config.youtube.clientId) missing.push('YOUTUBE_CLIENT_ID');
+  if (!config.youtube.clientSecret) missing.push('YOUTUBE_CLIENT_SECRET');
+  if (!config.youtube.redirectUri) missing.push('YOUTUBE_REDIRECT_URI');
+  if (!tokenVault.isVaultConfigured()) missing.push('TOKEN_ENCRYPTION_KEY');
+  const enabled = Boolean(config.youtube.enabled);
+  const privateOnly = Boolean(config.youtube.privateOnly);
+  return {
+    enabled,
+    privateOnly,
+    configured: enabled && privateOnly && missing.length === 0,
+    missing
+  };
+}
+
+const YOUTUBE_CONFIGURED = getYouTubeConfigStatus().configured;
 
 const DEFINITIONS = deepFreeze({
   [PROVIDER_TIKTOK]: {
@@ -112,24 +144,47 @@ const DEFINITIONS = deepFreeze({
   [PROVIDER_YOUTUBE]: {
     id: PROVIDER_YOUTUBE,
     displayName: 'YouTube',
-    implementationStatus: IMPLEMENTATION_STATUS.UNSUPPORTED,
-    authMode: 'none',
-    connection: { supported: false, mode: 'none' },
+    // Implemented (src/youtube.js adapter + OAuth routes exist) but ACTIVE
+    // only when fully configured — implemented / configured / connected /
+    // publishingReady / available are distinct truths (see
+    // getProviderStatus and connectedAccounts.js).
+    implementationStatus: YOUTUBE_CONFIGURED
+      ? IMPLEMENTATION_STATUS.ACTIVE
+      : IMPLEMENTATION_STATUS.DISABLED,
+    authMode: 'oauth2_authorization_code',
+    connection: { supported: true, mode: 'oauth', route: '/connect/youtube' },
+    // Declared from actual adapter behavior: resumable private video
+    // upload with subscriber notifications forced off, status lookup via
+    // videos.list (youtube.readonly). Public/unlisted publishing, native
+    // publishAt scheduling, deletion, analytics, thumbnails, live
+    // streaming, and playlists are NOT implemented and fail closed.
     capabilities: {
-      schedulable: false,
-      directPost: false,
-      videoPublishing: false,
+      schedulable: true,
+      directPost: true,
+      videoPublishing: true,
       imagePublishing: false,
-      mediaTypes: [],
-      videoFormats: [],
-      privacyControls: false,
+      mediaTypes: ['video'],
+      videoFormats: [...mediaPolicy.VIDEO_EXTENSIONS],
+      privacyControls: true,
       captionsSupported: false,
-      remoteStatusLookup: false,
+      remoteStatusLookup: true,
       remoteDeletion: false,
       analytics: false,
-      approvalRequired: true
+      approvalRequired: true,
+      privateVideoUpload: true,
+      publicPublishing: false,
+      unlistedPublishing: false,
+      subscriberNotifications: false,
+      nativeScheduledPublish: false,
+      thumbnailUpload: false,
+      liveStreaming: false,
+      playlistManagement: false
     },
-    mediaValidationPolicy: 'none'
+    // Part 3 publishing policy enforced by the adapter on every upload —
+    // callers cannot override these.
+    publishingPolicy: { forcedPrivacyStatus: 'private', notifySubscribers: false },
+    metadataRequirements: { titleRequired: true, titleMaxLength: 100, descriptionMaxLength: 5000 },
+    mediaValidationPolicy: 'video_only'
   },
   [PROVIDER_LINKEDIN]: {
     id: PROVIDER_LINKEDIN,
@@ -291,6 +346,57 @@ function listProviderSummaries() {
   return Object.keys(DEFINITIONS).map(getProviderSummary);
 }
 
+/**
+ * Deployment-level provider status truth, kept as separate booleans (never
+ * collapsed into one flag):
+ *
+ *   implemented — real adapter code exists in this repository
+ *   configured  — this deployment has everything the adapter needs
+ *   available   — implemented AND configured AND registry-active
+ *
+ * "connected" and "publishingReady" are per-account truths and live in
+ * connectedAccounts.js, not here. `missing` contains env var names only.
+ */
+function getProviderStatus(providerId) {
+  const definition = getProviderDefinition(providerId);
+  if (!definition) return null;
+  let implemented;
+  let configured;
+  let missing = [];
+  switch (definition.id) {
+    case PROVIDER_TIKTOK:
+      implemented = true;
+      configured = Boolean(config.tiktok.clientKey && config.tiktok.clientSecret);
+      break;
+    case PROVIDER_YOUTUBE: {
+      const status = getYouTubeConfigStatus();
+      implemented = true;
+      configured = status.configured;
+      missing = status.missing;
+      break;
+    }
+    case PROVIDER_INSTAGRAM:
+      implemented = true;
+      configured = definition.implementationStatus !== IMPLEMENTATION_STATUS.DISABLED;
+      break;
+    default:
+      implemented = false;
+      configured = false;
+  }
+  return {
+    id: definition.id,
+    displayName: definition.displayName,
+    implemented,
+    configured,
+    available: implemented && configured
+      && definition.implementationStatus === IMPLEMENTATION_STATUS.ACTIVE,
+    implementationStatus: definition.implementationStatus,
+    connectionSupported: definition.connection.supported,
+    connectionRoute: definition.connection.route || '',
+    missing
+  };
+}
+
 module.exports = {
   PROVIDER_TIKTOK,
   PROVIDER_INSTAGRAM,
@@ -310,5 +416,7 @@ module.exports = {
   assertProviderCapability,
   providerSupportsMediaType,
   getProviderSummary,
-  listProviderSummaries
+  listProviderSummaries,
+  getProviderStatus,
+  getYouTubeConfigStatus
 };

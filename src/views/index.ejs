@@ -628,6 +628,10 @@
       // Client-facing status vocabulary: Ready, Scheduled, Posting, Needs
       // attention, Posted. Keeps result.tone (drives badge color) untouched.
       const displayResultLabel = (result, post) => {
+        // YouTube badges keep the provider-truthful label (Uploaded
+        // private, Outcome unknown, Uploading) instead of the TikTok
+        // client vocabulary.
+        if (post && post.provider === 'youtube' && result && result.stateLabel) return result.stateLabel;
         const tone = String((result && result.tone) || '').toLowerCase();
         if (tone === 'failed' || tone === 'verification') return 'Needs attention';
         if (tone === 'accepted') return 'Posted';
@@ -750,6 +754,50 @@
         </section>
       <% } %>
 
+      <!-- ─── YouTube Provider #2 — truthful connection state ─── -->
+      <section class="account-context" aria-label="YouTube provider">
+        <div class="account-context-copy">
+          <span class="account-context-label">YouTube</span>
+          <% if (!youtubeProvider.configured) { %>
+            <strong>Not configured</strong>
+            <small>YouTube publishing is implemented but not configured on this deployment, so connection is disabled.</small>
+          <% } else if (youtubeChannels.length === 0) { %>
+            <strong>Not connected</strong>
+            <small>Connect the YouTube channel you want to publish to. Uploads are locked to Private with subscriber notifications disabled.</small>
+          <% } else { %>
+            <strong><%= youtubeChannels.length === 1 ? '1 channel' : `${youtubeChannels.length} channels` %></strong>
+            <small>Uploads are locked to Private with subscriber notifications disabled.</small>
+          <% } %>
+        </div>
+        <% if (youtubeProvider.configured) { %>
+          <div class="account-connect-flow">
+            <a class="btn btn-secondary" href="/connect/youtube">Connect YouTube</a>
+            <small>Server-side Google sign-in — no tokens ever reach this browser.</small>
+          </div>
+        <% } %>
+        <% youtubeChannels.forEach(function(channel) { %>
+          <div class="account-connect-flow" data-youtube-channel="<%= channel.accountId %>">
+            <span class="account-context-copy">
+              <strong><%= channel.label %></strong>
+              <small>
+                <%= channel.connectionLabel %> · <%= channel.publishingLabel %><%= channel.lastVerifiedAt ? ` · Verified ${helpers.formatDateTime(channel.lastVerifiedAt)}` : '' %>
+              </small>
+            </span>
+            <% if (channel.connectionStatus === 'reauthorization_required') { %>
+              <a class="btn btn-secondary" href="/connect/youtube?reauthorize=<%= encodeURIComponent(channel.accountId) %>">Reauthorize</a>
+            <% } %>
+            <% if (channel.connectionStatus !== 'disconnected') { %>
+              <form action="/disconnect/youtube" method="post" style="display:inline;" onsubmit="return confirm('Disconnect this YouTube channel? Queue items and history are preserved, but publishing stops immediately.');">
+                <input type="hidden" name="accountId" value="<%= channel.accountId %>" />
+                <button class="btn btn-ghost" type="submit">Disconnect</button>
+              </form>
+            <% } else { %>
+              <a class="btn btn-secondary" href="/connect/youtube">Reconnect</a>
+            <% } %>
+          </div>
+        <% }); %>
+      </section>
+
       <% if (notice) { %><div class="notice"><%= notice %></div><% } %>
 
       <% if (instagramHealth && !instagramHealth.configured) { %>
@@ -788,6 +836,42 @@
                 <span class="field-note">MP4, MOV, or WebM video. You can add more than one. Images can't be scheduled.</span>
                 <input type="file" name="images" accept="video/mp4,video/quicktime,video/webm" multiple data-media-upload data-reset-after-submit />
               </label>
+              <% const connectedYouTubeChannels = youtubeChannels.filter(function(channel) { return channel.connectionStatus === 'connected'; }); %>
+              <% if (connectedYouTubeChannels.length > 0) { %>
+                <div class="wide" data-provider-picker>
+                  <span class="field-heading">Target Provider</span>
+                  <span class="field-note">TikTok posts to the channels you check below. YouTube uploads privately to one selected channel.</span>
+                  <div class="channel-options">
+                    <label class="channel-option is-active-channel">
+                      <input type="radio" name="provider" value="tiktok" checked data-provider-option />
+                      <span class="channel-option-copy"><strong>TikTok</strong><small>Existing queue behavior</small></span>
+                    </label>
+                    <label class="channel-option">
+                      <input type="radio" name="provider" value="youtube" data-provider-option />
+                      <span class="channel-option-copy"><strong>YouTube</strong><small>Private upload, notifications off</small></span>
+                    </label>
+                  </div>
+                </div>
+                <div class="wide" data-youtube-fields hidden>
+                  <label>
+                    YouTube channel
+                    <select name="youtubeChannelId" data-youtube-channel-select>
+                      <% connectedYouTubeChannels.forEach(function(channel) { %>
+                        <option value="<%= channel.accountId %>"><%= channel.label %><%= channel.publishingReady ? '' : ' (not ready — see channel status above)' %></option>
+                      <% }); %>
+                    </select>
+                  </label>
+                  <label>
+                    YouTube title <span class="field-note">Required. Not copied from the TikTok caption.</span>
+                    <input type="text" name="youtubeTitle" maxlength="100" placeholder="Video title" data-youtube-title data-reset-after-submit />
+                  </label>
+                  <label>
+                    YouTube description
+                    <textarea name="youtubeDescription" maxlength="5000" placeholder="Optional description…" data-reset-after-submit></textarea>
+                  </label>
+                  <p class="field-note">Privacy: <strong>Private (locked)</strong> · Subscriber notifications: <strong>Disabled</strong>. These cannot be changed in this milestone.</p>
+                </div>
+              <% } %>
               <% if (tiktokAccounts.length > 0) { %>
                 <div class="wide channel-picker" data-channel-picker>
                   <div class="channel-picker-head">
@@ -902,9 +986,46 @@
               </div>
               <p class="submit-status" data-submit-status></p>
             </div>
-            <div class="actions upload-actions"><button type="submit" class="btn btn-primary btn-create" <%= !tiktokConfigured ? 'disabled' : '' %>>Prepare Campaign</button></div>
+            <div class="actions upload-actions"><button type="submit" class="btn btn-primary btn-create" data-tiktok-ready="<%= tiktokConfigured ? 'true' : 'false' %>" <%= (!tiktokConfigured && connectedYouTubeChannels.length === 0) ? 'disabled' : '' %>>Prepare Campaign</button></div>
           </form>
         </section>
+
+        <script>
+          // Provider-aware intake fields: YouTube shows its own required
+          // metadata and hides the TikTok channel targets; TikTok keeps the
+          // existing behavior untouched. Server-side validation stays the
+          // authority — this only mirrors it in the form.
+          (function () {
+            const form = document.querySelector('[data-upload-form]');
+            if (!form) return;
+            const options = form.querySelectorAll('[data-provider-option]');
+            if (options.length === 0) return;
+            const youtubeFields = form.querySelector('[data-youtube-fields]');
+            const youtubeTitle = form.querySelector('[data-youtube-title]');
+            const tiktokPicker = form.querySelector('[data-channel-picker]');
+            const submitButton = form.querySelector('.btn-create');
+            const tiktokReady = submitButton && submitButton.getAttribute('data-tiktok-ready') === 'true';
+
+            function currentProvider() {
+              const checked = form.querySelector('[data-provider-option]:checked');
+              return checked ? checked.value : 'tiktok';
+            }
+
+            function applyProvider() {
+              const provider = currentProvider();
+              const isYouTube = provider === 'youtube';
+              if (youtubeFields) youtubeFields.hidden = !isYouTube;
+              if (youtubeTitle) youtubeTitle.required = isYouTube;
+              if (tiktokPicker) tiktokPicker.hidden = isYouTube;
+              if (submitButton) submitButton.disabled = isYouTube ? false : !tiktokReady;
+            }
+
+            options.forEach(function (option) {
+              option.addEventListener('change', applyProvider);
+            });
+            applyProvider();
+          })();
+        </script>
 
         <section class="panel panel-schedule">
           <div class="panel-head panel-head-rich">
@@ -1069,12 +1190,22 @@
                     <p class="queue-meta"><%= helpers.formatDateTime(post.scheduledAt) %> &middot; <%= post.username ? `@${post.username}` : 'Channel unassigned' %><%= post.campaignId ? ` · Campaign ${post.campaignId.slice(0, 8)}` : '' %> &middot; Job <%= post.id.slice(0, 8) %></p>
                   </div>
                   <div class="queue-badges">
+                    <% if (post.provider === 'youtube') { %>
+                      <span class="badge" data-provider-badge>YouTube · Private</span>
+                    <% } %>
                     <span class="badge <%= post.approved ? 'approval-ok' : 'approval-required' %>" data-approval-badge><%= post.approved ? 'Approved' : 'Approval required' %></span>
                     <span class="badge <%= result.tone %>" data-result-badge><%= displayResultLabel(result, post) %></span>
                   </div>
                 </div>
 
                 <p class="caption-preview"><%= captionPreview(post) %></p>
+
+                <% if (post.provider === 'youtube') { %>
+                  <p class="queue-meta" data-youtube-meta>
+                    YouTube title: <%= (post.providerMetadata && post.providerMetadata.youtube && post.providerMetadata.youtube.title) || '(missing)' %>
+                    · Privacy: Private (locked) · Notifications: Disabled<%= post.publishId ? ` · Video ID: ${post.publishId}` : '' %><%= post.providerStatus ? ` · ${post.providerStatus}` : '' %>
+                  </p>
+                <% } %>
 
                 <% if (!post.approved) { %>
                   <p class="result-message">Draft — awaiting approval. This post is blocked from publishing (scheduled and manual) until you approve it.</p>
@@ -1092,6 +1223,28 @@
                   <p class="result-message <%= igResult.tone === 'failed' ? 'is-failed' : '' %>">Instagram: <%= igResult.message %></p>
                 <% } %>
 
+                <% if (post.provider === 'youtube') { %>
+                  <!-- YouTube jobs: read-only metadata (title/description are
+                       set at intake; privacy and notifications are locked
+                       server-side). The TikTok edit form does not apply. -->
+                  <div class="advanced-body" data-youtube-details>
+                    <% if (post.providerMetadata && post.providerMetadata.youtube && post.providerMetadata.youtube.description) { %>
+                      <p class="field-note">Description: <%= post.providerMetadata.youtube.description %></p>
+                    <% } %>
+                    <p class="field-note">Scheduled: <%= helpers.formatDateTime(post.scheduledAt) %>. To change YouTube metadata or timing, delete this draft and create it again.</p>
+                    <% if (result.hasDebug) { %><details class="advanced"><summary>Advanced</summary><pre><%= result.debugJson %></pre></details><% } %>
+                    <% if (Array.isArray(post.history) && post.history.length > 0) { %>
+                      <details class="advanced">
+                        <summary>Evidence log</summary>
+                        <ul class="evidence-list">
+                          <% post.history.slice(-12).reverse().forEach(function(entry) { %>
+                            <li><strong><%= String(entry.event || '').replace(/_/g, ' ') %></strong> &middot; <%= entry.at ? helpers.formatDateTime(entry.at) : 'No time' %><%= entry.detail ? ` — ${entry.detail}` : '' %></li>
+                          <% }); %>
+                        </ul>
+                      </details>
+                    <% } %>
+                  </div>
+                <% } else { %>
                 <!-- Edit form -->
                 <form
                   class="schedule-form"
@@ -1240,9 +1393,10 @@
                     </div>
                   </details>
                 </form>
+                <% } %>
 
                 <!-- ⑥ Music Usage Confirmation + Post Actions -->
-                <% if (tiktokConfigured) { %>
+                <% if (tiktokConfigured && post.provider !== 'youtube') { %>
                   <div class="music-declaration">
                     By posting, you agree to TikTok's <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" rel="noreferrer">Music Usage Confirmation</a>.
                   </div>
@@ -1251,15 +1405,18 @@
                 <div class="card-actions">
                   <% if (!post.approved) { %>
                     <form class="inline-action" action="/posts/<%= post.id %>/approve" method="post">
+                      <% if (post.provider === 'youtube') { %><input type="hidden" name="accountId" value="<%= post.accountId %>" /><% } %>
                       <button type="submit" class="btn btn-primary">Approve</button>
                     </form>
                   <% } else { %>
                     <form class="inline-action" action="/posts/<%= post.id %>/unapprove" method="post">
+                      <% if (post.provider === 'youtube') { %><input type="hidden" name="accountId" value="<%= post.accountId %>" /><% } %>
                       <button type="submit" class="btn btn-ghost">Revoke Approval</button>
                     </form>
                   <% } %>
-                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('Post now? This skips the scheduled time.');">
+                  <form class="inline-action" action="/posts/<%= post.id %>/prepare" method="post" data-publish-form onsubmit="return confirm('<%= post.provider === 'youtube' ? 'Upload to YouTube now as a private video? This skips the scheduled time.' : 'Post now? This skips the scheduled time.' %>');">
                     <input type="hidden" name="force" value="1" />
+                    <% if (post.provider === 'youtube') { %><input type="hidden" name="accountId" value="<%= post.accountId %>" /><% } %>
                     <% if (post.approved) { %>
                       <button type="submit" class="btn btn-secondary">Publish Now</button>
                     <% } else { %>
@@ -1327,6 +1484,12 @@
                   <span class="badge <%= result.tone %>"><%= displayResultLabel(result, post) %></span>
                 </div>
                 <p class="caption-preview"><%= captionPreview(post) %></p>
+                <% if (post.provider === 'youtube') { %>
+                  <p class="queue-meta" data-youtube-meta>
+                    YouTube · Privacy: Private (locked) · Subscriber notifications: Disabled<%= post.publishId ? ` · Video ID: ${post.publishId}` : '' %><%= post.providerStatus ? ` · ${post.providerStatus}` : '' %>
+                  </p>
+                  <% if (result.message) { %><p class="result-message"><%= result.message %></p><% } %>
+                <% } %>
                 <div class="card-actions">
                   <form class="inline-action" action="/posts/<%= post.id %>/delete" method="post" data-delete-form>
                     <button type="submit" class="btn btn-danger">Remove</button>

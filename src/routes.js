@@ -11,6 +11,9 @@ const autoCaption = require('./autoCaption');
 const autoMusic = require('./autoMusic');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
+const youtube = require('./youtube');
+const oauthStateStore = require('./oauthStateStore');
+const providers = require('./providers');
 const connectedAccounts = require('./connectedAccounts');
 const { DEFAULT_OFFSET_MINUTES } = require('./maxScheduler');
 const { summarizeCampaigns, latestCampaignChannelCount } = require('./campaignAccounting');
@@ -125,6 +128,10 @@ function websiteContext(req, options = {}) {
 function resolveQueueView(req, allPosts) {
   const requested = String(req.query.queueView || '').trim().toLowerCase();
   if (requested === 'all' || requested === 'active') return requested;
+  // The "active" view is scoped to the active TIKTOK channel, which would
+  // hide YouTube jobs entirely — default to the all-channels view whenever
+  // any non-TikTok job exists in the queue.
+  if ((Array.isArray(allPosts) ? allPosts : []).some((post) => post && post.provider === 'youtube')) return 'all';
   return latestCampaignChannelCount(allPosts) > 1 ? 'all' : 'active';
 }
 
@@ -196,6 +203,18 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     }
   }
 
+  // YouTube provider truth for the site: deployment-level status
+  // (implemented / configured / available) plus the safe connected-account
+  // views. Rendered truthfully in every state — an unconfigured provider
+  // shows as unavailable, never as a fake Connect button.
+  const youtubeProvider = providers.getProviderStatus(providers.PROVIDER_YOUTUBE);
+  let youtubeChannels = [];
+  try {
+    youtubeChannels = await resolveYouTubeChannelViews(userId);
+  } catch (youtubeError) {
+    console.warn('[routes] YouTube channels unavailable', youtubeError.message);
+  }
+
   res.render('index', {
     appName: config.appName,
     posts,
@@ -210,6 +229,8 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     tiktokAccounts: accounts.map(publicTikTokAccount),
     activeTikTokAccount: activeAccount ? publicTikTokAccount(activeAccount) : null,
     channelReadiness,
+    youtubeProvider,
+    youtubeChannels,
     enableInstagram: config.ENABLE_INSTAGRAM,
     autoCaptionConfigured: autoCaption.hasConfiguredCaptionProvider(),
     autoMusicConfigured: autoMusic.isAutoMusicConfigured(),
@@ -452,6 +473,226 @@ router.get('/disconnect/tiktok', requireAdminPage, asyncRoute(async (req, res) =
   redirectWithNotice(res, `${accountLabel(activeAccount)} disconnected. Its jobs and history were preserved.`);
 }));
 
+// ── YouTube (Provider #2) connection lifecycle ───────────────────────────
+// Server-side Google OAuth authorization-code flow with PKCE (S256). The
+// OAuth state is a cryptographically random, single-use, short-lived
+// SERVER-SIDE record (oauthStateStore) bound to the authenticated admin
+// user, the provider, the validated internal return path, the PKCE
+// verifier, and — for reauthorize — the intended channel. A browser cookie
+// carries the same opaque id as defense in depth. The Client Secret and
+// authorization codes never reach views, logs, JSON, or the browser.
+
+const YOUTUBE_OAUTH_STATE_COOKIE = 'youtube_oauth_state';
+
+router.get('/connect/youtube', requireAdminPage, asyncRoute(async (req, res) => {
+  const status = youtube.getYouTubeConfigStatus();
+  if (!status.configured) {
+    redirectWithNotice(res, 'YouTube is not configured on this deployment yet, so connection is disabled.');
+    return;
+  }
+  const userId = resolveUserId(req);
+  const reauthorizeId = String(req.query.reauthorize || '').trim();
+  let mode = 'connect';
+  // prompt=consent is requested ONLY when a refresh token must be obtained
+  // or restored — never on a normal reconnect that already has one.
+  let forceConsent = false;
+  if (reauthorizeId) {
+    const account = await storage.getYouTubeAccount(userId, reauthorizeId);
+    if (!account) {
+      redirectWithNotice(res, 'YouTube channel not found.');
+      return;
+    }
+    mode = 'reauthorize';
+    forceConsent = !account.refreshTokenPresent || Boolean(account.reauthorizationRequired);
+  } else {
+    const accounts = await storage.getYouTubeAccounts(userId);
+    forceConsent = !accounts.some((account) => account.refreshTokenPresent);
+  }
+  const pkce = youtube.createPkcePair();
+  const state = await oauthStateStore.createOAuthState({
+    userId,
+    provider: 'youtube',
+    returnTo: safeReturnTo(req.query.returnTo),
+    codeVerifier: pkce.verifier,
+    mode,
+    accountId: reauthorizeId
+  });
+  res.cookie(YOUTUBE_OAUTH_STATE_COOKIE, state, { httpOnly: true, sameSite: 'lax', maxAge: 10 * 60 * 1000 });
+  res.redirect(youtube.buildYouTubeAuthUrl(state, { codeChallenge: pkce.challenge, forceConsent }));
+}));
+
+router.get('/auth/youtube/callback', requireAdminOAuth, asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const cookieState = parseCookies(req.headers.cookie)[YOUTUBE_OAUTH_STATE_COOKIE] || '';
+  res.clearCookie(YOUTUBE_OAUTH_STATE_COOKIE);
+  const queryState = String(req.query.state || '');
+
+  // Consume — and thereby permanently invalidate — the server-side state
+  // before anything else: whatever happens next, this value is spent.
+  // Missing, altered, expired, replayed, and cross-user states all land in
+  // the same truthful rejection.
+  const consumed = await oauthStateStore.consumeOAuthState(queryState, { userId, provider: 'youtube' });
+
+  if (req.query.error) {
+    redirectWithNotice(res, `YouTube connection failed: ${String(req.query.error_description || req.query.error).slice(0, 200)}`);
+    return;
+  }
+  if (!consumed.ok || !cookieState || cookieState !== queryState) {
+    redirectWithNotice(res, 'YouTube connection failed: invalid OAuth state.');
+    return;
+  }
+  if (!req.query.code) {
+    redirectWithNotice(res, 'YouTube connection failed: Google returned no authorization code.');
+    return;
+  }
+  const record = consumed.record;
+  const returnTo = safeReturnTo(record.returnTo);
+
+  try {
+    const exchanged = await youtube.exchangeCodeForToken(String(req.query.code), record.codeVerifier);
+    const channels = await youtube.listMyChannels(exchanged.tokens.access_token);
+
+    if (channels.length === 0) {
+      redirectWithNotice(res, 'YouTube connection failed: this Google account has no YouTube channel, so nothing was connected.');
+      return;
+    }
+
+    if (record.mode === 'reauthorize' && record.accountId) {
+      const match = channels.find((channel) => channel.channelId === record.accountId);
+      if (!match) {
+        redirectWithNotice(res, 'YouTube reauthorization failed: the Google account you authorized does not include the channel being reauthorized. Nothing was changed.');
+        return;
+      }
+      const finalized = await youtube.finalizeYouTubeConnection({ userId, channel: match, tokens: exchanged.tokens, meta: exchanged.meta });
+      redirectWithYouTubeConnectNotice(res, returnTo, finalized);
+      return;
+    }
+
+    if (channels.length === 1) {
+      const finalized = await youtube.finalizeYouTubeConnection({ userId, channel: channels[0], tokens: exchanged.tokens, meta: exchanged.meta });
+      redirectWithYouTubeConnectNotice(res, returnTo, finalized);
+      return;
+    }
+
+    // Multiple channels (brand accounts): park the ENCRYPTED credentials in
+    // a short-lived, single-use, server-side selection transaction bound to
+    // this user. The follow-up POST may only pick a channel Google actually
+    // returned in this authorization.
+    const selectionId = await oauthStateStore.createChannelSelection({
+      userId,
+      provider: 'youtube',
+      returnTo,
+      mode: record.mode,
+      accountId: record.accountId,
+      channels,
+      credentialEnvelope: youtube.encryptTokens(exchanged.tokens),
+      tokenMeta: exchanged.meta
+    });
+    res.set('Cache-Control', 'no-store');
+    res.render('youtube-select-channel', {
+      appName: config.appName,
+      selectionId,
+      channels
+    });
+  } catch (error) {
+    // Adapter errors are already normalized and safe — never the
+    // authorization code, tokens, or a raw Google response body.
+    redirectWithNotice(res, `YouTube connection failed: ${error.message}`);
+  }
+}));
+
+router.post('/connect/youtube/select', requireAdminPage, asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const selectionId = String(req.body.selectionId || '').trim();
+  const channelId = String(req.body.channelId || '').trim();
+  const consumed = await oauthStateStore.consumeChannelSelection(selectionId, { userId, provider: 'youtube' });
+  if (!consumed.ok) {
+    redirectWithNotice(res, 'YouTube channel selection expired or was already used. Connect YouTube again.');
+    return;
+  }
+  const record = consumed.record;
+  const channel = (Array.isArray(record.channels) ? record.channels : [])
+    .find((entry) => entry && entry.channelId === channelId);
+  if (!channel) {
+    redirectWithNotice(res, 'YouTube connection failed: the selected channel was not part of this authorization. Connect YouTube again.');
+    return;
+  }
+  if (record.mode === 'reauthorize' && record.accountId && record.accountId !== channel.channelId) {
+    redirectWithNotice(res, 'YouTube reauthorization failed: a different channel cannot replace the one being reauthorized.');
+    return;
+  }
+  let tokens;
+  try {
+    tokens = youtube.decryptTokens(record.credentialEnvelope);
+  } catch (error) {
+    redirectWithNotice(res, 'YouTube connection failed: the stored authorization could not be read. Connect YouTube again.');
+    return;
+  }
+  try {
+    const finalized = await youtube.finalizeYouTubeConnection({ userId, channel, tokens, meta: record.tokenMeta || {} });
+    redirectWithYouTubeConnectNotice(res, safeReturnTo(record.returnTo), finalized);
+  } catch (error) {
+    redirectWithNotice(res, `YouTube connection failed: ${error.message}`);
+  }
+}));
+
+// Deliberate POST-only disconnect (CSRF-protected by the global
+// origin check). Google-side revocation is attempted first, but local
+// credentials are removed regardless of the revocation outcome, so a
+// failed revocation can never leave a usable stored token behind.
+router.post('/disconnect/youtube', requireAdminPage, asyncRoute(async (req, res) => {
+  const userId = resolveUserId(req);
+  const accountId = String(req.body.accountId || '').trim();
+  const account = await storage.getYouTubeAccount(userId, accountId);
+  if (!account) {
+    redirectWithNotice(res, 'YouTube channel not found.');
+    return;
+  }
+
+  let revocation = { revoked: false, reason: 'No stored credentials.' };
+  const envelope = await storage.getYouTubeAccountCredential(userId, accountId);
+  if (envelope) {
+    try {
+      const tokens = youtube.decryptTokens(envelope);
+      revocation = await youtube.revokeToken(tokens.refresh_token || tokens.access_token);
+    } catch (error) {
+      revocation = { revoked: false, reason: 'Stored credentials could not be decrypted for revocation.' };
+    }
+  }
+  await storage.disconnectYouTubeAccount(userId, accountId);
+  const label = youtubeChannelLabel(account);
+  redirectWithNotice(res, revocation.revoked
+    ? `YouTube channel ${label} disconnected and its Google access was revoked. Jobs and history were preserved.`
+    : `YouTube channel ${label} disconnected locally, but Google-side revocation did not complete (${revocation.reason || 'unknown reason'}). You can also remove access at myaccount.google.com/permissions.`);
+}));
+
+// Safe status lookup for one uploaded video (youtube.readonly). Ownership
+// is enforced by the shared getPostStatus operation; the response contains
+// normalized safe fields only.
+router.get('/api/youtube/posts/:postId/status', requireAdminApi, asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  let post;
+  try {
+    ({ post } = await applicationService.getPostStatus(websiteContext(req), { postId: req.params.postId }));
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      res.status(error.status).json({ ok: false, reason: error.message });
+      return;
+    }
+    throw error;
+  }
+  if (post.provider !== 'youtube' || !post.publishId) {
+    res.status(400).json({ ok: false, reason: 'This job has no YouTube video to look up.' });
+    return;
+  }
+  const status = await youtube.getUploadedVideoStatus({
+    userId: resolveUserId(req),
+    accountId: post.accountId,
+    videoId: post.publishId
+  });
+  res.status(status.ok ? 200 : 400).json(status);
+}));
+
 router.get('/auth/instagram/start', requireAdminPage, (req, res) => {
   if (!instagram.hasOAuthConfig()) {
     redirectWithNotice(res, 'Add Meta app ID, app secret, and redirect URI to .env first.');
@@ -658,26 +899,65 @@ router.post(
   })
 );
 
-router.post('/upload', requireConnectedTikTokAccount, uploadCampaignMedia, asyncRoute(async (req, res) => {
+// Provider selection lives in the multipart body, which only exists after
+// multer runs — so the account gate happens inside the handler. TikTok
+// keeps its existing connected-account requirement and message; YouTube
+// targets one connected channel chosen in the form.
+router.post('/upload', requireAdminPage, uploadCampaignMedia, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  const account = req.activeTikTokAccount;
   const files = req.files || [];
+  const provider = String(req.body.provider || '').trim().toLowerCase() || 'tiktok';
+
+  const rejectIntake = async (message) => {
+    for (const file of files) await removeTemporaryUpload(file.path);
+    respondWithNotice(req, res, message, false);
+  };
+
+  let account = null;
+  if (provider === 'tiktok') {
+    const { activeAccount } = await resolveTikTokAccountContext(req, res);
+    if (!activeAccount || !activeAccount.connected) {
+      await rejectIntake('Select and connect a TikTok account before changing its queue.');
+      return;
+    }
+    account = activeAccount;
+  }
+
+  const youtubeChannelId = String(req.body.youtubeChannelId || '').trim();
+  if (provider === 'youtube' && !youtubeChannelId) {
+    await rejectIntake('Select a connected YouTube channel before scheduling a YouTube upload.');
+    return;
+  }
+
   const publicMediaUrl = String(req.body.publicMediaUrl || req.body.publicImageUrl || '').trim();
   const requestedChannelIds = normalizeTargetChannelIds(req.body.targetChannels);
   const startDate = String(req.body.startDate || '').trim();
   const startTime = String(req.body.startTime || '').trim();
   const preparedMedia = resolvePreparedMedia(req.body.autoMusicToken, userId, files);
+  const contextAccountId = provider === 'youtube' ? youtubeChannelId : account.accountId;
   let result;
   try {
     result = await applicationService.schedulePost(
-      websiteContext(req, { accountId: account.accountId }),
+      websiteContext(req, { accountId: contextAccountId }),
       {
-        accountIds: requestedChannelIds.length > 0 ? requestedChannelIds : [account.accountId],
+        provider,
+        accountIds: provider === 'youtube'
+          ? [youtubeChannelId]
+          : (requestedChannelIds.length > 0 ? requestedChannelIds : [account.accountId]),
         files,
         mediaUrl: publicMediaUrl,
         caption: req.body.caption,
         hashtags: req.body.hashtags,
         preparedMedia,
+        // Provider-specific metadata: YouTube requires an explicit title
+        // (never silently mapped from the TikTok caption); privacy and
+        // subscriber notifications are locked server-side.
+        youtube: provider === 'youtube'
+          ? {
+              title: String(req.body.youtubeTitle || ''),
+              description: String(req.body.youtubeDescription || '')
+            }
+          : undefined,
         schedule: (startDate || startTime)
           ? {
               mode: 'max',
@@ -721,7 +1001,10 @@ router.post('/upload', requireConnectedTikTokAccount, uploadCampaignMedia, async
     : (req.body.autoMusicToken ? ' Music could not be added, so the original video was used.' : '');
   const channelNotice = targetAccounts.length > 1
     ? ` across ${targetAccounts.length} channels`
-    : ` for ${accountLabel(targetAccounts[0])}`;
+    : ` for ${provider === 'youtube' ? youtubeChannelLabel(targetAccounts[0]) : accountLabel(targetAccounts[0])}`;
+  const youtubeNotice = provider === 'youtube'
+    ? ' YouTube uploads are locked to Private with subscriber notifications disabled.'
+    : '';
   const scheduleNotice = useMaxScheduler
     ? ` First post at ${viewHelpers.formatDateTime(maxSchedulePlan.baseAt)}, ${maxSchedulePlan.offsetMinutes}m apart per channel.`
     : '';
@@ -729,7 +1012,7 @@ router.post('/upload', requireConnectedTikTokAccount, uploadCampaignMedia, async
   const duplicateNotice = duplicateCount > 0
     ? ` ${duplicateCount} flagged as ${duplicateCount === 1 ? 'a possible duplicate' : 'possible duplicates'} — check the warnings below.`
     : '';
-  respondWithNotice(req, res, `Created ${created.length} ${created.length === 1 ? 'post' : 'posts'}${channelNotice}. ${scheduledCount} scheduled as ${scheduledCount === 1 ? 'a draft' : 'drafts'} — review and approve in the Release Queue before anything publishes.${scheduleNotice}${sourceNotice}${musicNotice}${duplicateNotice}`);
+  respondWithNotice(req, res, `Created ${created.length} ${created.length === 1 ? 'post' : 'posts'}${channelNotice}. ${scheduledCount} scheduled as ${scheduledCount === 1 ? 'a draft' : 'drafts'} — review and approve in the Release Queue before anything publishes.${youtubeNotice}${scheduleNotice}${sourceNotice}${musicNotice}${duplicateNotice}`);
 }));
 
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
@@ -821,9 +1104,13 @@ router.post('/posts/:id/move', requireConnectedTikTokAccount, asyncRoute(async (
 // the entire surface area a human uses to open or close the gate.
 router.post('/posts/:id/approve', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
+  // YouTube queue cards submit their own channel id (the active-TikTok
+  // scope would never match a YouTube job). Ownership is still enforced by
+  // the shared operation; this only widens the account-scope filter.
+  const scopeAccountId = String(req.body.accountId || '').trim() || req.activeTikTokAccount.accountId;
   const result = await applicationService.approvePost(
-    websiteContext(req, { accountId: req.activeTikTokAccount.accountId, approval: { approvedBy: `admin:${userId}` } }),
-    { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+    websiteContext(req, { accountId: scopeAccountId, approval: { approvedBy: `admin:${userId}` } }),
+    { postId: req.params.id, accountId: scopeAccountId }
   );
   const approved = result.post;
   if (!approved) {
@@ -836,9 +1123,10 @@ router.post('/posts/:id/approve', requireConnectedTikTokAccount, asyncRoute(asyn
 }));
 
 router.post('/posts/:id/unapprove', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+  const scopeAccountId = String(req.body.accountId || '').trim() || req.activeTikTokAccount.accountId;
   const result = await applicationService.revokeApproval(
-    websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
-    { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+    websiteContext(req, { accountId: scopeAccountId }),
+    { postId: req.params.id, accountId: scopeAccountId }
   );
   redirectWithNotice(res, result.ok
     ? 'Approval removed. This post is blocked from publishing until you approve it again.'
@@ -846,11 +1134,12 @@ router.post('/posts/:id/unapprove', requireConnectedTikTokAccount, asyncRoute(as
 }));
 
 router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+  const scopeAccountId = String(req.body.accountId || '').trim() || req.activeTikTokAccount.accountId;
   let post;
   try {
     ({ post } = await applicationService.getPostStatus(
-      websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
-      { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+      websiteContext(req, { accountId: scopeAccountId }),
+      { postId: req.params.id, accountId: scopeAccountId }
     ));
   } catch (error) {
     if (error instanceof applicationService.AutoPosterApplicationError) {
@@ -881,10 +1170,10 @@ router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(asyn
   // scheduler uses (force: true just skips the "is it due yet" check) —
   // so a double-click here can't trigger a double-publish either.
   const result = await scheduler.processPost(req.params.id, { force: true });
-  if (result.ok) { redirectWithNotice(res, 'Posted. Check the status below to confirm.'); return; }
+  if (result.ok) { redirectWithNotice(res, post.provider === 'youtube' ? 'Uploaded to YouTube as a private video. Check the status below to confirm.' : 'Posted. Check the status below to confirm.'); return; }
   if (result.mode === 'manual') { redirectWithNotice(res, 'Needs attention — see the note on this post below.'); return; }
   if (result.mode === 'skipped') { redirectWithNotice(res, 'Already posting — give it a moment and check the status below.'); return; }
-  redirectWithNotice(res, `Needs attention: ${result.reason || 'TikTok could not post this.'}`);
+  redirectWithNotice(res, `Needs attention: ${result.reason || 'The provider could not post this.'}`);
 }));
 
 router.post('/posts/:id/posted', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
@@ -904,10 +1193,11 @@ router.post('/posts/:id/posted', requireConnectedTikTokAccount, asyncRoute(async
 }));
 
 router.post('/posts/:id/pending', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+  const scopeAccountId = String(req.body.accountId || '').trim() || req.activeTikTokAccount.accountId;
   try {
     const result = await applicationService.retryPost(
-      websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
-      { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+      websiteContext(req, { accountId: scopeAccountId }),
+      { postId: req.params.id, accountId: scopeAccountId }
     );
     redirectWithNotice(res, result.post && result.post.scheduledAt ? 'Back to schedule.' : 'Back to pending.');
   } catch (error) {
@@ -1052,6 +1342,49 @@ function accountLabel(account) {
   if (account.username) return `@${account.username}`;
   if (account.displayName) return account.displayName;
   return `TikTok ${String(account.accountId || '').slice(0, 8)}`;
+}
+
+function youtubeChannelLabel(account) {
+  if (!account) return 'YouTube channel';
+  const handle = String(account.username || '').trim();
+  if (handle) return handle.startsWith('@') ? handle : `@${handle}`;
+  if (account.displayName) return account.displayName;
+  return `YouTube ${String(account.accountId || '').slice(0, 8)}`;
+}
+
+function redirectWithYouTubeConnectNotice(res, returnTo, finalized) {
+  const label = youtubeChannelLabel(finalized.account);
+  const notice = finalized.refreshTokenPresent
+    ? `YouTube channel ${label} connected.`
+    : `YouTube channel ${label} connected, but Google did not grant offline access, so publishing stays blocked. Use Reauthorize to grant it.`;
+  const separator = returnTo.includes('?') ? '&' : '?';
+  res.redirect(`${returnTo}${separator}notice=${encodeURIComponent(notice)}`);
+}
+
+// The safe connected-account view (plus display labels) for every owned
+// YouTube channel. Never raw account records — the view shape excludes
+// credentials by construction.
+async function resolveYouTubeChannelViews(userId) {
+  const accounts = await storage.getYouTubeAccounts(userId);
+  const views = [];
+  for (const account of accounts) {
+    try {
+      const view = connectedAccounts.toConnectedAccount(account);
+      views.push({
+        ...view,
+        label: youtubeChannelLabel(account),
+        connectionLabel: view.connectionStatus === 'connected'
+          ? 'Connected'
+          : (view.connectionStatus === 'reauthorization_required' ? 'Reauthorization required' : 'Disconnected'),
+        publishingLabel: view.publishingReady
+          ? 'Ready to publish (private uploads only)'
+          : connectedAccounts.describeReadinessBlocker(view.readinessBlockers[0])
+      });
+    } catch (error) {
+      console.warn('[routes] YouTube connected-account view unavailable', error.message);
+    }
+  }
+  return views;
 }
 
 function emptyPostCounts() {
@@ -1227,6 +1560,7 @@ function getPostMediaPath(post) {
 }
 
 function buildPostResultView(post) {
+  if (post && post.provider === 'youtube') return buildYouTubePostResultView(post);
   const lastResult = post && post.lastResult ? post.lastResult : null;
   const responseSource = lastResult ? lastResult.response || lastResult : null;
   const metadata = getPublishMetadata(responseSource);
@@ -1269,6 +1603,58 @@ function buildPostResultView(post) {
   }
 
   return { stateLabel, tone, message, metadata, shareUrl, publishId, debugJson, hasDebug: Boolean(debugJson), hasAttempt: Boolean(lastResult), statusCheckAvailable: false };
+}
+
+// Truthful YouTube state rendering: uploads are private-only, subscriber
+// notifications are disabled, ambiguous outcomes stay visibly ambiguous,
+// and "uploaded" is never presented as "processed" or "published".
+function buildYouTubePostResultView(post) {
+  const lastResult = post && post.lastResult ? post.lastResult : null;
+  const status = String((post && post.status) || 'pending').toLowerCase();
+  const videoId = String((post && post.publishId) || '').trim();
+  const debugJson = getDebugJson(post);
+  const meta = (post && post.providerMetadata && post.providerMetadata.youtube) || null;
+
+  const metadata = [];
+  if (videoId) metadata.push({ label: 'YouTube video ID', value: videoId, isUrl: false });
+  metadata.push({ label: 'Privacy', value: 'Private (locked)', isUrl: false });
+  metadata.push({ label: 'Subscriber notifications', value: 'Disabled', isUrl: false });
+  if (post && post.providerStatus) metadata.push({ label: 'Provider status', value: post.providerStatus, isUrl: false });
+  const uploadStatus = lastResult && lastResult.response && lastResult.response.upload_status;
+  if (uploadStatus) metadata.push({ label: 'Upload status', value: String(uploadStatus), isUrl: false });
+
+  // Studio link carries no credentials; the video is private, so only the
+  // channel owner can open it.
+  const shareUrl = videoId ? `https://studio.youtube.com/video/${encodeURIComponent(videoId)}/edit` : '';
+
+  let stateLabel = 'Scheduled';
+  let tone = 'scheduled';
+  let message = post && post.scheduledAt
+    ? `Scheduled for ${viewHelpers.formatDateTime(post.scheduledAt)}. Uploads privately when due.`
+    : 'Ready to schedule. Uploads privately when due.';
+
+  if (status === 'processing') {
+    stateLabel = 'Uploading'; tone = 'publishing';
+    message = 'Uploading to YouTube as a private video — this can take a moment for larger files.';
+  } else if (status === 'outcome_unknown') {
+    stateLabel = 'Outcome unknown'; tone = 'failed';
+    message = `${(lastResult && lastResult.reason) || 'YouTube did not return a definitive result.'} Check YouTube Studio before retrying — a blind retry could create a duplicate upload.`;
+  } else if (status === 'failed' || (lastResult && lastResult.ok === false && lastResult.mode !== 'manual')) {
+    stateLabel = 'Failed'; tone = 'failed';
+    message = (lastResult && lastResult.reason) || 'YouTube could not store this video. Review and retry.';
+  } else if (status === 'posted' && videoId) {
+    stateLabel = 'Uploaded private'; tone = 'accepted';
+    message = 'YouTube stored this video as Private with subscriber notifications disabled. Upload success does not mean processing is complete — check Studio for processing state.';
+  } else if (status === 'posted') {
+    stateLabel = 'Posted manually'; tone = 'accepted';
+    message = (lastResult && lastResult.reason) || 'Marked as posted.';
+  }
+
+  if (meta && meta.title) {
+    metadata.push({ label: 'Title', value: meta.title, isUrl: false });
+  }
+
+  return { stateLabel, tone, message, metadata, shareUrl, publishId: videoId, debugJson, hasDebug: Boolean(debugJson), hasAttempt: Boolean(lastResult), statusCheckAvailable: Boolean(videoId) };
 }
 
 function buildInstagramPostResultView(post) {
@@ -1333,7 +1719,7 @@ function getDebugJson(post) { return post && post.lastResult ? JSON.stringify(po
 function getInstagramDebugJson(post) { return post && post.lastInstagramResult ? JSON.stringify(post.lastInstagramResult, null, 2) : ''; }
 
 function statusLabel(status) {
-  const labels = { pending: 'Unscheduled', scheduled: 'Scheduled', processing: 'Publishing', ready: 'Needs manual verification', posted: 'Posted', failed: 'Failed' };
+  const labels = { pending: 'Unscheduled', scheduled: 'Scheduled', processing: 'Publishing', ready: 'Needs manual verification', posted: 'Posted', failed: 'Failed', outcome_unknown: 'Outcome unknown — reconcile' };
   const v = String(status || 'pending').toLowerCase();
   return labels[v] || `${v.charAt(0).toUpperCase()}${v.slice(1)}`;
 }

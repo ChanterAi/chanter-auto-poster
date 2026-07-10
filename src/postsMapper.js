@@ -139,6 +139,23 @@ function postFromDoc(doc) {
     postedAt: toIsoOrNull(data.postedAt),
     publishId: data.publishId || '',
     readyAt: toIsoOrNull(data.readyAt),
+    // Provider-reported state beyond the queue lifecycle (e.g. YouTube
+    // 'uploaded_private'). '' means the provider reported nothing.
+    providerStatus: data.providerStatus || '',
+    // Bounded provider-specific metadata (Part 3: YouTube). Explicit
+    // allowlist copy — whatever lands in the document, only these safe
+    // fields reach the app/UI/Runtime, never anything credential-shaped.
+    providerMetadata: data.providerMetadata && typeof data.providerMetadata === 'object'
+      && data.providerMetadata.youtube && typeof data.providerMetadata.youtube === 'object'
+      ? {
+          youtube: {
+            title: String(data.providerMetadata.youtube.title || ''),
+            description: String(data.providerMetadata.youtube.description || ''),
+            privacyStatus: String(data.providerMetadata.youtube.privacyStatus || 'private'),
+            notifySubscribers: Boolean(data.providerMetadata.youtube.notifySubscribers)
+          }
+        }
+      : null,
     lastResult: data.lastResult || null,
     lastError: data.lastError || data.error || (data.lastResult && (data.lastResult.reason || data.lastResult.error || data.lastResult.message)) || '',
     logs: data.logs || data.events || data.history || [],

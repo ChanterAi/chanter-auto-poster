@@ -111,6 +111,10 @@ function postStatusView(post) {
     approvedBy: post.approvedBy || '',
     postedAt: post.postedAt || null,
     publishId: post.publishId || '',
+    // Provider-reported state and bounded provider metadata (postsMapper
+    // allowlist — titles/privacy flags only, never credentials).
+    providerStatus: post.providerStatus || '',
+    providerMetadata: post.providerMetadata || null,
     claimAttempts: Number(post.claimAttempts || 0),
     lastErrorMessage: lastErrorMessage(post)
   };
@@ -159,6 +163,10 @@ router.post('/schedule', applicationRoute(async (req, res) => {
   const mediaUrl = String(body.mediaUrl || '').trim();
   const idempotencyKey = String(body.idempotencyKey || '').trim();
   const requestedBy = String(body.requestedBy || '').trim() || 'agent-runtime';
+  // Optional provider selection (defaults to TikTok for full backward
+  // compatibility). The application service owns provider validation,
+  // account resolution, and the YouTube title requirement.
+  const provider = String(body.provider || '').trim().toLowerCase();
 
   if (!accountId) { fail(res, 400, 'validation_failed', 'accountId is required.'); return; }
   if (!mediaUrl) { fail(res, 400, 'validation_failed', 'mediaUrl is required.'); return; }
@@ -166,10 +174,14 @@ router.post('/schedule', applicationRoute(async (req, res) => {
   const result = await applicationService.schedulePost(
     runtimeContext(req, { accountId, actorId: requestedBy, idempotencyKey }),
     {
+      provider: provider || undefined,
       accountId,
       mediaUrl,
       caption: body.caption,
       hashtags: body.hashtags,
+      youtube: provider === 'youtube'
+        ? { title: body.title, description: body.description }
+        : undefined,
       requestedBy,
       requireSingle: true,
       schedule: {

@@ -259,9 +259,17 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.match(autoPosterHtml, /Ready to publish/);
   assert.doesNotMatch(autoPosterHtml, /CANARY-ACCESS-TOKEN/);
   assert.doesNotMatch(autoPosterHtml, /CANARY-REFRESH-TOKEN/);
+  // Part 3 site acceptance (BEFORE CONFIGURATION): YouTube is implemented
+  // but this environment has no credentials, so the page must show a
+  // truthful "Not configured" state with NO working Connect control and no
+  // environment details.
+  assert.match(autoPosterHtml, /aria-label="YouTube provider"/);
+  assert.match(autoPosterHtml, /Not configured/);
+  assert.doesNotMatch(autoPosterHtml, /Connect YouTube/i);
+  assert.doesNotMatch(autoPosterHtml, /href="\/connect\/youtube"/);
+  assert.doesNotMatch(autoPosterHtml, /YOUTUBE_CLIENT_ID|TOKEN_ENCRYPTION_KEY/);
   // No fake provider integrations: unsupported providers must not appear
   // as connectable channels anywhere on the page.
-  assert.doesNotMatch(autoPosterHtml, /Connect YouTube/i);
   assert.doesNotMatch(autoPosterHtml, /Connect LinkedIn/i);
   assert.doesNotMatch(autoPosterHtml, /Connect Instagram/);
 

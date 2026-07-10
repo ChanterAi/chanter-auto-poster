@@ -11,8 +11,10 @@ const providers = require('./providers');
 const connectedAccounts = require('./connectedAccounts');
 const { parseDateTimeLocal } = require('./timeUtil');
 const { computeMaxSchedulePlan } = require('./maxScheduler');
+const { validateYouTubeMetadata } = require('./youtube');
 
 const PROVIDER_TIKTOK = providers.PROVIDER_TIKTOK;
+const PROVIDER_YOUTUBE = providers.PROVIDER_YOUTUBE;
 const REQUEST_SOURCES = new Set(['website', 'runtime', 'internal_worker']);
 const DEFAULT_QUEUE_LIMIT = 100;
 const MAX_QUEUE_LIMIT = 1000;
@@ -152,14 +154,29 @@ function createAutoPosterApplicationService(dependencies = {}) {
     }
   }
 
-  async function resolveOwnedAccounts(context, accountIds, { requireConnected = true } = {}) {
+  // One account lookup per provider — the sole account-resolution dispatch
+  // point in the service. Unknown providers fail closed.
+  async function getProviderAccount(context, providerId, accountId) {
+    if (providerId === PROVIDER_YOUTUBE) {
+      return storageAdapter.getYouTubeAccount(context.userId, accountId);
+    }
+    if (providerId === PROVIDER_TIKTOK) {
+      return storageAdapter.getTikTokAccount(context.userId, accountId);
+    }
+    throw new AutoPosterApplicationError(`Unsupported publishing provider: ${providerId || '(empty)'}.`, {
+      status: 400,
+      code: 'unknown_provider'
+    });
+  }
+
+  async function resolveOwnedAccounts(context, accountIds, { requireConnected = true, provider = PROVIDER_TIKTOK } = {}) {
     if (accountIds.length === 0) {
-      throw new AutoPosterApplicationError('Select a connected TikTok account before creating scheduled posts.');
+      throw new AutoPosterApplicationError('Select a connected publishing channel before creating scheduled posts.');
     }
 
     const accounts = [];
     for (const accountId of accountIds) {
-      const account = await storageAdapter.getTikTokAccount(context.userId, accountId);
+      const account = await getProviderAccount(context, provider, accountId);
       if (!account) {
         throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
           status: 404,
@@ -191,6 +208,22 @@ function createAutoPosterApplicationService(dependencies = {}) {
       accounts.push(account);
     }
     return accounts;
+  }
+
+  // Ownership check for scope filters (queue listing, status lookup): the
+  // accountId may belong to either provider; the caller only needs proof
+  // the channel exists and is owned by this tenant.
+  async function findOwnedAccountAnyProvider(context, accountId) {
+    const tiktok = await storageAdapter.getTikTokAccount(context.userId, accountId);
+    if (tiktok) return tiktok;
+    const youtube = typeof storageAdapter.getYouTubeAccount === 'function'
+      ? await storageAdapter.getYouTubeAccount(context.userId, accountId)
+      : null;
+    if (youtube) return youtube;
+    throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
+      status: 404,
+      code: 'not_found'
+    });
   }
 
   function validateMedia(contextInput, input = {}) {
@@ -247,7 +280,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
     if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > MAX_QUEUE_LIMIT) {
       throw new AutoPosterApplicationError(`limit must be an integer between 1 and ${MAX_QUEUE_LIMIT}.`);
     }
-    if (accountId) await resolveOwnedAccounts(context, [accountId], { requireConnected: false });
+    if (accountId) await findOwnedAccountAnyProvider(context, accountId);
 
     const posts = await storageAdapter.getPosts(context.userId, accountId || undefined);
     const items = posts.slice(0, rawLimit);
@@ -397,8 +430,24 @@ function createAutoPosterApplicationService(dependencies = {}) {
     }
     const provider = providerDefinition.id;
 
+    // Provider-specific metadata contract. YouTube requires an explicit,
+    // valid title (no silent caption-to-title mapping); TikTok requests
+    // must not be burdened with YouTube fields.
+    let youtubeMetadata = null;
+    if (provider === PROVIDER_YOUTUBE) {
+      const rawYouTube = input.youtube && typeof input.youtube === 'object' ? input.youtube : {};
+      const checked = validateYouTubeMetadata({
+        title: rawYouTube.title,
+        description: rawYouTube.description
+      });
+      if (!checked.ok) {
+        throw new AutoPosterApplicationError(checked.reason, { code: 'invalid_provider_metadata' });
+      }
+      youtubeMetadata = { title: checked.title, description: checked.description };
+    }
+
     const accountIds = normalizeAccountIds(context, input);
-    const accounts = await resolveOwnedAccounts(context, accountIds);
+    const accounts = await resolveOwnedAccounts(context, accountIds, { provider });
     const schedule = resolveSchedule(context, input, accounts);
     const idempotencyKey = context.idempotency.key;
 
@@ -477,6 +526,9 @@ function createAutoPosterApplicationService(dependencies = {}) {
       preparedMedia: input.preparedMedia,
       selfApprove,
       provider,
+      // Bounded provider metadata; storage locks privacyStatus to 'private'
+      // and notifySubscribers to false at write time.
+      providerMetadata: youtubeMetadata ? { youtube: youtubeMetadata } : undefined,
       creationSource: context.source,
       createdBy: context.actorId,
       correlationId: context.correlationId,
@@ -751,7 +803,10 @@ function createAutoPosterApplicationService(dependencies = {}) {
     const context = createExecutionContext(contextInput);
     const accountId = String(input.accountId || context.accountId || '').trim();
     if (!accountId) throw new AutoPosterApplicationError('accountId is required.');
-    const account = await storageAdapter.getTikTokAccount(context.userId, accountId);
+    const requestedProvider = String(input.provider || '').trim().toLowerCase();
+    const account = requestedProvider
+      ? await getProviderAccount(context, requestedProvider, accountId)
+      : await findOwnedAccountAnyProvider(context, accountId);
     if (!account) {
       throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
         status: 404,
@@ -762,16 +817,29 @@ function createAutoPosterApplicationService(dependencies = {}) {
     return { account: view, provider: providers.getProviderSummary(view.provider) };
   }
 
-  async function listConnectedAccounts(contextInput) {
+  async function listConnectedAccounts(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
-    const accounts = await storageAdapter.getTikTokAccounts(context.userId);
-    const views = (Array.isArray(accounts) ? accounts : [])
+    const requestedProvider = String((input && input.provider) || '').trim().toLowerCase();
+    if (requestedProvider && !providers.isKnownProvider(requestedProvider)) {
+      throw new AutoPosterApplicationError(`Unsupported publishing provider: ${requestedProvider}.`, {
+        status: 400,
+        code: 'unknown_provider'
+      });
+    }
+    const includeTikTok = !requestedProvider || requestedProvider === PROVIDER_TIKTOK;
+    const includeYouTube = (!requestedProvider || requestedProvider === PROVIDER_YOUTUBE)
+      && typeof storageAdapter.getYouTubeAccounts === 'function';
+    const tiktokAccounts = includeTikTok ? await storageAdapter.getTikTokAccounts(context.userId) : [];
+    const youtubeAccounts = includeYouTube ? await storageAdapter.getYouTubeAccounts(context.userId) : [];
+    const views = [...(Array.isArray(tiktokAccounts) ? tiktokAccounts : []), ...(Array.isArray(youtubeAccounts) ? youtubeAccounts : [])]
       .map((account) => toConnectedAccountView(account))
       .filter(Boolean);
     return {
       accounts: views,
       count: views.length,
-      provider: providers.getProviderSummary(PROVIDER_TIKTOK)
+      // Backward-compatible single summary plus the per-provider list.
+      provider: providers.getProviderSummary(requestedProvider || PROVIDER_TIKTOK),
+      providers: [PROVIDER_TIKTOK, PROVIDER_YOUTUBE].map((id) => providers.getProviderSummary(id))
     };
   }
 
@@ -800,6 +868,7 @@ module.exports = {
   DEFAULT_QUEUE_LIMIT,
   MAX_QUEUE_LIMIT,
   PROVIDER_TIKTOK,
+  PROVIDER_YOUTUBE,
   REQUEST_SOURCES,
   countQueueItems,
   createAutoPosterApplicationService,

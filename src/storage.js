@@ -6,6 +6,7 @@ const config = require('./config');
 const {
   postsCollection,
   tiktokAccountsCollection,
+  youtubeAccountsCollection,
   configDoc,
   getFirestore,
   Timestamp,
@@ -284,6 +285,204 @@ async function resolveClientAccount(userId, accountId) {
   return account;
 }
 
+// ── YouTube accounts ─────────────────────────────────────────────────────
+// One document per connected YouTube channel. The document carries two
+// strictly separated layers:
+//
+//   safe metadata  — everything youtubeAccountFromDoc returns (identity,
+//                    connection state, token PRESENCE/expiry booleans,
+//                    granted scopes). This is the only layer other modules
+//                    may serialize.
+//   credential     — the tokenVault envelope (encrypted access/refresh
+//                    tokens). Read ONLY via getYouTubeAccountCredential;
+//                    never included in the safe record, queue items,
+//                    Runtime evidence, or MCP responses.
+//
+// Unlike TikTok records, no plaintext token field exists here at all.
+
+function youtubeAccountDocId(channelId) {
+  return encodeURIComponent(String(channelId || '').trim());
+}
+
+function youtubeAccountFromDoc(doc) {
+  const data = doc.data() || {};
+  const accountId = String(data.accountId || data.channelId || '').trim();
+  return {
+    accountId,
+    id: accountId,
+    userId: data.userId || DEFAULT_USER_ID,
+    platform: 'youtube',
+    provider: 'youtube',
+    channelId: accountId,
+    username: String(data.username || '').replace(/^@/, ''),
+    displayName: data.displayName || '',
+    avatarUrl: data.avatarUrl || '',
+    connected: Boolean(data.connected && data.tokenPresent),
+    // Token PRESENCE metadata only — the encrypted envelope is deliberately
+    // not part of this record (see getYouTubeAccountCredential).
+    tokenPresent: Boolean(data.tokenPresent),
+    refreshTokenPresent: Boolean(data.refreshTokenPresent),
+    accessTokenExpiresAt: data.accessTokenExpiresAt || null,
+    grantedScopes: data.grantedScopes || '',
+    scope: data.grantedScopes || '',
+    reauthorizationRequired: Boolean(data.reauthorizationRequired),
+    lastRefreshAt: data.lastRefreshAt || null,
+    lastRefreshFailureCode: data.lastRefreshFailureCode || '',
+    credentialVersion: Number(data.credentialVersion || 0) || null,
+    createdAt: data.createdAt || null,
+    updatedAt: data.updatedAt || null,
+    connectedAt: data.connectedAt || null
+  };
+}
+
+/**
+ * Creates or updates one connected YouTube channel. Ownership is enforced
+ * the same way as TikTok: a channel already assigned to another app user
+ * cannot be re-bound. Reconnecting an existing channel UPDATES the same
+ * document (same connectedAccountId), never a duplicate.
+ *
+ * `credentialEnvelope` must already be an encrypted tokenVault envelope —
+ * this function refuses anything that looks like plaintext credentials.
+ */
+async function saveYouTubeAccount(userId, { channelId, profile = {}, credentialEnvelope, tokenMeta = {} }) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const normalizedId = String(channelId || '').trim();
+  if (!normalizedId) throw new Error('YouTube connection did not resolve a channel ID');
+  if (!credentialEnvelope || typeof credentialEnvelope !== 'object' || !credentialEnvelope.ct) {
+    throw new Error('YouTube credentials must be an encrypted envelope; refusing to persist');
+  }
+
+  const ref = youtubeAccountsCollection().doc(youtubeAccountDocId(normalizedId));
+  const snap = await ref.get();
+  if (snap.exists && (snap.data().userId || DEFAULT_USER_ID) !== ownerId) {
+    throw new Error('YouTube channel is already assigned to another app user');
+  }
+
+  const previous = snap.exists ? snap.data() : {};
+  const now = Timestamp.now();
+  const data = {
+    userId: ownerId,
+    platform: 'youtube',
+    provider: 'youtube',
+    accountId: normalizedId,
+    channelId: normalizedId,
+    // Google returns the handle as customUrl ('@name'); the app-wide
+    // username convention is bare (views prepend the @).
+    username: String(profile.handle || previous.username || '').replace(/^@/, ''),
+    displayName: profile.title || previous.displayName || '',
+    avatarUrl: profile.thumbnailUrl || previous.avatarUrl || '',
+    connected: Boolean(tokenMeta.tokenPresent),
+    credential: credentialEnvelope,
+    tokenPresent: Boolean(tokenMeta.tokenPresent),
+    refreshTokenPresent: Boolean(tokenMeta.refreshTokenPresent),
+    accessTokenExpiresAt: tokenMeta.accessTokenExpiresAt || null,
+    grantedScopes: tokenMeta.grantedScopes || previous.grantedScopes || '',
+    reauthorizationRequired: false,
+    lastRefreshAt: previous.lastRefreshAt || null,
+    lastRefreshFailureCode: '',
+    credentialVersion: Number(credentialEnvelope.kv || 0) || null,
+    createdAt: previous.createdAt || now,
+    connectedAt: now,
+    updatedAt: now
+  };
+  await ref.set(data, { merge: true });
+  return youtubeAccountFromDoc({ id: ref.id, data: () => data });
+}
+
+async function getYouTubeAccounts(userId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const snapshot = await youtubeAccountsCollection().where('userId', '==', ownerId).get();
+  return snapshot.docs.map(youtubeAccountFromDoc).sort((a, b) => {
+    if (a.connected !== b.connected) return a.connected ? -1 : 1;
+    return timestampMillis(b.updatedAt) - timestampMillis(a.updatedAt);
+  });
+}
+
+async function getYouTubeAccount(userId, channelId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const normalizedId = String(channelId || '').trim();
+  if (!normalizedId || normalizedId === 'legacy') return null;
+  const snap = await youtubeAccountsCollection().doc(youtubeAccountDocId(normalizedId)).get();
+  if (snap.exists && (snap.data().userId || DEFAULT_USER_ID) === ownerId) {
+    return youtubeAccountFromDoc(snap);
+  }
+  return null;
+}
+
+/**
+ * The ONLY read path for the encrypted credential envelope. Ownership
+ * enforced; returns the envelope (still encrypted) or null.
+ */
+async function getYouTubeAccountCredential(userId, channelId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const normalizedId = String(channelId || '').trim();
+  if (!normalizedId) return null;
+  const snap = await youtubeAccountsCollection().doc(youtubeAccountDocId(normalizedId)).get();
+  if (!snap.exists || (snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  return snap.data().credential || null;
+}
+
+/**
+ * Atomic persist of a refreshed credential state: the new envelope and its
+ * safe metadata land in one write, so a crash can never leave metadata
+ * describing tokens that were not stored.
+ */
+async function updateYouTubeAccountTokenState(userId, channelId, { credentialEnvelope, tokenMeta = {} }) {
+  const account = await getYouTubeAccount(userId, channelId);
+  if (!account) return null;
+  const patch = {
+    updatedAt: Timestamp.now()
+  };
+  if (credentialEnvelope) {
+    patch.credential = credentialEnvelope;
+    patch.credentialVersion = Number(credentialEnvelope.kv || 0) || null;
+  }
+  if ('tokenPresent' in tokenMeta) patch.tokenPresent = Boolean(tokenMeta.tokenPresent);
+  if ('refreshTokenPresent' in tokenMeta) patch.refreshTokenPresent = Boolean(tokenMeta.refreshTokenPresent);
+  if ('accessTokenExpiresAt' in tokenMeta) patch.accessTokenExpiresAt = tokenMeta.accessTokenExpiresAt || null;
+  if ('grantedScopes' in tokenMeta && tokenMeta.grantedScopes) patch.grantedScopes = tokenMeta.grantedScopes;
+  if ('lastRefreshAt' in tokenMeta) patch.lastRefreshAt = tokenMeta.lastRefreshAt || null;
+  if ('lastRefreshFailureCode' in tokenMeta) patch.lastRefreshFailureCode = tokenMeta.lastRefreshFailureCode || '';
+  await youtubeAccountsCollection().doc(youtubeAccountDocId(channelId)).set(patch, { merge: true });
+  return { ...account, ...patch };
+}
+
+/**
+ * Truthful reauthorization transition (e.g. Google invalid_grant, expired
+ * Testing-mode refresh token). The account stays visibly connected-but-
+ * blocked; the worker refuses it until a human reconnects.
+ */
+async function markYouTubeAccountReauthorizationRequired(userId, channelId, failureCode) {
+  const account = await getYouTubeAccount(userId, channelId);
+  if (!account) return null;
+  await youtubeAccountsCollection().doc(youtubeAccountDocId(channelId)).set({
+    reauthorizationRequired: true,
+    lastRefreshFailureCode: String(failureCode || 'invalid_grant'),
+    updatedAt: Timestamp.now()
+  }, { merge: true });
+  return true;
+}
+
+/**
+ * Disconnect: removes the encrypted credential envelope and marks the
+ * channel disconnected. Publishing fails closed immediately (worker gates
+ * on connected + credential presence). Never touches TikTok records.
+ */
+async function disconnectYouTubeAccount(userId, channelId) {
+  const account = await getYouTubeAccount(userId, channelId);
+  if (!account) return false;
+  await youtubeAccountsCollection().doc(youtubeAccountDocId(channelId)).set({
+    connected: false,
+    credential: null,
+    tokenPresent: false,
+    refreshTokenPresent: false,
+    accessTokenExpiresAt: null,
+    reauthorizationRequired: false,
+    updatedAt: Timestamp.now()
+  }, { merge: true });
+  return true;
+}
+
 // ── Posts ────────────────────────────────────────────────────────────────
 
 function comparePosts(a, b) {
@@ -433,6 +632,29 @@ function getPublicMediaMimeType(mediaType, mediaUrl) {
   if (pathname.includes('.mov')) return 'video/quicktime';
   if (pathname.includes('.webm')) return 'video/webm';
   return mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
+}
+
+/**
+ * Bounded provider-specific queue metadata (Part 3: YouTube only). This is
+ * a write-time chokepoint: whatever a caller passes, the stored structure
+ * contains exactly these keys, privacyStatus is locked to 'private' and
+ * notifySubscribers to false, and no credential-shaped field can ride
+ * along. Queue records never carry tokens.
+ */
+function boundedProviderMetadata(providerId, raw) {
+  if (providerId !== 'youtube') return null;
+  const youtube = raw && typeof raw === 'object' && raw.youtube && typeof raw.youtube === 'object'
+    ? raw.youtube
+    : null;
+  if (!youtube) return null;
+  return {
+    youtube: {
+      title: String(youtube.title || '').trim(),
+      description: String(youtube.description || '').trim(),
+      privacyStatus: 'private',
+      notifySubscribers: false
+    }
+  };
 }
 
 function normalizeTargetAccounts(defaults) {
@@ -700,6 +922,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         instagramMediaUrl: String(defaults.instagramMediaUrl || publicMediaUrl).trim(),
         privacyLevel:
           String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
+        providerMetadata: boundedProviderMetadata(providerId, defaults.providerMetadata),
         scheduledAt: initialScheduledAt,
         status: initialScheduledAt ? 'scheduled' : 'pending',
         // Approval gate: admin-intake jobs start unapproved (drafts) and
@@ -1091,6 +1314,13 @@ module.exports = {
   saveTikTokAccount,
   updateTikTokAccountProfile,
   disconnectTikTokAccount,
+  getYouTubeAccounts,
+  getYouTubeAccount,
+  saveYouTubeAccount,
+  getYouTubeAccountCredential,
+  updateYouTubeAccountTokenState,
+  markYouTubeAccountReauthorizationRequired,
+  disconnectYouTubeAccount,
   generateClientAccessCode,
   revokeClientAccessCode,
   verifyClientAccessCode,

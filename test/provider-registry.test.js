@@ -35,14 +35,28 @@ test('TikTok capabilities match the actual product behavior', () => {
   assert.equal(providers.providerSupportsMediaType('tiktok', 'photo'), false);
 });
 
-test('only TikTok is active; no other provider is schedulable or connectable', () => {
-  for (const summary of providers.listProviderSummaries()) {
-    if (summary.id === 'tiktok') continue;
+test('YouTube is Provider #2: implemented and connectable, active only when configured', () => {
+  const status = providers.getProviderStatus('youtube');
+  assert.equal(status.implemented, true, 'youtube adapter code exists');
+  // The test environment has no YouTube credentials, so configuration and
+  // availability must read false — separate truths, never one boolean.
+  assert.equal(status.configured, false);
+  assert.equal(status.available, false);
+  assert.equal(providers.getImplementationStatus('youtube'), 'disabled');
+  assert.equal(providers.getProviderSummary('youtube').connectionSupported, true);
+  // Unconfigured YouTube must not be schedulable.
+  assert.throws(
+    () => providers.assertSchedulableProvider('youtube'),
+    (error) => error instanceof providers.ProviderError && error.code === 'provider_not_schedulable'
+  );
+});
+
+test('LinkedIn stays reserved and Instagram stays gated; neither is schedulable or connectable', () => {
+  for (const summary of [providers.getProviderSummary('linkedin'), providers.getProviderSummary('instagram')]) {
     assert.notEqual(summary.implementationStatus, 'active', `${summary.id} must not be active`);
     assert.equal(summary.schedulable, false, `${summary.id} must not be schedulable`);
     assert.equal(summary.connectionSupported, false, `${summary.id} must not be connectable`);
   }
-  assert.equal(providers.getImplementationStatus('youtube'), 'unsupported');
   assert.equal(providers.getImplementationStatus('linkedin'), 'unsupported');
   // ENABLE_INSTAGRAM defaults off in tests, so the partial legacy
   // integration reads as disabled.

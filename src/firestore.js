@@ -84,6 +84,17 @@ function tiktokAccountsCollection() {
   return getFirestore().collection('tiktokAccounts');
 }
 
+function youtubeAccountsCollection() {
+  return getFirestore().collection('youtubeAccounts');
+}
+
+// Short-lived, single-use OAuth transactions (state records and pending
+// channel selections). Documents are deleted on use; expired leftovers are
+// ignored and overwritten by TTL checks in oauthStateStore.js.
+function oauthTransactionsCollection() {
+  return getFirestore().collection('oauthTransactions');
+}
+
 function configDoc(name) {
   return getFirestore().collection('config').doc(name);
 }
@@ -95,6 +106,8 @@ module.exports = {
   getFirestore,
   postsCollection,
   tiktokAccountsCollection,
+  youtubeAccountsCollection,
+  oauthTransactionsCollection,
   configDoc,
   // Static namespaces — safe to read without an initialized app.
   Timestamp: admin.firestore.Timestamp,

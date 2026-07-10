@@ -175,19 +175,25 @@ test('worker publishes TikTok jobs, refuses unsupported explicit providers, and 
   assert.equal(records.get('explicit-tiktok-job').status, 'posted');
   assert.equal(records.get('legacy-tiktok-job').status, 'posted');
 
-  // Unsupported explicit providers fail closed: terminal failure, coded
+  // Unknown explicit providers fail closed: terminal failure, coded
   // refusal, no retry, no TikTok fallback.
-  for (const id of ['unknown-provider-job', 'youtube-job']) {
-    const record = records.get(id);
-    assert.equal(record.status, 'failed', `${id} must be terminally refused`);
-    assert.match(record.errorMessage, /not supported/i);
-    assert.equal(record.lastResult.code, scheduler.PROVIDER_UNSUPPORTED);
-    assert.equal(record.lastResult.willRetry, undefined, 'a provider refusal must not schedule a retry');
-  }
+  const unknownRecord = records.get('unknown-provider-job');
+  assert.equal(unknownRecord.status, 'failed', 'unknown-provider-job must be terminally refused');
+  assert.match(unknownRecord.errorMessage, /not supported/i);
+  assert.equal(unknownRecord.lastResult.code, scheduler.PROVIDER_UNSUPPORTED);
+  assert.equal(unknownRecord.lastResult.willRetry, undefined, 'a provider refusal must not schedule a retry');
   const unknownError = summary.errors.find((entry) => entry.id === 'unknown-provider-job');
   assert.match(unknownError.error, /mastodon/);
+
+  // Part 3: an explicit YouTube job now dispatches to the real YouTube
+  // adapter, which fails closed on this unconfigured deployment — terminal
+  // failure, truthful reason, no retry, and still no TikTok fallback.
+  const youtubeRecord = records.get('youtube-job');
+  assert.equal(youtubeRecord.status, 'failed', 'youtube-job must be terminally refused when unconfigured');
+  assert.match(youtubeRecord.errorMessage, /not configured/i);
+  assert.equal(youtubeRecord.lastResult.willRetry, undefined, 'an unconfigured provider must not schedule a retry');
   const youtubeError = summary.errors.find((entry) => entry.id === 'youtube-job');
-  assert.match(youtubeError.error, /YouTube \(unsupported\)/);
+  assert.match(youtubeError.error, /not configured/i);
 
   // The approval gate is untouched by provider dispatch: unapproved jobs
   // are never claimed.

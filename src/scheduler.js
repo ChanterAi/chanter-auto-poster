@@ -6,6 +6,7 @@ const { postsCollection, getFirestore, Timestamp, FieldValue } = require('./fire
 const { postFromDoc, toTimestampOrNull, appendHistoryEntry } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
+const youtube = require('./youtube');
 const providers = require('./providers');
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
@@ -436,6 +437,11 @@ async function processPost(id, {
   try {
     if (providerId === providers.PROVIDER_INSTAGRAM) {
       result = await publishScheduledInstagramPost(claimed);
+    } else if (providerId === providers.PROVIDER_YOUTUBE) {
+      // The YouTube adapter owns every provider-specific gate (config,
+      // account, reauthorization, scope, title, media trust) and fails
+      // closed before any external call.
+      result = await youtube.publishScheduledYouTubePost(claimed);
     } else if (providerId !== providers.PROVIDER_TIKTOK) {
       const definition = providers.getProviderDefinition(providerId);
       const label = definition
@@ -468,7 +474,7 @@ async function processPost(id, {
 
   const finalized = await finalize(id, workerId, result);
   if (finalized.ok) {
-    console.log(`[POST_SUCCESS] id=${id} tiktokResponse=${JSON.stringify(safeTikTokSummary(result))}`);
+    console.log(`[POST_SUCCESS] id=${id} providerResponse=${JSON.stringify(safeTikTokSummary(result))}`);
   } else {
     console.error(`[POST_FAILED] id=${id} error=${finalized.reason || 'Unknown publish error'}`);
   }
@@ -517,8 +523,16 @@ async function finalize(id, workerId, result) {
     if (!snap.exists) return;
     const data = snap.data();
     if (data.status !== 'processing' || data.lockedBy !== workerId) return;
+    const providerId = String(data.provider || data.platform || providers.PROVIDER_TIKTOK)
+      .trim()
+      .toLowerCase();
 
     if (result.ok) {
+      const successDetail = providerId === providers.PROVIDER_YOUTUBE
+        ? (publishId
+            ? `YouTube stored the video as private with subscriber notifications disabled (video ${publishId}).`
+            : 'YouTube accepted the upload.')
+        : (publishId ? `TikTok accepted the publish (id ${publishId}).` : 'TikTok accepted the publish.');
       const update = {
         status: 'posted',
         postedAt: Timestamp.now(),
@@ -528,13 +542,40 @@ async function finalize(id, workerId, result) {
         lockedAt: null,
         lockedBy: null,
         lastResult: { ...result, completedAt },
-        history: appendHistoryEntry(data.history, 'posted', publishId ? `TikTok accepted the publish (id ${publishId}).` : 'TikTok accepted the publish.'),
+        history: appendHistoryEntry(data.history, 'posted', successDetail),
         updatedAt: FieldValue.serverTimestamp()
       };
       if (publishId) {
         update.publishId = publishId;
       }
+      if (result.providerStatus) {
+        update.providerStatus = String(result.providerStatus);
+      }
       tx.update(ref, update);
+    } else if (result.outcomeUnknown) {
+      // Ambiguous external outcome (bytes may have reached the provider,
+      // no definitive answer): never blind-retry, never report success,
+      // never report clean failure. The job leaves the claimable state
+      // machine until a human (or a future reconciliation flow) resolves
+      // what the provider actually did.
+      tx.update(ref, {
+        status: 'outcome_unknown',
+        failedAt: null,
+        errorMessage: reason,
+        lockedAt: null,
+        lockedBy: null,
+        providerStatus: 'provider_reconciliation_required',
+        lastResult: {
+          ok: false,
+          mode: result.mode || 'api',
+          code: result.code || 'PROVIDER_RECONCILIATION_REQUIRED',
+          outcomeUnknown: true,
+          reason,
+          completedAt
+        },
+        history: appendHistoryEntry(data.history, 'outcome_unknown', reason),
+        updatedAt: FieldValue.serverTimestamp()
+      });
     } else {
       // Store redacted error metadata — no raw tokens or full payloads.
       const safeResult = {
@@ -585,6 +626,10 @@ async function finalize(id, workerId, result) {
   if (retryScheduled) {
     console.warn(`[POST_RETRY_SCHEDULED] id=${id} reason=${reason}`);
     return { ok: false, mode: result.mode || 'api', postId: id, reason, retryScheduled: true };
+  }
+  if (result.outcomeUnknown) {
+    console.warn(`[POST_OUTCOME_UNKNOWN] id=${id} reason=${reason}`);
+    return { ok: false, mode: result.mode || 'api', postId: id, reason, outcomeUnknown: true };
   }
   return { ok: false, mode: result.mode || 'api', postId: id, reason };
 }

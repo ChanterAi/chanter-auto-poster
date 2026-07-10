@@ -1,0 +1,239 @@
+'use strict';
+
+// Shared application-service behavior for YouTube scheduling: the website
+// and the Agent Runtime must resolve the same connected-account truth and
+// create the same canonical queue shape, with every gate failing closed.
+
+// A configured YouTube provider is required for these paths, so the env is
+// set BEFORE any module loads. No live endpoint is ever called: scheduling
+// stops at the storage boundary, which is faked below.
+process.env.ADMIN_PASSWORD = 'test-admin-password-123';
+process.env.TOKEN_ENCRYPTION_KEY = require('node:crypto').randomBytes(32).toString('base64');
+process.env.YOUTUBE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+process.env.YOUTUBE_CLIENT_SECRET = 'test-client-secret';
+process.env.YOUTUBE_REDIRECT_URI = 'http://localhost:10000/auth/youtube/callback';
+
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const { createAutoPosterApplicationService, AutoPosterApplicationError } = require('../src/autoposterApplicationService');
+
+const UPLOAD_SCOPE = 'https://www.googleapis.com/auth/youtube.upload';
+const READONLY_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
+
+function youtubeAccount(overrides = {}) {
+  return {
+    accountId: 'UC-chanter',
+    id: 'UC-chanter',
+    userId: 'owner',
+    provider: 'youtube',
+    platform: 'youtube',
+    channelId: 'UC-chanter',
+    username: 'chanterCy',
+    displayName: 'chanterCy',
+    connected: true,
+    tokenPresent: true,
+    refreshTokenPresent: true,
+    accessTokenExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    grantedScopes: `${UPLOAD_SCOPE} ${READONLY_SCOPE}`,
+    scope: `${UPLOAD_SCOPE} ${READONLY_SCOPE}`,
+    reauthorizationRequired: false,
+    connectedAt: '2026-07-01T00:00:00.000Z',
+    ...overrides
+  };
+}
+
+function tiktokAccount() {
+  return {
+    accountId: 'tt-account',
+    userId: 'owner',
+    open_id: 'tt-account',
+    username: 'tiktok_user',
+    connected: true,
+    access_token: 'tt-access',
+    refresh_token: 'tt-refresh',
+    scope: 'user.info.basic,video.publish'
+  };
+}
+
+function buildService({ account = youtubeAccount(), existingPosts = [] } = {}) {
+  const calls = { addUploadedPosts: [] };
+  const storageFake = {
+    getYouTubeAccount: async (userId, accountId) =>
+      (account && userId === account.userId && accountId === account.accountId ? account : null),
+    getYouTubeAccounts: async () => (account ? [account] : []),
+    getTikTokAccount: async (userId, accountId) =>
+      (accountId === 'tt-account' && userId === 'owner' ? tiktokAccount() : null),
+    getTikTokAccounts: async () => [tiktokAccount()],
+    getPosts: async () => existingPosts,
+    getPost: async () => null,
+    addUploadedPosts: async (userId, files, defaults) => {
+      calls.addUploadedPosts.push({ userId, files, defaults });
+      return [{
+        id: 'created-post-1',
+        userId,
+        provider: defaults.provider,
+        accountId: defaults.accountId,
+        username: defaults.username,
+        connectedAccountId: `${defaults.provider}:${defaults.accountId}`,
+        providerMetadata: defaults.providerMetadata || null,
+        scheduledAt: defaults.scheduledAt || null,
+        status: defaults.scheduledAt ? 'scheduled' : 'pending'
+      }];
+    },
+    autoSchedulePosts: async (userId, ids) => ids.length,
+    applyExplicitSchedule: async () => 1
+  };
+  return { service: createAutoPosterApplicationService({ storage: storageFake }), calls };
+}
+
+const websiteContext = { userId: 'owner', source: 'website' };
+const runtimeContext = { userId: 'owner', source: 'runtime', idempotencyKey: 'mission-key-1' };
+
+const scheduledAt = new Date(Date.now() + 3600_000).toISOString();
+
+function youtubeInput(overrides = {}) {
+  return {
+    provider: 'youtube',
+    accountIds: ['UC-chanter'],
+    mediaUrl: 'https://res.cloudinary.com/demo/video/upload/clip.mp4',
+    youtube: { title: 'Launch teaser', description: 'Private test upload' },
+    schedule: { mode: 'explicit', scheduledAt },
+    ...overrides
+  };
+}
+
+test('YouTube scheduling requires a non-empty title; TikTok does not', async () => {
+  const { service } = buildService();
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput({ youtube: { title: '' } })),
+    (error) => error instanceof AutoPosterApplicationError && error.code === 'invalid_provider_metadata'
+  );
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput({ youtube: undefined })),
+    (error) => error.code === 'invalid_provider_metadata'
+  );
+
+  // The same request against TikTok needs no YouTube fields at all.
+  const tiktokResult = await service.schedulePost(websiteContext, {
+    accountIds: ['tt-account'],
+    mediaUrl: 'https://res.cloudinary.com/demo/video/upload/clip.mp4',
+    caption: 'A caption',
+    schedule: { mode: 'explicit', scheduledAt }
+  });
+  assert.equal(tiktokResult.posts.length, 1);
+  assert.equal(tiktokResult.posts[0].provider, 'tiktok');
+});
+
+test('website and runtime create the same canonical YouTube queue shape', async () => {
+  const { service, calls } = buildService();
+  await service.schedulePost(websiteContext, youtubeInput());
+  await service.schedulePost(runtimeContext, youtubeInput({ requireSingle: true }));
+
+  assert.equal(calls.addUploadedPosts.length, 2);
+  const [website, runtime] = calls.addUploadedPosts.map((call) => call.defaults);
+  for (const defaults of [website, runtime]) {
+    assert.equal(defaults.provider, 'youtube');
+    assert.equal(defaults.accountId, 'UC-chanter');
+    assert.equal(defaults.username, 'chanterCy');
+    assert.deepEqual(defaults.providerMetadata, { youtube: { title: 'Launch teaser', description: 'Private test upload' } });
+    assert.equal(defaults.scheduledAt, scheduledAt);
+    // No token-shaped values may ride along into queue creation.
+    const serialized = JSON.stringify(defaults);
+    assert.equal(/access_token|refresh_token|client_secret|credential/i.test(serialized), false);
+  }
+  assert.equal(website.creationSource, 'website');
+  assert.equal(runtime.creationSource, 'runtime');
+  assert.equal(runtime.runtimeIdempotencyKey, 'mission-key-1');
+  // Neither surface self-approves a YouTube draft here: publishing still
+  // requires the human approval gate.
+  assert.equal(website.selfApprove, null);
+  assert.equal(runtime.selfApprove, null);
+});
+
+test('a disconnected channel cannot schedule', async () => {
+  const { service, calls } = buildService({ account: youtubeAccount({ connected: false, tokenPresent: false }) });
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput()),
+    (error) => error.status === 409
+  );
+  assert.equal(calls.addUploadedPosts.length, 0);
+});
+
+test('reauthorization_required blocks scheduling truthfully', async () => {
+  const { service } = buildService({ account: youtubeAccount({ reauthorizationRequired: true }) });
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput()),
+    (error) => error.code === 'account_not_ready'
+      && error.details.blockers.includes('reauthorization_required')
+  );
+});
+
+test('a recorded scope set without youtube.upload blocks scheduling', async () => {
+  const { service } = buildService({
+    account: youtubeAccount({ grantedScopes: READONLY_SCOPE, scope: READONLY_SCOPE })
+  });
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput()),
+    (error) => error.code === 'account_not_ready'
+      && error.details.blockers.includes('missing_video_publish_scope')
+  );
+});
+
+test('a channel owned by another tenant is not found', async () => {
+  const { service } = buildService({ account: youtubeAccount({ userId: 'someone-else' }) });
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput()),
+    (error) => error.status === 404
+  );
+});
+
+test('media stays video-only for YouTube', async () => {
+  const { service } = buildService();
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput({ mediaUrl: 'https://cdn.example.com/image.jpg' })),
+    (error) => /video/i.test(error.message)
+  );
+});
+
+test('a duplicate idempotency key returns the existing job instead of creating a second one', async () => {
+  const existing = {
+    id: 'existing-post',
+    accountId: 'UC-chanter',
+    provider: 'youtube',
+    idempotencyKey: 'mission-key-1',
+    runtimeIdempotencyKey: 'mission-key-1',
+    status: 'scheduled',
+    scheduledAt
+  };
+  const { service, calls } = buildService({ existingPosts: [existing] });
+  const result = await service.schedulePost(runtimeContext, youtubeInput());
+  assert.equal(result.duplicate, true);
+  assert.equal(result.post.id, 'existing-post');
+  assert.equal(calls.addUploadedPosts.length, 0, 'no second queue item was created');
+});
+
+test('unknown providers fail closed before any account or media work', async () => {
+  const { service, calls } = buildService();
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput({ provider: 'mastodon' })),
+    (error) => error.code === 'unknown_provider'
+  );
+  assert.equal(calls.addUploadedPosts.length, 0);
+});
+
+test('website and runtime resolve the same safe connected-account view', async () => {
+  const { service } = buildService();
+  const website = await service.getConnectedAccount(websiteContext, { accountId: 'UC-chanter', provider: 'youtube' });
+  const runtime = await service.getConnectedAccount({ userId: 'owner', source: 'runtime', idempotencyKey: 'k' }, { accountId: 'UC-chanter', provider: 'youtube' });
+  assert.deepEqual(website.account, runtime.account, 'one connected-account truth for both surfaces');
+  assert.equal(website.account.provider, 'youtube');
+  assert.equal(website.account.publishingReady, true);
+  assert.equal(website.account.connectionStatus, 'connected');
+  const serialized = JSON.stringify(website);
+  assert.equal(/access_token|refresh_token|credential|"ct"/i.test(serialized), false, 'no credential fields in the view');
+
+  const list = await service.listConnectedAccounts(websiteContext, { provider: 'youtube' });
+  assert.equal(list.accounts.length, 1);
+  assert.equal(list.accounts[0].connectionId, 'youtube:UC-chanter');
+});

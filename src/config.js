@@ -132,6 +132,51 @@ module.exports = {
     requestTimeoutMs: Number(process.env.TIKTOK_REQUEST_TIMEOUT_MS || 30_000),
     uploadTimeoutMs: Number(process.env.TIKTOK_UPLOAD_TIMEOUT_MS || 15 * 60_000)
   },
+  youtube: {
+    // Feature flag: allows deliberately disabling the provider even when
+    // credentials exist. Defaults on so configuration alone activates it.
+    enabled: envInverseFlag('YOUTUBE_ENABLED', true),
+    clientId: process.env.YOUTUBE_CLIENT_ID || '',
+    clientSecret: process.env.YOUTUBE_CLIENT_SECRET || '',
+    redirectUri:
+      process.env.YOUTUBE_REDIRECT_URI || `http://localhost:${port}/auth/youtube/callback`,
+    // Least privilege: youtube.upload authorizes videos.insert only;
+    // youtube.readonly is the narrow read scope for channels.list (mine=true)
+    // and own-video status lookup. Do not add youtube / youtube.force-ssl /
+    // youtubepartner here.
+    scopes:
+      process.env.YOUTUBE_SCOPES ||
+      'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly',
+    // Google endpoints. Overridable only so automated tests can point the
+    // OAuth/token/API calls at controlled local fakes — never override in
+    // production.
+    authUrl: process.env.YOUTUBE_OAUTH_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: process.env.YOUTUBE_OAUTH_TOKEN_URL || 'https://oauth2.googleapis.com/token',
+    revokeUrl: process.env.YOUTUBE_OAUTH_REVOKE_URL || 'https://oauth2.googleapis.com/revoke',
+    apiBaseUrl: (process.env.YOUTUBE_API_BASE_URL || 'https://www.googleapis.com/youtube/v3').replace(/\/+$/, ''),
+    uploadBaseUrl: (process.env.YOUTUBE_UPLOAD_BASE_URL || 'https://www.googleapis.com/upload/youtube/v3').replace(/\/+$/, ''),
+    // Part 3 safety policy: uploads are private with subscriber
+    // notifications disabled. privateOnly is an explicit safety mode — the
+    // adapter refuses to run at all if someone turns it off, because no
+    // non-private publishing path is implemented.
+    privateOnly: envInverseFlag('YOUTUBE_PRIVATE_ONLY', true),
+    requestTimeoutMs: Number(process.env.YOUTUBE_REQUEST_TIMEOUT_MS || 30_000),
+    uploadTimeoutMs: Number(process.env.YOUTUBE_UPLOAD_TIMEOUT_MS || 15 * 60_000),
+    // Matches the product's 250 MB intake limit (multer fileSize).
+    maxVideoBytes: Number(process.env.YOUTUBE_MAX_VIDEO_BYTES || 250 * 1024 * 1024)
+  },
+
+  // Versioned authenticated-encryption keys for provider OAuth credentials
+  // (see src/tokenVault.js). Key 1 is the current write key. New versions
+  // are added as TOKEN_ENCRYPTION_KEY_V2, V3, ... without breaking records
+  // encrypted under older keys.
+  tokenEncryption: {
+    keys: {
+      1: process.env.TOKEN_ENCRYPTION_KEY || ''
+    },
+    writeKeyVersion: 1
+  },
+
   instagram: {
     appId: process.env.META_APP_ID || process.env.INSTAGRAM_APP_ID || '',
     appSecret: process.env.META_APP_SECRET || process.env.INSTAGRAM_APP_SECRET || '',
@@ -179,11 +224,20 @@ function validateSecrets() {
   if (!tiktok.clientKey || !tiktok.clientSecret) {
     warnings.push('TIKTOK_CLIENT_KEY/SECRET not set — TikTok OAuth will not work');
   }
+  // YouTube is optional: silence when fully absent, but a PARTIAL
+  // configuration is a mistake worth surfacing at boot.
+  const youtubeValues = [youtube.clientId, youtube.clientSecret, tokenEncryption.keys[1]];
+  const youtubePresent = youtubeValues.filter(Boolean).length;
+  if (youtubePresent > 0 && youtubePresent < youtubeValues.length) {
+    warnings.push(
+      'YouTube is partially configured — set all of YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, and TOKEN_ENCRYPTION_KEY (the provider stays unavailable until complete)'
+    );
+  }
 
   return warnings;
 }
 
 // Expose nested objects for validateSecrets
-const { cronSecret, adminSessionSecret, firebase, cloudinary, tiktok } = module.exports;
+const { cronSecret, adminSessionSecret, firebase, cloudinary, tiktok, youtube, tokenEncryption } = module.exports;
 
 module.exports.validateSecrets = validateSecrets;

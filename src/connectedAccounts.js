@@ -48,6 +48,18 @@ const READINESS_BLOCKERS = Object.freeze({
 
 const VIDEO_PUBLISH_SCOPE = 'video.publish';
 
+// The one scope each provider's publish path actually requires. Readiness
+// gates on the provider's own scope — TikTok's video.publish, YouTube's
+// youtube.upload — never on another provider's vocabulary.
+const PROVIDER_PUBLISH_SCOPES = Object.freeze({
+  tiktok: VIDEO_PUBLISH_SCOPE,
+  youtube: 'https://www.googleapis.com/auth/youtube.upload'
+});
+
+function requiredPublishScope(providerId) {
+  return PROVIDER_PUBLISH_SCOPES[providerId] || null;
+}
+
 function toIsoSafe(value) {
   if (!value) return null;
   if (typeof value === 'string') {
@@ -71,9 +83,16 @@ function parseScopes(rawScope) {
 }
 
 function resolveTokenState(account, nowMs) {
-  const tokenPresent = Boolean(account.access_token);
-  const refreshTokenPresent = Boolean(account.refresh_token);
-  const tokenExpiresAt = toIsoSafe(account.expires_at);
+  // Two record shapes feed this: TikTok records carry raw token fields;
+  // YouTube records carry PRESENCE-ONLY metadata (their tokens exist only
+  // inside an encrypted vault envelope that never reaches this module).
+  const tokenPresent = 'tokenPresent' in account
+    ? Boolean(account.tokenPresent)
+    : Boolean(account.access_token);
+  const refreshTokenPresent = 'refreshTokenPresent' in account
+    ? Boolean(account.refreshTokenPresent)
+    : Boolean(account.refresh_token);
+  const tokenExpiresAt = toIsoSafe(account.accessTokenExpiresAt || account.expires_at);
   const expiresAtMs = tokenExpiresAt ? Date.parse(tokenExpiresAt) : NaN;
   // No stored expiry means "no known expiry" (matches the publish path's
   // refresh logic, which only refreshes when expires_at is present).
@@ -83,7 +102,12 @@ function resolveTokenState(account, nowMs) {
     refreshTokenPresent,
     tokenExpiresAt,
     tokenExpired,
-    reauthorizationRequired: tokenExpired && !refreshTokenPresent
+    // An explicit stored flag (e.g. Google returned invalid_grant on a
+    // refresh attempt) wins; otherwise derived exactly as before. An access
+    // token merely being expired is NOT a blocker while a refresh token
+    // exists — the publish path refreshes server-side.
+    reauthorizationRequired: account.reauthorizationRequired === true
+      || (tokenExpired && !refreshTokenPresent)
   };
 }
 
@@ -107,10 +131,10 @@ function resolveReadiness(providerDefinition, status, authorization) {
   if (status === CONNECTION_STATUS.REAUTHORIZATION_REQUIRED) {
     blockers.push(READINESS_BLOCKERS.REAUTHORIZATION_REQUIRED);
   }
-  // Scopes block only when they were recorded and provably exclude
-  // video.publish. Legacy records without a stored scope stay usable —
-  // "not recorded" is not evidence of a missing grant.
-  if (authorization.scopesRecorded && !authorization.hasVideoPublishScope) {
+  // Scopes block only when they were recorded and provably exclude the
+  // provider's own publish scope. Legacy records without a stored scope
+  // stay usable — "not recorded" is not evidence of a missing grant.
+  if (authorization.scopesRecorded && authorization.hasVideoPublishScope === false) {
     blockers.push(READINESS_BLOCKERS.MISSING_VIDEO_PUBLISH_SCOPE);
   }
   return { ready: blockers.length === 0, blockers };
@@ -137,10 +161,12 @@ function toConnectedAccount(account, { now = Date.now() } = {}) {
   const tokenState = resolveTokenState(account, now);
   const status = resolveConnectionStatus(account, tokenState);
   const scopes = parseScopes(account.scope);
+  const requiredScope = requiredPublishScope(providerDefinition.id);
   const authorization = {
     scopesRecorded: scopes.length > 0,
     scopes,
-    hasVideoPublishScope: scopes.length > 0 ? scopes.includes(VIDEO_PUBLISH_SCOPE) : null
+    requiredPublishScope: requiredScope,
+    hasVideoPublishScope: scopes.length > 0 && requiredScope ? scopes.includes(requiredScope) : null
   };
   const readiness = resolveReadiness(providerDefinition, status, authorization);
 
@@ -184,7 +210,7 @@ const BLOCKER_LABELS = Object.freeze({
   [READINESS_BLOCKERS.PROVIDER_NOT_ACTIVE]: 'Provider is not active',
   [READINESS_BLOCKERS.ACCOUNT_DISCONNECTED]: 'Channel is disconnected — reconnect to publish',
   [READINESS_BLOCKERS.REAUTHORIZATION_REQUIRED]: 'Reauthorization required — reconnect this channel',
-  [READINESS_BLOCKERS.MISSING_VIDEO_PUBLISH_SCOPE]: 'Missing video.publish permission — reconnect this channel'
+  [READINESS_BLOCKERS.MISSING_VIDEO_PUBLISH_SCOPE]: 'Missing the required publish permission — reconnect this channel'
 });
 
 function describeReadinessBlocker(code) {
@@ -195,6 +221,7 @@ module.exports = {
   CONNECTION_STATUS,
   READINESS_BLOCKERS,
   VIDEO_PUBLISH_SCOPE,
+  requiredPublishScope,
   connectionId,
   toConnectedAccount,
   describeReadinessBlocker
