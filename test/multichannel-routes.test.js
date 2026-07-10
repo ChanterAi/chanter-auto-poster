@@ -84,7 +84,7 @@ storage.addUploadedPosts = async (userId, files, defaults) => {
     ? defaults.accounts
     : [{ accountId: defaults.accountId, tiktokOpenId: defaults.tiktokOpenId, username: defaults.username }];
   const campaignId = `cmp-${addUploadedPostsCalls.length}`;
-  return targets.map((target, index) => ({
+  const created = targets.map((target, index) => ({
     id: `created-${campaignId}-${target.accountId}-${index}`,
     accountId: target.accountId,
     tiktokOpenId: target.tiktokOpenId || target.accountId,
@@ -94,9 +94,18 @@ storage.addUploadedPosts = async (userId, files, defaults) => {
     storageFallback: false,
     autoMusicApplied: false
   }));
+  queueJobs.push(...created);
+  return created;
 };
 storage.autoSchedulePosts = async (userId, postIds, accountId) => {
   autoScheduleCalls.push({ postIds, accountId });
+  for (const id of postIds) {
+    const job = queueJobs.find((item) => item.id === id);
+    if (job) {
+      job.status = 'scheduled';
+      job.scheduledAt = new Date(Date.now() + 86_400_000).toISOString();
+    }
+  }
   return postIds.length;
 };
 storage.updatePost = async (userId, id, patch, accountId) => {

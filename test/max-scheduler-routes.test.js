@@ -61,12 +61,21 @@ const addUploadedPostsCalls = [];
 const applyExplicitScheduleCalls = [];
 const autoScheduleCalls = [];
 const updatePostCalls = [];
+let failNextScheduleConfirmation = false;
 
 storage.getTikTokAccounts = async () => accounts;
 storage.getTikTokAccount = async (userId, accountId) =>
   accounts.find((account) => account.accountId === accountId) || null;
 storage.getPosts = async (userId, accountId) =>
   queueJobs.filter((job) => !accountId || job.accountId === accountId);
+storage.getPost = async (userId, id, accountId) => {
+  if (failNextScheduleConfirmation) {
+    failNextScheduleConfirmation = false;
+    throw new Error('simulated confirmation read failure');
+  }
+  const job = queueJobs.find((item) => item.id === id) || null;
+  return job && (!accountId || job.accountId === accountId) ? job : null;
+};
 storage.getDashboardJobs = async () => queueJobs;
 storage.getSettings = async () => ({ dailyPostTime: '18:00' });
 storage.getCounts = async (userId, accountId) => {
@@ -119,7 +128,10 @@ storage.autoSchedulePosts = async (userId, postIds, accountId) => {
   autoScheduleCalls.push({ postIds, accountId });
   postIds.forEach((id) => {
     const job = queueJobs.find((item) => item.id === id);
-    if (job) job.status = 'scheduled';
+    if (job) {
+      job.status = 'scheduled';
+      job.scheduledAt = new Date(Date.now() + 86_400_000).toISOString();
+    }
   });
   return postIds.length;
 };
@@ -358,7 +370,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
     headers: { Cookie: adminCookie, Accept: 'application/json' },
     body: inlineBlockedBody
   });
-  assert.equal(inlineBlockedResponse.status, 400);
+  assert.equal(inlineBlockedResponse.status, 409);
   const inlineBlockedPayload = await inlineBlockedResponse.json();
   assert.equal(inlineBlockedPayload.ok, false);
   assert.match(inlineBlockedPayload.notice, /reconnected/);
@@ -386,6 +398,31 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   assert.equal(applyExplicitScheduleCalls.length, explicitSchedulesAfterPostA, 'post B did not reuse post A\'s explicit start time');
   assert.equal(autoScheduleCalls.length, automaticSchedulesAfterPostA + 1);
   assert.equal(autoScheduleCalls.at(-1).accountId, 'chanter-open-id', 'post B used the retained channel context');
+
+  // A queue item may be committed even when the confirmation read fails.
+  // Preserve that uncertainty through the HTTP adapter and tell the browser
+  // to refresh the queue before the operator considers a retry.
+  const callsBeforeUnknownResult = addUploadedPostsCalls.length;
+  failNextScheduleConfirmation = true;
+  const unknownResultBody = new FormData();
+  unknownResultBody.append('publicMediaUrl', 'https://cdn.example.com/confirmation-unknown.mp4');
+  unknownResultBody.append('caption', 'Confirmation unknown');
+  unknownResultBody.append('targetChannels', 'chanter-open-id');
+  const unknownResultResponse = await fetch(`${baseUrl}/upload`, {
+    method: 'POST', redirect: 'manual',
+    headers: { Cookie: adminCookie, Accept: 'application/json' },
+    body: unknownResultBody
+  });
+  assert.equal(unknownResultResponse.status, 500);
+  const unknownResultPayload = await unknownResultResponse.json();
+  assert.equal(unknownResultPayload.ok, false);
+  assert.equal(unknownResultPayload.resultUnknown, true);
+  assert.equal(unknownResultPayload.code, 'internal');
+  assert.match(unknownResultPayload.notice, /could not be fully confirmed/);
+  assert.equal(unknownResultPayload.createdPostIds.length, 1);
+  assert.equal(unknownResultPayload.createdPostId, unknownResultPayload.createdPostIds[0]);
+  assert.equal(addUploadedPostsCalls.length, callsBeforeUnknownResult + 1, 'the uncertain response corresponds to a committed queue item');
+  assert.ok(queueJobs.some((job) => job.id === unknownResultPayload.createdPostId));
 
   // The intake page ships the inline feedback surface the XHR path drives.
   const intakeHtml = await (await fetch(`${baseUrl}/private/autoposter`, { headers: { Cookie: adminCookie } })).text();
@@ -416,6 +453,7 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   assert.match(intakeHtml, /if \(submitting\) return;/, 'rapid duplicate submits are blocked while one request is active');
   assert.match(intakeHtml, /scheduling result is unknown\. Check the Release Queue before retrying/, 'transport failures do not claim a false negative');
   assert.doesNotMatch(intakeHtml, /nothing was scheduled/, 'ambiguous transport failures cannot invite a blind duplicate retry');
+  assert.match(intakeHtml, /if \(payload\.resultUnknown\)[\s\S]{0,360}chanter:queue-refresh/, 'uncertain JSON results trigger a safe queue check before retry');
   assert.match(intakeHtml, /could not be confirmed[\s\S]{0,180}chanter:queue-refresh/, 'unknown responses trigger a safe queue check before retry');
   assert.match(intakeHtml, /loadQueueView\(window\.location\.href, \{ navigateOnFailure: false \}\)/, 'background queue refresh cannot force a page reload');
   assert.match(intakeHtml, /requestVersion !== queueRequestVersion/, 'only the newest overlapping queue refresh can replace the live queue');

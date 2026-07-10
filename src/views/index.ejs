@@ -1906,6 +1906,11 @@
               return;
             }
             if (payload) {
+              if (payload.resultUnknown) {
+                setFeedback('error', payload.notice || 'The scheduling result is unknown. Check the Release Queue before retrying.', false);
+                document.dispatchEvent(new CustomEvent('chanter:queue-refresh'));
+                return;
+              }
               setFeedback('error', payload.notice || 'The campaign could not be scheduled. Your entries are unchanged.', false);
               return;
             }

@@ -84,14 +84,19 @@ storage.addUploadedPosts = async (userId, files, defaults) => {
     throw error;
   }
   const target = defaults.accounts[0];
-  return [makePost({
+  const created = makePost({
     id: `created-${state.addUploadedPostsCalls.length}`,
     accountId: target.accountId,
     username: target.username,
-    status: 'pending',
-    scheduledAt: null,
-    caption: String(defaults.caption || '')
-  })];
+    status: defaults.scheduledAt ? 'scheduled' : 'pending',
+    scheduledAt: defaults.scheduledAt || null,
+    caption: String(defaults.caption || ''),
+    idempotencyKey: defaults.idempotencyKey || '',
+    runtimeIdempotencyKey: defaults.runtimeIdempotencyKey || '',
+    runtimeScheduledBy: defaults.runtimeScheduledBy || ''
+  });
+  state.posts.push(created);
+  return [created];
 };
 storage.updatePost = async (userId, id, patch, accountId, historyEvent) => {
   state.updatePostCalls.push({ userId, id, patch, accountId, historyEvent });
@@ -268,9 +273,11 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
   assert.equal(scheduleBody.post.approved, false, 'runtime scheduling never grants approval');
   assert.equal(scheduleBody.post.scheduledAt, new Date(scheduledAt).toISOString());
   assert.equal(state.addUploadedPostsCalls.length, 1, 'exactly one queue item created');
-  assert.equal(state.updatePostCalls.length, 1);
-  assert.equal(state.updatePostCalls[0].patch.runtimeIdempotencyKey, 'idem-100');
-  assert.match(state.updatePostCalls[0].historyEvent.detail, /awaits human approval/);
+  assert.equal(state.updatePostCalls.length, 0, 'explicit schedule is persisted in the initial create-only write');
+  assert.equal(state.addUploadedPostsCalls[0].defaults.runtimeIdempotencyKey, 'idem-100');
+  assert.equal(state.addUploadedPostsCalls[0].defaults.scheduledAt, new Date(scheduledAt).toISOString());
+  assert.equal(state.addUploadedPostsCalls[0].defaults.createOnly, true);
+  assert.match(state.addUploadedPostsCalls[0].defaults.scheduleHistory.detail, /awaits human approval/);
 
   // ── Idempotency: the same key returns the existing item, creates nothing ─
   const duplicate = await call('POST', '/api/runtime/schedule', {
@@ -304,26 +311,10 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
     assert.equal(refused.status, expectedStatus, JSON.stringify(body));
     assert.equal((await refused.json()).ok, false);
   }
-  // Only the image-URL case may reach the chokepoint (which refused it).
-  assert.equal(state.addUploadedPostsCalls.length - createsBefore, 1);
-  assert.equal(state.updatePostCalls.length, 1, 'no refused request applied a schedule');
-
-  // ── Partial failure is truthful: created but not scheduled -> 500 ────────
-  state.updatePostResult = 'null';
-  const partial = await call('POST', '/api/runtime/schedule', {
-    body: {
-      accountId: 'account-a',
-      mediaUrl: 'https://cdn.example.com/partial.mp4',
-      scheduledAt: futureIso(),
-      idempotencyKey: 'idem-partial'
-    }
-  });
-  assert.equal(partial.status, 500);
-  const partialBody = await partial.json();
-  assert.equal(partialBody.ok, false);
-  assert.match(partialBody.reason, /unscheduled draft/);
-  assert.ok(partialBody.createdPostId, 'partial failure names the orphaned draft');
-  state.updatePostResult = 'apply';
+  // Shared application validation refuses every bad request before creation;
+  // storage still retains its defense-in-depth policy for direct callers.
+  assert.equal(state.addUploadedPostsCalls.length - createsBefore, 0);
+  assert.equal(state.updatePostCalls.length, 0, 'no refused request applied a schedule');
 
   // ── No publishing: TikTok module was never touched ───────────────────────
   assert.deepEqual(state.tiktokTouched, [], 'runtime control surface must never call TikTok code');

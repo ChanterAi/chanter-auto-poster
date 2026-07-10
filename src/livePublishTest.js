@@ -20,7 +20,7 @@ function isConfirmed(value) {
 /**
  * @param {object} options
  * @param {Array<{accountId:string, username?:string, connected?:boolean}>} options.channels - exactly the connected accounts under test
- * @param {string} options.assetDescription - e.g. "one small test image, chanter-logo.png"
+ * @param {string} options.assetDescription - e.g. "one small test video, chanter-smoke.mp4"
  * @param {string} options.caption
  * @param {string} options.tags
  * @param {number} [options.bufferMinutes] - minutes from now until the first scheduled release; default 5

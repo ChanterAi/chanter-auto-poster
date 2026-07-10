@@ -60,11 +60,12 @@ test('persists Cloudinary video URLs, enforces video-only intake, and keeps publ
       configDoc: () => ({}),
       getFirestore: () => ({
         batch: () => ({
-          set: (ref, data) => committed.push({ ref, data }),
+          set: (ref, data) => committed.push({ ref, data, method: 'set' }),
+          create: (ref, data) => committed.push({ ref, data, method: 'create' }),
           commit: async () => {}
         })
       }),
-      Timestamp: { now: () => timestamp, fromDate: () => timestamp },
+      Timestamp: { now: () => timestamp, fromDate: (date) => ({ toDate: () => date }) },
       FieldValue: { serverTimestamp: () => timestamp, increment: () => 1 }
     }
   };
@@ -116,6 +117,31 @@ test('persists Cloudinary video URLs, enforces video-only intake, and keeps publ
   assert.equal(videoPost.mediaType, 'video');
   assert.equal(videoPost.mediaUrl, 'https://res.cloudinary.com/test/video/upload/video.mp4');
   assert.equal(videoPost.cloudinaryResourceType, 'video');
+
+  const scheduledAt = '2026-07-12T09:00:00.000Z';
+  const [runtimePost] = await storage.addUploadedPosts('owner', [], {
+    ...accountDefaults,
+    publicMediaUrl: 'https://cdn.example.com/runtime.mp4',
+    scheduledAt,
+    documentId: 'runtime-deterministic-id',
+    createOnly: true,
+    provider: 'tiktok',
+    creationSource: 'runtime',
+    createdBy: 'mcp-client',
+    correlationId: 'trace-1',
+    idempotencyKey: 'idem-1',
+    runtimeIdempotencyKey: 'idem-1',
+    runtimeScheduledBy: 'mcp-client'
+  });
+  const runtimeWrite = committed.at(-1);
+  assert.equal(runtimeWrite.method, 'create');
+  assert.equal(runtimeWrite.ref.id, 'runtime-deterministic-id');
+  assert.equal(runtimePost.status, 'scheduled');
+  assert.equal(runtimePost.scheduledAt, scheduledAt);
+  assert.equal(runtimePost.provider, 'tiktok');
+  assert.equal(runtimePost.creationSource, 'runtime');
+  assert.equal(runtimePost.idempotencyKey, 'idem-1');
+  assert.equal(runtimePost.approved, false);
 
   // Video-only intake: neither an image file nor an image URL can create a
   // new TikTok job, and nothing is uploaded for a rejected request.
@@ -251,7 +277,7 @@ test('persists Cloudinary video URLs, enforces video-only intake, and keeps publ
   });
   assert.equal(uploadCalls.length, callsBeforeUrlOnly);
   assert.equal(urlOnlyPost.mediaSource, 'public_url');
-  assert.equal(committed.length, 6);
+  assert.equal(committed.length, 7);
 
   const health = await storage.checkMediaStorageHealth({ writeTest: true });
   assert.deepEqual(health, {

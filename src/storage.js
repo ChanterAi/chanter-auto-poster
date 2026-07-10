@@ -18,7 +18,7 @@ const {
   isVideoUploadFile,
   isVideoMediaUrl
 } = require('./mediaPolicy');
-const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore, appendHistoryEntry } = require('./postsMapper');
+const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore, appendHistoryEntry, toTimestampOrNull } = require('./postsMapper');
 const { generateAccessCode, parseAccessCode, verifyAccessSecret } = require('./clientAuth');
 
 const defaultSettings = {
@@ -498,6 +498,29 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     throw error;
   }
 
+  // Idempotent application operations may reserve one deterministic post ID.
+  // Firestore batch.create then makes concurrent requests converge on one
+  // queue document instead of allowing a read-before-write duplicate race.
+  const requestedDocumentId = String(defaults.documentId || '').trim();
+  if (requestedDocumentId) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestedDocumentId)) {
+      const error = new Error('Invalid deterministic queue item identifier');
+      error.status = 400;
+      throw error;
+    }
+    if (targetAccounts.length * sources.length !== 1) {
+      const error = new Error('A deterministic queue item identifier can only be used for one post');
+      error.status = 400;
+      throw error;
+    }
+  }
+  const initialScheduledAt = toTimestampOrNull(defaults.scheduledAt);
+  if (defaults.scheduledAt && !initialScheduledAt) {
+    const error = new Error('scheduledAt is not a parseable timestamp');
+    error.status = 400;
+    throw error;
+  }
+
   // One parent campaign per prepare action; every child job carries this id
   // so evidence and the dashboard can group per-channel releases together.
   const campaignId = String(defaults.campaignId || '').trim() || randomUUID();
@@ -589,7 +612,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         }
       }
 
-      const ref = postsCollection().doc(randomUUID());
+      const ref = postsCollection().doc(requestedDocumentId || randomUUID());
       const publicMediaUrl = cloudinaryPublicId ? mediaUrl : fallbackUrl;
 
       // Duplicate protection (warn, never block): same filename+size — or
@@ -612,10 +635,28 @@ async function addUploadedPosts(userId, files, defaults = {}) {
       if (selfApprove) {
         history = appendHistoryEntry(history, 'approved', `Approved at creation by ${selfApprove.approvedBy}.`);
       }
+      if (initialScheduledAt) {
+        const scheduleHistory = defaults.scheduleHistory || {};
+        history = appendHistoryEntry(
+          history,
+          scheduleHistory.event || 'scheduled',
+          scheduleHistory.detail || `Scheduled at creation for ${initialScheduledAt.toDate().toISOString()}.`
+        );
+      }
 
       const data = {
         userId: ownerId,
-        platform: 'tiktok',
+        platform: String(defaults.platform || defaults.provider || 'tiktok').trim() || 'tiktok',
+        // Backward-compatible provider/source metadata for the canonical
+        // application contract. Older documents omit these and postsMapper
+        // derives provider from platform without inventing a creation source.
+        provider: String(defaults.provider || defaults.platform || 'tiktok').trim() || 'tiktok',
+        creationSource: String(defaults.creationSource || '').trim(),
+        createdBy: String(defaults.createdBy || '').trim(),
+        correlationId: String(defaults.correlationId || '').trim(),
+        idempotencyKey: String(defaults.idempotencyKey || '').trim(),
+        runtimeIdempotencyKey: String(defaults.runtimeIdempotencyKey || '').trim(),
+        runtimeScheduledBy: String(defaults.runtimeScheduledBy || '').trim(),
         accountId: target.accountId,
         tiktokOpenId: target.tiktokOpenId,
         username: target.username,
@@ -644,8 +685,8 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         instagramMediaUrl: String(defaults.instagramMediaUrl || publicMediaUrl).trim(),
         privacyLevel:
           String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
-        scheduledAt: null,
-        status: 'pending',
+        scheduledAt: initialScheduledAt,
+        status: initialScheduledAt ? 'scheduled' : 'pending',
         // Approval gate: admin-intake jobs start unapproved (drafts) and
         // are blocked from every publish path until a human approves them.
         approvedAt: selfApprove ? now : null,
@@ -671,7 +712,8 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         claimAttempts: 0
       };
 
-      batch.set(ref, data);
+      if (requestedDocumentId && defaults.createOnly) batch.create(ref, data);
+      else batch.set(ref, data);
       created.push({ ref, data });
     }
     }

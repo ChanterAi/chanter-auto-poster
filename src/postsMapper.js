@@ -38,6 +38,13 @@ function toIsoOrNull(value) {
   return null;
 }
 
+function normalizeQueueStatus(value) {
+  const status = String(value || 'pending').trim().toLowerCase() || 'pending';
+  // Compatibility for documents created before the Firestore scheduler
+  // renamed the in-flight state. Do not manufacture provider states here.
+  return status === 'publishing' ? 'processing' : status;
+}
+
 /**
  * Firestore document -> the flat "post" shape the rest of the app already
  * knows how to read. `doc` is anything with `.id` and `.data()` — a real
@@ -58,7 +65,11 @@ function postFromDoc(doc) {
   return {
     id,
     userId: data.userId || DEFAULT_USER_ID,
-    platform: data.platform || 'tiktok',
+    platform: data.platform || data.provider || 'tiktok',
+    provider: data.provider || data.platform || 'tiktok',
+    creationSource: data.creationSource || '',
+    createdBy: data.createdBy || '',
+    correlationId: data.correlationId || '',
     accountId: accountId || 'legacy',
     tiktokOpenId,
     username: data.username || data.tiktokUsername || '',
@@ -72,6 +83,7 @@ function postFromDoc(doc) {
     campaignStartAt: toIsoOrNull(data.campaignStartAt),
     channelOffsetMinutes: Number.isFinite(Number(data.channelOffsetMinutes)) ? Number(data.channelOffsetMinutes) : 0,
     channelOrder: Number.isFinite(Number(data.channelOrder)) ? Number(data.channelOrder) : 0,
+    title: data.title || data.postTitle || data.name || data.originalName || data.fileName || '',
     originalName: data.originalName || '',
     fileName: data.fileName || '',
     mimeType: data.mimeType || '',
@@ -87,6 +99,7 @@ function postFromDoc(doc) {
     hashtags: data.hashtags || '',
     publicMediaUrl: data.publicMediaUrl || data.mediaUrl || data.publicImageUrl || '',
     publicImageUrl: data.publicImageUrl || '',
+    thumbnailUrl: data.thumbnailUrl || data.thumbnail || data.coverUrl || data.imagePath || data.publicImageUrl || '',
     mediaSource: data.mediaSource || (data.cloudinaryPublicId ? 'cloudinary' : (data.mediaStoragePath ? 'firebase_storage' : (data.publicMediaUrl || data.publicImageUrl ? 'public_url' : 'legacy_local'))),
     autoMusicApplied: Boolean(data.autoMusicApplied),
     musicTrackId: data.musicTrackId || '',
@@ -96,13 +109,14 @@ function postFromDoc(doc) {
     instagramMediaUrl: data.instagramMediaUrl || '',
     privacyLevel: data.privacyLevel || 'SELF_ONLY',
     scheduledAt: toIsoOrNull(data.scheduledAt || data.scheduledTimeUTC),
-    status: data.status || 'pending',
+    status: normalizeQueueStatus(data.status),
     // Human-approval gate (see scheduler.js isExplicitlyApproved). A post
     // is a draft until approvedAt holds a real Timestamp; anything
     // missing, malformed, or corrupted maps to "not approved" on purpose.
     approvedAt: toIsoOrNull(data.approvedAt),
     approvedBy: typeof data.approvedBy === 'string' ? data.approvedBy : '',
     approved: Boolean(toIsoOrNull(data.approvedAt)),
+    approvalState: toIsoOrNull(data.approvedAt) ? 'approved' : 'unapproved',
     // Redacted evidence log: [{ at, event, detail? }, ...]
     history: Array.isArray(data.history) ? data.history : [],
     fileSize: Number(data.fileSize || 0),
@@ -114,6 +128,8 @@ function postFromDoc(doc) {
     publishId: data.publishId || '',
     readyAt: toIsoOrNull(data.readyAt),
     lastResult: data.lastResult || null,
+    lastError: data.lastError || data.error || (data.lastResult && (data.lastResult.reason || data.lastResult.error || data.lastResult.message)) || '',
+    logs: data.logs || data.events || data.history || [],
     lastInstagramResult: data.lastInstagramResult || null,
     disableComment: Boolean(data.disableComment),
     disableDuet: Boolean(data.disableDuet),
@@ -123,7 +139,8 @@ function postFromDoc(doc) {
     brandedContent: Boolean(data.brandedContent),
     // Agent Runtime scheduling metadata (runtimeControlRoutes.js). Older
     // documents have neither field; '' keeps them out of idempotency lookups.
-    runtimeIdempotencyKey: data.runtimeIdempotencyKey || '',
+    idempotencyKey: data.idempotencyKey || data.runtimeIdempotencyKey || '',
+    runtimeIdempotencyKey: data.runtimeIdempotencyKey || data.idempotencyKey || '',
     runtimeScheduledBy: data.runtimeScheduledBy || '',
     // Scheduler-only bookkeeping. Harmless to expose; nothing in routes.js
     // or the view currently reads these, but scheduler.js does.
@@ -163,6 +180,7 @@ module.exports = {
   appendHistoryEntry,
   toTimestampOrNull,
   toIsoOrNull,
+  normalizeQueueStatus,
   postFromDoc,
   mapPatchToFirestore
 };

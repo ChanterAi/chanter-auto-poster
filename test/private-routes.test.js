@@ -39,7 +39,9 @@ const postsByAccount = {
 
 storage.getTikTokAccounts = async () => accounts;
 storage.getTikTokAccount = async (userId, accountId) => accounts.find((account) => account.accountId === accountId) || null;
-storage.getPosts = async (userId, accountId) => postsByAccount[accountId] || [];
+storage.getPosts = async (userId, accountId) => accountId
+  ? (postsByAccount[accountId] || [])
+  : Object.values(postsByAccount).flat();
 storage.getSettings = async () => ({ dailyPostTime: '09:00' });
 storage.getCounts = async () => ({
   total: 0,

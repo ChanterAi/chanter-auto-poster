@@ -5,20 +5,18 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const config = require('./config');
 const storage = require('./storage');
+const applicationService = require('./autoposterApplicationService');
 const scheduler = require('./scheduler');
 const autoCaption = require('./autoCaption');
 const autoMusic = require('./autoMusic');
 const tiktok = require('./tiktok');
 const instagram = require('./instagram');
-const { parseDateTimeLocal } = require('./timeUtil');
-const { computeMaxSchedulePlan, DEFAULT_OFFSET_MINUTES } = require('./maxScheduler');
+const { DEFAULT_OFFSET_MINUTES } = require('./maxScheduler');
 const { summarizeCampaigns, latestCampaignChannelCount } = require('./campaignAccounting');
 const clientRoutes = require('./clientRoutes');
 const {
   VIDEO_ONLY_UPLOAD_MESSAGE,
-  VIDEO_ONLY_URL_MESSAGE,
-  isVideoUploadFile,
-  isVideoMediaUrl
+  isVideoUploadFile
 } = require('./mediaPolicy');
 const {
   clearAdminSessionCookie,
@@ -107,23 +105,22 @@ function asyncRoute(handler) {
   };
 }
 
-function countsFromPosts(posts) {
-  return posts.reduce(
-    (counts, post) => {
-      counts.total += 1;
-      counts[post.status] = (counts[post.status] || 0) + 1;
-      return counts;
-    },
-    { total: 0, pending: 0, scheduled: 0, processing: 0, ready: 0, posted: 0, failed: 0 }
-  );
+function websiteContext(req, options = {}) {
+  const userId = resolveUserId(req);
+  return applicationService.createExecutionContext({
+    userId,
+    actorId: options.actorId || `admin:${userId}`,
+    accountId: options.accountId || '',
+    source: 'website',
+    correlationId: req.get('x-request-id') || req.get('x-correlation-id') || '',
+    approval: options.approval || null,
+    idempotency: { key: options.idempotencyKey || '' }
+  });
 }
 
 // Release Queue view mode: "active" (today's behavior, scoped to the
 // currently selected TikTok channel) or "all" (every channel, grouped by
-// campaign). getPosts(userId) with no accountId already reads every post
-// for this user in one Firestore query — getPosts(userId, accountId) just
-// filters the same result client-side — so resolving both modes from one
-// fetch costs nothing extra over the old single-channel-only fetch.
+// campaign). Both reads go through the shared listQueue operation.
 function resolveQueueView(req, allPosts) {
   const requested = String(req.query.queueView || '').trim().toLowerCase();
   if (requested === 'all' || requested === 'active') return requested;
@@ -134,15 +131,13 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
   const { accounts, activeAccount } = await resolveTikTokAccountContext(req, res);
   const activeAccountId = activeAccount ? activeAccount.accountId : '';
-  // Two calls, not one filtered locally: storage.getPosts(userId, accountId)
-  // is the long-standing, widely-mocked single-channel contract, so the
-  // "active" view keeps using it completely unchanged. The unscoped call is
-  // only for "All Channels" and for picking the default view — a narrower
-  // test double that only understands the single-channel form (i.e. one
-  // that doesn't handle "no accountId means every channel") just yields no
-  // multi-channel signal, which safely resolves to the same "active" default.
-  const activeAccountPosts = activeAccountId ? await storage.getPosts(userId, activeAccountId) : [];
-  const allPosts = await storage.getPosts(userId);
+  const context = websiteContext(req);
+  const activeQueue = activeAccountId
+    ? await applicationService.listQueue(context, { accountId: activeAccountId, limit: 1000 })
+    : { items: [], counts: emptyPostCounts() };
+  const allQueue = await applicationService.listQueue(context, { limit: 1000 });
+  const activeAccountPosts = activeQueue.items;
+  const allPosts = allQueue.items;
   const queueView = resolveQueueView(req, allPosts);
   const posts = queueView === 'all' ? allPosts : activeAccountPosts;
   const tiktokAuthStatus = await tiktok.getTikTokAuthStatus(activeAccountId, userId);
@@ -181,9 +176,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     campaignSummaries: queueView === 'all' ? summarizeCampaigns(posts) : [],
     todayPost: getTodayPost(posts),
     settings: await storage.getSettings(),
-    counts: queueView === 'all'
-      ? countsFromPosts(allPosts)
-      : (activeAccountId ? await storage.getCounts(userId, activeAccountId) : emptyPostCounts()),
+    counts: queueView === 'all' ? allQueue.counts : activeQueue.counts,
     notice: req.query.notice || '',
     tiktokConfigured: tiktokAuthStatus.connected,
     tiktokAuthStatus,
@@ -258,11 +251,11 @@ router.get('/private/autoposter/dashboard', requireAdminPage, (req, res) => {
 });
 
 router.get('/api/private/autoposter/dashboard', requireAdminApi, asyncRoute(async (req, res) => {
-  const userId = resolveUserId(req);
-  const [jobs, accountContext] = await Promise.all([
-    storage.getDashboardJobs(userId),
+  const [queue, accountContext] = await Promise.all([
+    applicationService.listQueue(websiteContext(req), { limit: 1000 }),
     resolveTikTokAccountContext(req, res)
   ]);
+  const jobs = queue.items;
   const { accounts, activeAccount } = accountContext;
   const selectedAccountId = activeAccount ? activeAccount.accountId : '';
 
@@ -642,101 +635,56 @@ router.post('/upload', requireConnectedTikTokAccount, uploadCampaignMedia, async
   const account = req.activeTikTokAccount;
   const files = req.files || [];
   const publicMediaUrl = String(req.body.publicMediaUrl || req.body.publicImageUrl || '').trim();
-  if (publicMediaUrl && !isPublicHttpsUrl(publicMediaUrl)) {
-    respondWithNotice(req, res, 'Public Media URL must be a valid HTTPS URL.', false);
-    return;
-  }
-  if (publicMediaUrl && !isVideoMediaUrl(publicMediaUrl)) {
-    respondWithNotice(req, res, VIDEO_ONLY_URL_MESSAGE, false);
-    return;
-  }
-  if (files.length === 0 && !publicMediaUrl) {
-    respondWithNotice(req, res, 'Choose a video file or enter a Public Media URL.', false);
-    return;
-  }
-
-  // Multi-channel scheduling: the form may submit one or more target
-  // Publishing Channels. When absent, the active channel is the single
-  // target — identical to the pre-multichannel behavior.
-  let targetAccounts = [account];
   const requestedChannelIds = normalizeTargetChannelIds(req.body.targetChannels);
-  if (requestedChannelIds.length > 0) {
-    const allAccounts = await storage.getTikTokAccounts(userId);
-    const accountsById = new Map(allAccounts.map((item) => [item.accountId, item]));
-    const resolved = [];
-    for (const channelId of requestedChannelIds) {
-      const target = accountsById.get(channelId);
-      if (!target) {
-        respondWithNotice(req, res, 'One of the selected publishing channels was not found. Refresh and try again.', false);
-        return;
-      }
-      if (!target.connected) {
-        respondWithNotice(req, res, `${accountLabel(target)} needs to be reconnected before it can post.`, false);
-        return;
-      }
-      resolved.push(target);
-    }
-    targetAccounts = resolved;
-  }
-
-  // Max Scheduler: an explicit campaign start date/time turns on
-  // start-time + per-channel-offset scheduling instead of the legacy
-  // "tomorrow at the daily release window, per channel" auto-schedule.
-  // Preflight (no channels / disconnected channels) is validated before any
-  // job is created, so a bad plan never leaves partial jobs behind.
   const startDate = String(req.body.startDate || '').trim();
   const startTime = String(req.body.startTime || '').trim();
-  const useMaxScheduler = Boolean(startDate && startTime);
-  let maxSchedulePlan = null;
-  if (useMaxScheduler) {
-    maxSchedulePlan = computeMaxSchedulePlan({
-      startDate,
-      startTime,
-      timezoneOffsetMinutes: req.body.timezoneOffsetMinutes,
-      offsetMinutes: req.body.offsetMinutes,
-      channels: targetAccounts.map((target) => ({
-        accountId: target.accountId,
-        tiktokOpenId: target.open_id,
-        username: target.username,
-        connected: target.connected
-      }))
-    });
-    if (!maxSchedulePlan.ok) {
-      respondWithNotice(req, res, maxSchedulePlan.reason, false);
+  const preparedMedia = resolvePreparedMedia(req.body.autoMusicToken, userId, files);
+  let result;
+  try {
+    result = await applicationService.schedulePost(
+      websiteContext(req, { accountId: account.accountId }),
+      {
+        accountIds: requestedChannelIds.length > 0 ? requestedChannelIds : [account.accountId],
+        files,
+        mediaUrl: publicMediaUrl,
+        caption: req.body.caption,
+        hashtags: req.body.hashtags,
+        preparedMedia,
+        schedule: (startDate || startTime)
+          ? {
+              mode: 'max',
+              startDate,
+              startTime,
+              timezoneOffsetMinutes: req.body.timezoneOffsetMinutes,
+              offsetMinutes: req.body.offsetMinutes
+            }
+          : { mode: 'automatic' }
+      }
+    );
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      const details = error.details && typeof error.details === 'object' ? error.details : {};
+      const createdPostIds = Array.isArray(details.createdPostIds)
+        ? details.createdPostIds.map((id) => String(id || '').trim()).filter(Boolean)
+        : [];
+      const createdPostId = String(details.createdPostId || createdPostIds[0] || '').trim();
+      respondWithNotice(req, res, error.message, false, {
+        status: error.status,
+        code: error.code,
+        resultUnknown: error.status >= 500 && Boolean(createdPostId || createdPostIds.length),
+        createdPostId,
+        createdPostIds
+      });
       return;
     }
+    throw error;
   }
 
-  const preparedMedia = resolvePreparedMedia(req.body.autoMusicToken, userId, files);
-  const created = await storage.addUploadedPosts(userId, files, {
-    caption: req.body.caption,
-    hashtags: req.body.hashtags,
-    publicMediaUrl,
-    accounts: targetAccounts.map((target) => ({
-      accountId: target.accountId,
-      tiktokOpenId: target.open_id,
-      username: target.username
-    })),
-    // Legacy single-account fields, kept as the fallback contract.
-    accountId: account.accountId,
-    tiktokOpenId: account.open_id,
-    username: account.username,
-    preparedMedia
-  });
-
-  let scheduledCount = 0;
-  if (useMaxScheduler) {
-    scheduledCount = await storage.applyExplicitSchedule(userId, created, maxSchedulePlan);
-  } else {
-    // Auto-schedule each channel's queue independently so one channel's
-    // release cadence never shifts another channel's.
-    for (const target of targetAccounts) {
-      const channelPostIds = created
-        .filter((post) => post.accountId === target.accountId)
-        .map((post) => post.id);
-      scheduledCount += await storage.autoSchedulePosts(userId, channelPostIds, target.accountId);
-    }
-  }
+  const created = result.posts;
+  const scheduledCount = result.scheduledCount;
+  const targetAccounts = result.accounts;
+  const useMaxScheduler = result.schedule.mode === 'max';
+  const maxSchedulePlan = result.schedule.plan || null;
 
   const usedFallback = created.some((post) => post.storageFallback);
   const sourceNotice = usedFallback ? ' Upload failed, so the public URL was used instead.' : '';
@@ -764,15 +712,15 @@ router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {
 }));
 
 router.post('/schedule', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const userId = resolveUserId(req);
-  const count = await storage.reschedulePendingQueue(userId, req.activeTikTokAccount.accountId);
-  redirectWithNotice(res, `Scheduled ${count}.`);
+  const result = await applicationService.rescheduleQueue(
+    websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
+    { accountId: req.activeTikTokAccount.accountId }
+  );
+  redirectWithNotice(res, `Scheduled ${result.count}.`);
 }));
 
 // ── Updated post save — now captures interaction settings & content disclosure ──
 router.post('/posts/:id', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const userId = resolveUserId(req);
-  const scheduledAt = parseDateTimeLocal(req.body.scheduledAt, req.body.timezoneOffsetMinutes);
   const publicMediaUrl = String(req.body.publicMediaUrl || req.body.publicImageUrl || '').trim();
   if (publicMediaUrl && !isPublicHttpsUrl(publicMediaUrl)) {
     redirectWithNotice(res, 'Public Media URL must be a valid HTTPS URL.');
@@ -795,7 +743,6 @@ router.post('/posts/:id', requireConnectedTikTokAccount, asyncRoute(async (req, 
     publicMediaUrl,
     publicImageUrl:     publicMediaUrl,
     privacyLevel:       String(req.body.privacyLevel       || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
-    scheduledAt,
     // TikTok Direct Post API — interaction ability
     disableComment:  !allowComment,
     disableDuet:     !allowDuet,
@@ -810,10 +757,28 @@ router.post('/posts/:id', requireConnectedTikTokAccount, asyncRoute(async (req, 
     postPatch.instagramMediaUrl = String(req.body.instagramMediaUrl || '').trim();
   }
 
-  await storage.updatePost(userId, req.params.id, postPatch, req.activeTikTokAccount.accountId,
-    { event: 'edited', detail: 'Caption, schedule, or settings updated in the Release Queue.' });
-
-  redirectWithNotice(res, 'Saved.');
+  try {
+    await applicationService.updatePost(
+      websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
+      {
+        postId: req.params.id,
+        accountId: req.activeTikTokAccount.accountId,
+        patch: postPatch,
+        scheduleInput: {
+          value: req.body.scheduledAt,
+          timezoneOffsetMinutes: req.body.timezoneOffsetMinutes
+        },
+        historyEvent: { event: 'edited', detail: 'Caption, schedule, or settings updated in the Release Queue.' }
+      }
+    );
+    redirectWithNotice(res, 'Saved.');
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      redirectWithNotice(res, error.message);
+      return;
+    }
+    throw error;
+  }
 }));
 
 router.post('/posts/:id/move', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
@@ -828,7 +793,11 @@ router.post('/posts/:id/move', requireConnectedTikTokAccount, asyncRoute(async (
 // the entire surface area a human uses to open or close the gate.
 router.post('/posts/:id/approve', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  const approved = await storage.approvePost(userId, req.params.id, { approvedBy: `admin:${userId}` }, req.activeTikTokAccount.accountId);
+  const result = await applicationService.approvePost(
+    websiteContext(req, { accountId: req.activeTikTokAccount.accountId, approval: { approvedBy: `admin:${userId}` } }),
+    { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+  );
+  const approved = result.post;
   if (!approved) {
     redirectWithNotice(res, 'Could not approve this post. It may be posting, already posted, or not in this channel.');
     return;
@@ -839,17 +808,29 @@ router.post('/posts/:id/approve', requireConnectedTikTokAccount, asyncRoute(asyn
 }));
 
 router.post('/posts/:id/unapprove', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const userId = resolveUserId(req);
-  const revoked = await storage.revokePostApproval(userId, req.params.id, req.activeTikTokAccount.accountId);
-  redirectWithNotice(res, revoked
+  const result = await applicationService.revokeApproval(
+    websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
+    { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+  );
+  redirectWithNotice(res, result.ok
     ? 'Approval removed. This post is blocked from publishing until you approve it again.'
     : 'Could not change approval. The post may be posting, already posted, or not in this channel.');
 }));
 
 router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const userId = resolveUserId(req);
-  const post = await storage.getPost(userId, req.params.id, req.activeTikTokAccount.accountId);
-  if (!post) { redirectWithNotice(res, 'Post not found.'); return; }
+  let post;
+  try {
+    ({ post } = await applicationService.getPostStatus(
+      websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
+      { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+    ));
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      redirectWithNotice(res, error.message);
+      return;
+    }
+    throw error;
+  }
 
   // Fail closed before any publish attempt: unapproved drafts can never be
   // published, even by the manual Publish Now action. (scheduler.claimPost
@@ -879,44 +860,45 @@ router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(asyn
 }));
 
 router.post('/posts/:id/posted', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const userId = resolveUserId(req);
-  const now = new Date().toISOString();
-  await storage.updatePost(userId, req.params.id, {
-    status: 'posted', postedAt: now, readyAt: null,
-    lastResult: { ok: true, mode: 'manual', reason: 'Marked posted manually', completedAt: now }
-  }, req.activeTikTokAccount.accountId,
-  { event: 'marked_posted', detail: 'Marked posted manually by the operator; no API publish occurred.' });
-  redirectWithNotice(res, 'Marked posted.');
+  try {
+    await applicationService.markPostManually(
+      websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
+      { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+    );
+    redirectWithNotice(res, 'Marked posted.');
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      redirectWithNotice(res, error.message);
+      return;
+    }
+    throw error;
+  }
 }));
 
 router.post('/posts/:id/pending', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const userId = resolveUserId(req);
-  const post = await storage.getPost(userId, req.params.id, req.activeTikTokAccount.accountId);
-  if (!post) { redirectWithNotice(res, 'Post not found.'); return; }
-  await storage.updatePost(userId, req.params.id, {
-    status: post.scheduledAt ? 'scheduled' : 'pending',
-    postedAt: null,
-    readyAt: null,
-    errorMessage: null,
-    lastResult: null,
-    claimAttempts: 0,
-    lockedAt: null,
-    lockedBy: null
-  }, req.activeTikTokAccount.accountId,
-  { event: 'reset', detail: 'Returned to the queue by the operator; attempt counter cleared.' });
-  redirectWithNotice(res, post.scheduledAt ? 'Back to schedule.' : 'Back to pending.');
+  try {
+    const result = await applicationService.retryPost(
+      websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
+      { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+    );
+    redirectWithNotice(res, result.post && result.post.scheduledAt ? 'Back to schedule.' : 'Back to pending.');
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      redirectWithNotice(res, error.message);
+      return;
+    }
+    throw error;
+  }
 }));
 
 // Delete is deliberately NOT scoped to the active channel: the Release
 // Queue's "All Channels" view and the Publishing Log render this form for
 // posts on every channel this admin owns (including legacy jobs with no
 // channel assignment), and all of them must be deletable from where they
-// are shown. Ownership is still enforced — storage.deletePost refuses any
-// post whose userId is not this admin's.
+// are shown. Ownership is still enforced by the shared delete operation.
 router.post('/posts/:id/delete', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const userId = resolveUserId(req);
-  const deleted = await storage.deletePost(userId, req.params.id);
-  redirectWithNotice(res, deleted
+  const result = await applicationService.deletePost(websiteContext(req), { postId: req.params.id });
+  redirectWithNotice(res, result.deleted
     ? 'Deleted.'
     : 'Delete failed — this post could not be found in your account. It was not removed; refresh to see the current queue.');
 }));
@@ -924,36 +906,21 @@ router.post('/posts/:id/delete', requireConnectedTikTokAccount, asyncRoute(async
 // Bulk deletion for the Mark/Delete Marked queue controls. Selection is
 // purely client-side (no persistent "marked" state); this endpoint reports
 // per-post truth so the UI removes only confirmed deletions and keeps
-// failures visible. Same ownership rule as single delete: storage.deletePost
-// scopes every id to this admin's userId.
+// failures visible. The batch operation reuses the same owner-scoped
+// individual delete operation.
 router.post('/api/posts/delete-marked', requireAdminApi, express.json({ limit: '64kb' }), asyncRoute(async (req, res) => {
   res.set('Cache-Control', 'no-store');
   const rawIds = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
-  const ids = [...new Set(rawIds.map((id) => String(id || '').trim()).filter(Boolean))];
-  if (ids.length === 0) {
-    res.status(400).json({ ok: false, reason: 'Select at least one post to delete.', deleted: [], failed: [] });
-    return;
-  }
-  if (ids.length > 200) {
-    res.status(400).json({ ok: false, reason: 'Too many posts selected — delete at most 200 at a time.', deleted: [], failed: [] });
-    return;
-  }
-
-  const userId = resolveUserId(req);
-  const deleted = [];
-  const failed = [];
-  for (const id of ids) {
-    try {
-      if (await storage.deletePost(userId, id)) {
-        deleted.push(id);
-      } else {
-        failed.push({ id, reason: 'Post not found in your account.' });
-      }
-    } catch (error) {
-      failed.push({ id, reason: error.message || 'Delete failed.' });
+  try {
+    const result = await applicationService.deleteMarkedPosts(websiteContext(req), { postIds: rawIds });
+    res.json(result);
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      res.status(error.status).json({ ok: false, reason: error.message, deleted: [], failed: [] });
+      return;
     }
+    throw error;
   }
-  res.json({ ok: failed.length === 0, deleted, failed });
 }));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1069,9 +1036,19 @@ function redirectWithNotice(res, notice) {
 // `Accept: application/json` so the page can show inline progress and a
 // result without discarding form state. Plain HTML form posts (the no-JS
 // fallback) keep the redirect-with-notice behavior unchanged.
-function respondWithNotice(req, res, notice, ok = true) {
+function respondWithNotice(req, res, notice, ok = true, options = {}) {
   if (req.accepts(['html', 'json']) === 'json') {
-    res.status(ok ? 200 : 400).json({ ok, notice });
+    const status = Number.isInteger(options.status) && options.status >= 100 && options.status <= 599
+      ? options.status
+      : (ok ? 200 : 400);
+    const payload = { ok, notice };
+    if (options.code) payload.code = String(options.code);
+    if (options.resultUnknown) payload.resultUnknown = true;
+    if (options.createdPostId) payload.createdPostId = String(options.createdPostId);
+    if (Array.isArray(options.createdPostIds) && options.createdPostIds.length > 0) {
+      payload.createdPostIds = options.createdPostIds.map((id) => String(id));
+    }
+    res.status(status).json(payload);
     return;
   }
   redirectWithNotice(res, notice);

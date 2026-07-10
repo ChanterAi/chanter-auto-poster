@@ -10,8 +10,8 @@
 // Usage (print the approval gate; nothing is created):
 //   node scripts/live-publish-test.js \
 //     --channel chanter-open-id --channel cdwarrior-open-id \
-//     --asset "One small test image, chanter-logo.png" \
-//     --asset-url https://example.com/chanter-logo.png \
+//     --asset "One small test video, chanter-smoke.mp4" \
+//     --asset-url https://example.com/chanter-smoke.mp4 \
 //     --caption "Live publish test" --tags "#chantertest" \
 //     --buffer-minutes 5 --offset-minutes 5
 //
@@ -57,6 +57,7 @@ async function main() {
   }
 
   const storage = require('../src/storage');
+  const applicationService = require('../src/autoposterApplicationService');
   const accounts = await storage.getTikTokAccounts();
   const channels = args.channels.map((accountId) => {
     const account = accounts.find((item) => item.accountId === accountId);
@@ -100,29 +101,38 @@ async function main() {
   }
 
   console.log('\n[live-publish-test] Confirmed and --execute set. Creating the scheduled TikTok jobs now.');
-  // Reuses the exact same storage functions the normal /upload flow uses —
-  // there is no separate, less-reviewed code path for a "test" post.
-  const created = await storage.addUploadedPosts(storage.DEFAULT_USER_ID, [], {
-    caption: plan.caption,
-    hashtags: plan.tags,
-    publicMediaUrl: args.assetUrl,
-    accounts: plan.channels.map((channel) => ({ accountId: channel.accountId, username: channel.username }))
-  });
-  const scheduledCount = await storage.applyExplicitSchedule(storage.DEFAULT_USER_ID, created, {
-    baseAt: plan.firstScheduledAt,
-    channels: plan.channels.map((channel) => ({
-      accountId: channel.accountId,
-      scheduledAt: channel.scheduledAt,
-      offsetMinutes: channel.offsetMinutes,
-      order: channel.order
-    }))
-  });
+  // Reuses the same application operation as website and Runtime scheduling;
+  // the CLI remains only a human-confirmed transport adapter.
+  const result = await applicationService.schedulePost(
+    applicationService.createExecutionContext({
+      userId: storage.DEFAULT_USER_ID,
+      actorId: 'controlled-live-publish-test',
+      source: 'internal_worker',
+      correlationId: `live-publish-test-${Date.now()}`
+    }),
+    {
+      accountIds: plan.channels.map((channel) => channel.accountId),
+      mediaUrl: args.assetUrl,
+      caption: plan.caption,
+      hashtags: plan.tags,
+      schedule: {
+        mode: 'explicit_plan',
+        plan: {
+          baseAt: plan.firstScheduledAt,
+          offsetMinutes: plan.offsetMinutes,
+          channels: plan.channels
+        }
+      }
+    }
+  );
+  const created = result.posts;
+  const scheduledCount = result.scheduledCount;
 
   console.log(`[live-publish-test] Created ${created.length} job(s), scheduled ${scheduledCount}.`);
   created.forEach((post) => {
     console.log(`  - ${post.id} -> accountId=${post.accountId}`);
   });
-  console.log('[live-publish-test] These jobs will publish for real at their scheduled times via the normal cron/scheduler path.');
+  console.log('[live-publish-test] These jobs are unapproved drafts. Review and approve each item in AutoPoster before the scheduler can publish.');
 }
 
 main().catch((error) => {

@@ -61,11 +61,14 @@ const accounts = [{
 }];
 
 const addUploadedPostsCalls = [];
+const createdPosts = [];
 
 storage.getTikTokAccounts = async () => accounts;
 storage.getTikTokAccount = async (userId, accountId) =>
   accounts.find((account) => account.accountId === accountId) || null;
 storage.getPosts = async () => [];
+storage.getPost = async (userId, id, accountId) =>
+  createdPosts.find((post) => post.id === id && (!accountId || post.accountId === accountId)) || null;
 storage.getDashboardJobs = async () => [];
 storage.getSettings = async () => ({ dailyPostTime: '09:00' });
 storage.getCounts = async () => ({ total: 0, pending: 0, scheduled: 0, processing: 0, ready: 0, posted: 0, failed: 0 });
@@ -77,15 +80,26 @@ storage.addUploadedPosts = async (userId, files, defaults) => {
   // The route mocks skip storage's own temp-file cleanup — remove the
   // multer files here so test runs leave nothing in uploads/.
   (files || []).forEach((file) => { try { fs.unlinkSync(file.path); } catch (error) { /* already gone */ } });
-  return (files && files.length > 0 ? files : [null]).map((file, index) => ({
+  const created = (files && files.length > 0 ? files : [null]).map((file, index) => ({
     id: `created-${addUploadedPostsCalls.length}-${index}`,
     accountId: defaults.accountId || 'account-a',
     storageFallback: false,
     autoMusicApplied: false,
     duplicateWarning: ''
   }));
+  createdPosts.push(...created);
+  return created;
 };
-storage.autoSchedulePosts = async (userId, postIds) => postIds.length;
+storage.autoSchedulePosts = async (userId, postIds) => {
+  for (const id of postIds) {
+    const post = createdPosts.find((item) => item.id === id);
+    if (post) {
+      post.status = 'scheduled';
+      post.scheduledAt = new Date(Date.now() + 86_400_000).toISOString();
+    }
+  }
+  return postIds.length;
+};
 storage.updatePost = async (userId, id, patch, accountId) => ({ id, accountId, ...patch });
 tiktok.getTikTokAuthStatus = async (accountId) => ({ connected: Boolean(accountId), accountId });
 tiktok.queryCreatorInfo = async () => ({ creator_username: 'account_a', privacy_level_options: ['SELF_ONLY'] });

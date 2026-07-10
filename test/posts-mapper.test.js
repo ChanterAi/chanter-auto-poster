@@ -49,3 +49,27 @@ test('legacy scheduledTimeUTC remains readable during queue migration', () => {
   });
   assert.equal(restored.scheduledAt, iso);
 });
+
+test('canonical provider, source, approval, idempotency, and legacy status fields are normalized additively', () => {
+  const restored = postFromDoc({
+    id: 'runtime-job',
+    data: () => ({
+      platform: 'tiktok',
+      provider: 'tiktok',
+      creationSource: 'runtime',
+      createdBy: 'mcp-client',
+      correlationId: 'trace-1',
+      runtimeIdempotencyKey: 'idem-1',
+      status: 'publishing',
+      approvedAt: null
+    })
+  });
+
+  assert.equal(restored.provider, 'tiktok');
+  assert.equal(restored.creationSource, 'runtime');
+  assert.equal(restored.createdBy, 'mcp-client');
+  assert.equal(restored.correlationId, 'trace-1');
+  assert.equal(restored.idempotencyKey, 'idem-1');
+  assert.equal(restored.status, 'processing');
+  assert.equal(restored.approvalState, 'unapproved');
+});

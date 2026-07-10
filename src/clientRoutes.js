@@ -21,15 +21,13 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const config = require('./config');
 const storage = require('./storage');
+const applicationService = require('./autoposterApplicationService');
 const scheduler = require('./scheduler');
 const tiktok = require('./tiktok');
-const { parseDateTimeLocal } = require('./timeUtil');
 const { clearClientSessionCookie, setClientSessionCookie } = require('./clientAuth');
 const {
   VIDEO_ONLY_UPLOAD_MESSAGE,
-  VIDEO_ONLY_URL_MESSAGE,
-  isVideoUploadFile,
-  isVideoMediaUrl
+  isVideoUploadFile
 } = require('./mediaPolicy');
 
 const router = express.Router();
@@ -82,6 +80,19 @@ function asyncRoute(handler) {
   return (req, res, next) => {
     handler(req, res, next).catch(next);
   };
+}
+
+function clientApplicationContext(req, options = {}) {
+  const account = req.clientAccount || {};
+  const actorId = `client:@${account.username || req.clientAccountId || 'unknown'}`;
+  return applicationService.createExecutionContext({
+    userId: req.clientUserId,
+    actorId,
+    accountId: req.clientAccountId,
+    source: 'website',
+    correlationId: req.get('x-request-id') || req.get('x-correlation-id') || '',
+    approval: options.selfApprove ? { approvedBy: actorId } : null
+  });
 }
 
 // ── Session guard ────────────────────────────────────────────────────────
@@ -158,17 +169,17 @@ router.post('/client/autoposter/logout', (req, res) => {
 // ── Portal ───────────────────────────────────────────────────────────────
 
 router.get('/client/autoposter', requireClientSession, asyncRoute(async (req, res) => {
-  const [posts, counts] = await Promise.all([
-    storage.getPosts(req.clientUserId, req.clientAccountId),
-    storage.getCounts(req.clientUserId, req.clientAccountId)
-  ]);
+  const queue = await applicationService.listQueue(clientApplicationContext(req), {
+    accountId: req.clientAccountId,
+    limit: 1000
+  });
 
   res.set('Cache-Control', 'no-store');
   res.render('client-portal', {
     appName: config.appName,
     account: req.clientAccount,
-    posts,
-    counts,
+    posts: queue.items,
+    counts: queue.counts,
     notice: req.query.notice || '',
     helpers: clientViewHelpers
   });
@@ -251,46 +262,49 @@ router.post('/client/autoposter/upload', requireClientSession, clientUploadMedia
     redirectClientNotice(res, 'Caption is too long (max 2200 characters).');
     return;
   }
-  if (publicMediaUrl && !isPublicHttpsUrl(publicMediaUrl)) {
-    redirectClientNotice(res, 'Media URL must be a valid HTTPS URL.');
-    return;
-  }
-  if (publicMediaUrl && !isVideoMediaUrl(publicMediaUrl)) {
-    redirectClientNotice(res, VIDEO_ONLY_URL_MESSAGE);
-    return;
-  }
-  if (!req.file && !publicMediaUrl) {
-    redirectClientNotice(res, 'Choose a video to upload.');
-    return;
-  }
-
-  const created = await storage.addUploadedPosts(req.clientUserId, req.file ? [req.file] : [], {
-    caption,
-    hashtags,
-    publicMediaUrl,
-    accountId: account.accountId,
-    tiktokOpenId: account.open_id,
-    username: account.username,
-    // The client filled in and submitted this one post themselves — that
-    // is the explicit per-item human review the approval gate requires, so
-    // record it at creation. Batch admin intake never self-approves.
-    selfApprove: { approvedBy: `client:@${account.username || account.accountId}` }
-  });
-
-  const scheduledAt = parseDateTimeLocal(req.body.scheduledAt, req.body.timezoneOffsetMinutes);
-  if (scheduledAt) {
-    await storage.updatePost(req.clientUserId, created[0].id, { scheduledAt }, account.accountId,
-      { event: 'edited', detail: 'Client set the posting time at upload.' });
-  } else {
-    await storage.autoSchedulePosts(req.clientUserId, created.map((post) => post.id), account.accountId);
+  try {
+    await applicationService.schedulePost(
+      clientApplicationContext(req, { selfApprove: true }),
+      {
+        accountId: account.accountId,
+        files: req.file ? [req.file] : [],
+        mediaUrl: publicMediaUrl,
+        caption,
+        hashtags,
+        requireSingle: true,
+        schedule: String(req.body.scheduledAt || '').trim()
+          ? {
+              mode: 'browser_local',
+              value: req.body.scheduledAt,
+              timezoneOffsetMinutes: req.body.timezoneOffsetMinutes
+            }
+          : { mode: 'automatic' }
+      }
+    );
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      redirectClientNotice(res, error.message);
+      return;
+    }
+    throw error;
   }
 
   redirectClientNotice(res, 'Post scheduled.');
 }));
 
 router.post('/client/autoposter/posts/:id/prepare', requireClientSession, asyncRoute(async (req, res) => {
-  const post = await storage.getPost(req.clientUserId, req.params.id, req.clientAccountId);
-  if (!post) { redirectClientNotice(res, 'Post not found.'); return; }
+  try {
+    await applicationService.getPostStatus(clientApplicationContext(req), {
+      postId: req.params.id,
+      accountId: req.clientAccountId
+    });
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      redirectClientNotice(res, error.message);
+      return;
+    }
+    throw error;
+  }
 
   const result = await scheduler.processPost(req.params.id, { force: true });
   if (result.ok) { redirectClientNotice(res, 'Posted. Check the status below to confirm.'); return; }
@@ -299,24 +313,27 @@ router.post('/client/autoposter/posts/:id/prepare', requireClientSession, asyncR
 }));
 
 router.post('/client/autoposter/posts/:id/pending', requireClientSession, asyncRoute(async (req, res) => {
-  const post = await storage.getPost(req.clientUserId, req.params.id, req.clientAccountId);
-  if (!post) { redirectClientNotice(res, 'Post not found.'); return; }
-  await storage.updatePost(req.clientUserId, req.params.id, {
-    status: post.scheduledAt ? 'scheduled' : 'pending',
-    postedAt: null,
-    readyAt: null,
-    errorMessage: null,
-    lastResult: null,
-    claimAttempts: 0,
-    lockedAt: null,
-    lockedBy: null
-  }, req.clientAccountId);
-  redirectClientNotice(res, 'Ready to retry.');
+  try {
+    await applicationService.retryPost(clientApplicationContext(req), {
+      postId: req.params.id,
+      accountId: req.clientAccountId
+    });
+    redirectClientNotice(res, 'Ready to retry.');
+  } catch (error) {
+    if (error instanceof applicationService.AutoPosterApplicationError) {
+      redirectClientNotice(res, error.message);
+      return;
+    }
+    throw error;
+  }
 }));
 
 router.post('/client/autoposter/posts/:id/delete', requireClientSession, asyncRoute(async (req, res) => {
-  const deleted = await storage.deletePost(req.clientUserId, req.params.id, req.clientAccountId);
-  redirectClientNotice(res, deleted ? 'Deleted.' : 'Post not found.');
+  const result = await applicationService.deletePost(clientApplicationContext(req), {
+    postId: req.params.id,
+    accountId: req.clientAccountId
+  });
+  redirectClientNotice(res, result.deleted ? 'Deleted.' : 'Post not found.');
 }));
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -353,14 +370,6 @@ function parseCookies(header) {
       cookies[decodeURIComponent(part.slice(0, separator))] = decodeURIComponent(part.slice(separator + 1));
       return cookies;
     }, {});
-}
-
-function isPublicHttpsUrl(value) {
-  try {
-    return new URL(value).protocol === 'https:';
-  } catch (error) {
-    return false;
-  }
 }
 
 function accountLabel(account) {
