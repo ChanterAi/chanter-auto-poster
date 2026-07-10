@@ -540,6 +540,9 @@
       .history-chevron { width: 8px; height: 8px; border-right: 1px solid var(--text3); border-bottom: 1px solid var(--text3); transform: rotate(45deg); transition: transform .18s; }
       .history-panel[open] .history-chevron { transform: rotate(225deg); }
       .history-list { padding: 0 22px 22px; display: grid; gap: 11px; }
+      .creative-engine-panel { margin-top: 24px; }
+      .creative-engine-body { padding: 0 22px 22px; border-top: 1px solid var(--border); }
+      .creative-engine-body .prompt-evolver { margin: 22px 0 0; }
       .history-card {
         display: grid; grid-template-columns: 90px 1fr; gap: 14px; padding: 14px;
         border-radius: var(--r-sm); border: 1px solid var(--border); background: rgba(0,0,0,.18);
@@ -585,6 +588,7 @@
         .panel-head-rich { gap: 12px; }
         .form-grid { grid-template-columns: 1fr; }
         .form-grid .wide { grid-column: auto; }
+        .schedule-plan-inputs { grid-template-columns: 1fr; }
         .upload-actions { justify-content: stretch; }
         .btn-create { width: 100%; }
         .rebuild-form { align-items: stretch; flex-direction: column; }
@@ -597,6 +601,7 @@
         .history-panel > summary { padding: 17px; }
         .history-summary-meta .count { display: none; }
         .history-list { padding: 0 14px 14px; }
+        .creative-engine-body { padding: 0 14px 14px; }
       }
     </style>
   </head>
@@ -663,7 +668,7 @@
               <div class="pill pill-warn"><span class="dot"></span>Channel Required</div>
               <a class="btn btn-primary" href="/connect/tiktok">Connect Channel</a>
             <% } %>
-            <a class="btn btn-prompt-evolver" href="#prompt-evolver">Prompt Evolver</a>
+            <a class="btn btn-prompt-evolver" href="#creative-tools" data-creative-tools-link>Creative Tools</a>
             <a class="btn btn-dashboard" href="/private/autoposter/dashboard">Command Center</a>
             <% if (tiktokConfigured) { %>
               <a class="btn btn-ghost btn-disconnect" href="/disconnect/tiktok">Remove Channel</a>
@@ -746,21 +751,6 @@
         </div>
       <% } %>
 
-      <section id="prompt-evolver" aria-label="Prompt Evolver">
-        <div id="prompt-evolver-root"></div>
-        <noscript>
-          <div class="panel" style="margin-bottom:42px;">
-            <div class="panel-head panel-head-rich">
-              <div>
-                <span class="panel-kicker">Prompt Evolver</span>
-                <h2>Creative Engine</h2>
-                <p>Enable JavaScript to generate prompt variants.</p>
-              </div>
-            </div>
-          </div>
-        </noscript>
-      </section>
-
       <!-- ─── Dashboard Grid ─── -->
       <div class="dashboard-grid" aria-label="Poster controls">
         <section class="panel panel-upload">
@@ -777,7 +767,7 @@
               <label class="wide upload-zone">
                 <span class="field-heading">Photo or video</span>
                 <span class="field-note">Images or MP4, MOV, WebM video. You can add more than one.</span>
-                <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple data-media-upload />
+                <input type="file" name="images" accept="image/*,video/mp4,video/quicktime,video/webm,video/*" multiple data-media-upload data-reset-after-submit />
               </label>
               <% if (tiktokAccounts.length > 0) { %>
                 <div class="wide channel-picker" data-channel-picker>
@@ -821,11 +811,11 @@
                   <div class="schedule-plan-inputs">
                     <label>
                       Start date
-                      <input type="date" name="startDate" data-schedule-start-date />
+                      <input type="date" name="startDate" data-schedule-start-date data-reset-after-submit />
                     </label>
                     <label>
                       Start time
-                      <input type="time" name="startTime" data-schedule-start-time />
+                      <input type="time" name="startTime" data-schedule-start-time data-reset-after-submit />
                       <small>Your local time (<span data-schedule-tz>—</span>).</small>
                     </label>
                     <label>
@@ -871,16 +861,16 @@
                 <p class="auto-caption-status" data-auto-music-status aria-live="polite">
                   <%= autoMusicConfigured ? 'Turn on Auto Music, then choose a video.' : 'Auto Music isn\'t set up yet.' %>
                 </p>
-                <input type="hidden" name="autoMusicToken" value="" data-auto-music-token />
+                <input type="hidden" name="autoMusicToken" value="" data-auto-music-token data-reset-after-submit />
               </div>
               <label class="wide url-field">
                 Public Media URL
                 <span class="field-note">Optional — use if your file is already hosted online.</span>
-                <input type="url" name="publicMediaUrl" placeholder="https://example.com/media.jpg" data-public-media-url />
+                <input type="url" name="publicMediaUrl" placeholder="https://example.com/media.jpg" data-public-media-url data-reset-after-submit />
               </label>
               <label>
                 Caption
-                <textarea name="caption" placeholder="Write a caption…" data-caption-input></textarea>
+                <textarea name="caption" placeholder="Write a caption…" data-caption-input data-reset-after-submit></textarea>
               </label>
               <label>
                 Hashtags
@@ -1322,6 +1312,30 @@
         </div>
       </details>
       </div>
+
+      <details id="creative-tools" class="history-panel creative-engine-panel">
+        <summary>
+          <span class="history-title">
+            <span class="history-icon" aria-hidden="true"></span>
+            <span><small>Optional tool</small><strong>Creative Engine</strong></span>
+          </span>
+          <span class="history-summary-meta"><span class="count">Open when needed</span><span class="history-chevron" aria-hidden="true"></span></span>
+        </summary>
+        <div class="creative-engine-body">
+          <div id="prompt-evolver-root"></div>
+          <noscript>
+            <div class="panel" style="margin-top:22px;">
+              <div class="panel-head panel-head-rich">
+                <div>
+                  <span class="panel-kicker">Prompt Evolver</span>
+                  <h2>Creative Engine</h2>
+                  <p>Enable JavaScript to generate prompt variants.</p>
+                </div>
+              </div>
+            </div>
+          </noscript>
+        </div>
+      </details>
     </div>
 
     <script type="module" src="/autoposter-dashboard/assets/prompt-evolver-main.js"></script>
@@ -1674,7 +1688,7 @@
       });
 
       // Fast Schedule intake — submits the campaign over XHR so the page
-      // keeps every setting (channels, start time, offset, hashtags) while
+      // keeps reusable settings (channels, offset, hashtags) while
       // showing real upload progress and an inline result instead of a full
       // page reload. Registered after the validation/auto-caption submit
       // listener above, so analysis still runs first; when that listener
@@ -1689,8 +1703,7 @@
         const status = form.querySelector('[data-submit-status]');
         const submitButton = form.querySelector('[type="submit"]');
         const mediaInput = form.querySelector('[data-media-upload]');
-        const captionInput = form.querySelector('[data-caption-input]');
-        const musicTokenInput = form.querySelector('[data-auto-music-token]');
+        const resetAfterSubmit = Array.from(form.querySelectorAll('[data-reset-after-submit]'));
         if (!feedback || !progress || !progressFill || !status || !submitButton || !mediaInput) return;
         const submitLabel = submitButton.textContent;
         let submitting = false;
@@ -1710,18 +1723,17 @@
           submitButton.textContent = submitLabel;
         };
         const resetPerPostFields = () => {
-          // Media, caption, and the prepared-music token belong to the post
-          // that was just scheduled. Channels, start time, offset, hashtags,
-          // and the Auto toggles stay put for the next post. The dispatched
-          // events let the existing validation/preflight/plan listeners
-          // recompute from the cleared fields.
-          mediaInput.value = '';
-          if (musicTokenInput) musicTokenInput.value = '';
-          if (captionInput) {
-            captionInput.value = '';
-            captionInput.dispatchEvent(new Event('input', { bubbles: true }));
-          }
-          mediaInput.dispatchEvent(new Event('change', { bubbles: true }));
+          // Clear only state owned by the post that was just scheduled.
+          // Channel selection, offset, hashtags, and optional Auto toggles
+          // are reusable session defaults and intentionally remain selected.
+          // Exact media references, caption, and start time can never flow
+          // into the next post without a fresh user choice.
+          resetAfterSubmit.forEach((field) => {
+            field.value = '';
+            field.dispatchEvent(new Event(field === mediaInput ? 'change' : 'input', { bubbles: true }));
+          });
+          setProgress(0);
+          mediaInput.focus({ preventScroll: true });
         };
 
         form.addEventListener('submit', (event) => {
@@ -1750,7 +1762,7 @@
             let payload = null;
             try { payload = JSON.parse(xhr.responseText); } catch (parseError) { payload = null; }
             if (payload && payload.ok) {
-              setFeedback('success', payload.notice || 'Campaign scheduled.', false);
+              setFeedback('success', `${payload.notice || 'Campaign scheduled.'} Ready for the next video.`, false);
               resetPerPostFields();
               document.dispatchEvent(new CustomEvent('chanter:queue-refresh'));
               return;
@@ -1766,10 +1778,12 @@
               return;
             }
             setFeedback('error', 'The campaign could not be confirmed. Check the Release Queue below before retrying.', false);
+            document.dispatchEvent(new CustomEvent('chanter:queue-refresh'));
           });
           xhr.addEventListener('error', () => {
             finishSubmit();
-            setFeedback('error', 'Connection problem — nothing was scheduled. Your entries are unchanged.', false);
+            setFeedback('error', 'Connection interrupted — the scheduling result is unknown. Check the Release Queue before retrying; your entries are unchanged.', false);
+            document.dispatchEvent(new CustomEvent('chanter:queue-refresh'));
           });
           xhr.send(new FormData(form));
         });
@@ -2059,9 +2073,14 @@
           });
         };
 
-        const loadQueueView = async (url) => {
+        let queueRequestVersion = 0;
+        const loadQueueView = async (url, { navigateOnFailure = true } = {}) => {
+          const requestVersion = ++queueRequestVersion;
           const currentRegion = document.querySelector('[data-queue-view-region]');
-          if (!currentRegion) { window.location.href = url; return; }
+          if (!currentRegion) {
+            if (navigateOnFailure) window.location.href = url;
+            return;
+          }
           currentRegion.setAttribute('aria-busy', 'true');
           try {
             const response = await fetch(url, { headers: { Accept: 'text/html' } });
@@ -2069,13 +2088,18 @@
             const html = await response.text();
             const nextRegion = new DOMParser().parseFromString(html, 'text/html').querySelector('[data-queue-view-region]');
             if (!nextRegion) throw new Error('Release Queue region missing from response');
-            currentRegion.replaceWith(nextRegion);
+            if (requestVersion !== queueRequestVersion) return;
+            const liveRegion = document.querySelector('[data-queue-view-region]');
+            if (!liveRegion) throw new Error('Release Queue region missing from current page');
+            liveRegion.replaceWith(nextRegion);
             bindToggleLinks(nextRegion);
             hydrateQueueRegion(nextRegion);
           } catch (error) {
-            window.location.href = url;
+            if (requestVersion === queueRequestVersion && navigateOnFailure) window.location.href = url;
           } finally {
-            if (currentRegion.isConnected) currentRegion.removeAttribute('aria-busy');
+            if (requestVersion === queueRequestVersion) {
+              document.querySelector('[data-queue-view-region]')?.removeAttribute('aria-busy');
+            }
           }
         };
 
@@ -2090,9 +2114,18 @@
         // campaign is created, reusing the same fetch-and-swap path as the
         // view toggle so new jobs appear without a page reload.
         document.addEventListener('chanter:queue-refresh', () => {
-          loadQueueView(window.location.href);
+          loadQueueView(window.location.href, { navigateOnFailure: false });
         });
       })();
+
+      // Creative tools stay collapsed and outside the posting flow until the
+      // operator explicitly opens them from the secondary topbar action.
+      document.querySelectorAll('[data-creative-tools-link]').forEach((link) => {
+        link.addEventListener('click', () => {
+          const panel = document.getElementById('creative-tools');
+          if (panel) panel.open = true;
+        });
+      });
     </script>
   </body>
 </html>

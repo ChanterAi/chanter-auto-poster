@@ -14,6 +14,7 @@ process.env.ENABLE_INSTAGRAM = 'false';
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 const express = require('express');
 
 const storage = require('../src/storage');
@@ -344,6 +345,9 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   assert.match(inlinePayload.notice, /Created 1 post/);
   assert.match(inlinePayload.notice, /1 scheduled/);
   assert.doesNotMatch(JSON.stringify(inlinePayload), /secret-token|secret-refresh|access_token/);
+  const callsAfterPostA = addUploadedPostsCalls.length;
+  const explicitSchedulesAfterPostA = applyExplicitScheduleCalls.length;
+  const automaticSchedulesAfterPostA = autoScheduleCalls.length;
 
   // Preflight failures also answer inline — form state survives client-side.
   const inlineBlockedBody = new FormData();
@@ -358,10 +362,70 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   const inlineBlockedPayload = await inlineBlockedResponse.json();
   assert.equal(inlineBlockedPayload.ok, false);
   assert.match(inlineBlockedPayload.notice, /reconnected/);
+  assert.equal(addUploadedPostsCalls.length, callsAfterPostA, 'a rejected retry creates no duplicate job');
+
+  // The same retained admin/account session can immediately schedule post B.
+  // Only B's media/caption reach storage; A's exact URL/time are not reused.
+  const inlineNextBody = new FormData();
+  inlineNextBody.append('publicMediaUrl', 'https://cdn.example.com/post-b.jpg');
+  inlineNextBody.append('caption', 'Post B');
+  inlineNextBody.append('targetChannels', 'chanter-open-id');
+  inlineNextBody.append('timezoneOffsetMinutes', '0');
+  const inlineNextResponse = await fetch(`${baseUrl}/upload`, {
+    method: 'POST', redirect: 'manual',
+    headers: { Cookie: adminCookie, Accept: 'application/json' },
+    body: inlineNextBody
+  });
+  assert.equal(inlineNextResponse.status, 200);
+  assert.equal((await inlineNextResponse.json()).ok, true);
+  assert.equal(addUploadedPostsCalls.length, callsAfterPostA + 1);
+  const postBCall = addUploadedPostsCalls.at(-1);
+  assert.equal(postBCall.defaults.publicMediaUrl, 'https://cdn.example.com/post-b.jpg');
+  assert.equal(postBCall.defaults.caption, 'Post B');
+  assert.deepEqual(postBCall.defaults.accounts.map((item) => item.accountId), ['chanter-open-id']);
+  assert.equal(applyExplicitScheduleCalls.length, explicitSchedulesAfterPostA, 'post B did not reuse post A\'s explicit start time');
+  assert.equal(autoScheduleCalls.length, automaticSchedulesAfterPostA + 1);
+  assert.equal(autoScheduleCalls.at(-1).accountId, 'chanter-open-id', 'post B used the retained channel context');
 
   // The intake page ships the inline feedback surface the XHR path drives.
   const intakeHtml = await (await fetch(`${baseUrl}/private/autoposter`, { headers: { Cookie: adminCookie } })).text();
   assert.match(intakeHtml, /data-submit-feedback/);
   assert.match(intakeHtml, /data-upload-progress-fill/);
   assert.match(intakeHtml, /chanter:queue-refresh/);
+  for (const [, inlineScript] of intakeHtml.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) {
+    if (inlineScript.trim()) new vm.Script(inlineScript, { filename: 'rendered-index-inline.js' });
+  }
+
+  const formStart = intakeHtml.indexOf('<form class="upload-form"');
+  const formEnd = intakeHtml.indexOf('</form>', formStart);
+  assert.ok(formStart >= 0 && formEnd > formStart, 'upload form renders');
+  const uploadFormHtml = intakeHtml.slice(formStart, formEnd);
+  const fieldTag = (name) => {
+    const match = uploadFormHtml.match(new RegExp(`<(?:input|textarea)\\b[^>]*\\bname="${name}"[^>]*>`, 'i'));
+    assert.ok(match, `${name} field renders`);
+    return match[0];
+  };
+
+  for (const name of ['images', 'publicMediaUrl', 'caption', 'startDate', 'startTime', 'autoMusicToken']) {
+    assert.match(fieldTag(name), /data-reset-after-submit/, `${name} is cleared after confirmed success`);
+  }
+  for (const name of ['targetChannels', 'offsetMinutes', 'hashtags', 'autoCaption', 'autoMusic']) {
+    assert.doesNotMatch(fieldTag(name), /data-reset-after-submit/, `${name} remains a reusable session default`);
+  }
+
+  assert.match(intakeHtml, /if \(submitting\) return;/, 'rapid duplicate submits are blocked while one request is active');
+  assert.match(intakeHtml, /scheduling result is unknown\. Check the Release Queue before retrying/, 'transport failures do not claim a false negative');
+  assert.doesNotMatch(intakeHtml, /nothing was scheduled/, 'ambiguous transport failures cannot invite a blind duplicate retry');
+  assert.match(intakeHtml, /could not be confirmed[\s\S]{0,180}chanter:queue-refresh/, 'unknown responses trigger a safe queue check before retry');
+  assert.match(intakeHtml, /loadQueueView\(window\.location\.href, \{ navigateOnFailure: false \}\)/, 'background queue refresh cannot force a page reload');
+  assert.match(intakeHtml, /requestVersion !== queueRequestVersion/, 'only the newest overlapping queue refresh can replace the live queue');
+  assert.match(intakeHtml, /Ready for the next video\./);
+  assert.match(intakeHtml, /\.schedule-plan-inputs \{ grid-template-columns: 1fr; \}/, 'exact scheduling fields stack on narrow screens');
+
+  const creativeDetails = intakeHtml.match(/<details id="creative-tools"[^>]*>/);
+  assert.ok(creativeDetails, 'Creative Engine renders as a secondary disclosure');
+  assert.doesNotMatch(creativeDetails[0], /\sopen(?:\s|=|>)/, 'Creative Engine is closed by default');
+  assert.ok(intakeHtml.indexOf('id="creative-tools"') > intakeHtml.indexOf('data-queue-view-region'), 'core scheduling and queue render before Creative Engine');
+  assert.equal((intakeHtml.match(/id="prompt-evolver-root"/g) || []).length, 1, 'Creative Engine functionality remains mounted once');
+  assert.match(intakeHtml, /href="#creative-tools" data-creative-tools-link/);
 });
