@@ -233,6 +233,110 @@ test('the Command Center UI renders provider truth and the provider filter', () 
   assert.match(dashboardSource, /isUploadedPrivate/);
 });
 
+// ── Real-shape attribution + aggregate status truth ────────────────────────
+// The exact field shape of a live private YouTube upload (provider,
+// connectedAccountId, accountId, a legacy tiktokOpenId alias carried over
+// from the shared account-selection code path, and a campaignId), using
+// fictional identifiers so no real production channel/video id is
+// persisted in the repo.
+
+const realShapeAccounts = [
+  {
+    id: 'UC-real-shape', accountId: 'UC-real-shape', provider: 'youtube', platform: 'youtube',
+    connectedAccountId: 'youtube:UC-real-shape', providerAccountId: 'UC-real-shape',
+    username: 'chanterCy', displayName: 'chanterCy', connected: true, publishingReady: true
+  }
+];
+
+const realShapeYouTubeJob = {
+  id: 'real-shape-yt-job',
+  userId: 'owner',
+  provider: 'youtube',
+  platform: 'youtube',
+  accountId: 'UC-real-shape',
+  connectedAccountId: 'youtube:UC-real-shape',
+  // Real documents carry this legacy alias alongside the canonical fields;
+  // resolution must not require it, only tolerate it.
+  tiktokOpenId: 'UC-real-shape',
+  username: 'chanterCy',
+  campaignId: 'real-shape-campaign-1',
+  status: 'posted',
+  providerStatus: 'uploaded_private',
+  providerMetadata: { youtube: { title: 'Integration test', description: '', privacyStatus: 'private', notifySubscribers: false } },
+  publishId: 'real-shape-video-id'
+};
+
+test('an attributable YouTube release resolves to its real connected channel, never Legacy/Unassigned', async () => {
+  const { assignDashboardJobs, UNASSIGNED_ACCOUNT_ID } = await accountingPromise;
+  const [job] = assignDashboardJobs([realShapeYouTubeJob], realShapeAccounts);
+
+  assert.equal(job.accountId, 'UC-real-shape');
+  assert.notEqual(job.accountId, UNASSIGNED_ACCOUNT_ID);
+  assert.equal(job.accountAssignment, 'deterministic');
+});
+
+test('a genuinely unattributable YouTube record still falls back to Legacy/Unassigned', async () => {
+  const { assignDashboardJobs, UNASSIGNED_ACCOUNT_ID } = await accountingPromise;
+  // No accountId, connectedAccountId, tiktokOpenId, or username reference at
+  // all — the one thing that makes a record truly unattributable — even
+  // though a real connected YouTube channel exists in the account list.
+  const orphanJob = { id: 'orphan-yt-job', provider: 'youtube', status: 'posted', providerStatus: 'uploaded_private' };
+  const [job] = assignDashboardJobs([orphanJob], realShapeAccounts);
+
+  assert.equal(job.accountId, UNASSIGNED_ACCOUNT_ID);
+  assert.equal(job.accountAssignment, 'unassigned');
+});
+
+test('Campaign Overview labels a private YouTube upload as uploaded_private, never posted/Published, inside a mixed campaign', async () => {
+  const { summarizeDashboardCampaigns } = await accountingPromise;
+  const tiktokJob = {
+    id: 'tt-in-mixed-campaign', provider: 'tiktok', platform: 'tiktok',
+    campaignId: 'real-shape-campaign-1', status: 'posted'
+  };
+  const campaigns = summarizeDashboardCampaigns([tiktokJob, realShapeYouTubeJob]);
+
+  assert.equal(campaigns.length, 1);
+  const [campaign] = campaigns;
+  assert.equal(campaign.jobCount, 2);
+  // The YouTube upload must land under its own bucket, not inflate 'posted'.
+  assert.deepEqual(campaign.statusCounts, { posted: 1, uploaded_private: 1 });
+  assert.equal(campaign.hasFailures, false);
+  assert.equal(campaign.hasRetryRequired, false);
+});
+
+test('TikTok-only campaigns keep their existing posted/Published aggregation unchanged', async () => {
+  const { summarizeDashboardCampaigns } = await accountingPromise;
+  const campaigns = summarizeDashboardCampaigns([
+    { id: 'tt-1', provider: 'tiktok', campaignId: 'tiktok-only-campaign', status: 'posted' },
+    { id: 'tt-2', provider: 'tiktok', campaignId: 'tiktok-only-campaign', status: 'posted' }
+  ]);
+
+  assert.deepEqual(campaigns, [{
+    campaignId: 'tiktok-only-campaign',
+    jobCount: 2,
+    statusCounts: { posted: 2 },
+    hasFailures: false,
+    hasRetryRequired: false
+  }]);
+});
+
+test('the dashboard computes top-level counts and status filters from displayStatus, not raw status', () => {
+  const dashboardSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'pages', 'AutoPosterDashboard.jsx'),
+    'utf8'
+  );
+  // The private-upload outcome is a real, always-visible aggregate bucket —
+  // not a special case bolted onto one card.
+  assert.match(dashboardSource, /STATUS_FILTERS = \[.*'uploaded_private'.*\]/);
+  assert.match(dashboardSource, /uploaded_private: 'Uploaded Private'/);
+  assert.match(dashboardSource, /displayStatus/);
+  assert.match(dashboardSource, /result\[job\.displayStatus\]/);
+  assert.match(dashboardSource, /statusFilter === 'all' \|\| job\.displayStatus === statusFilter/);
+  // The metric-grid no longer hardcodes a second, driftable copy of the
+  // status list.
+  assert.doesNotMatch(dashboardSource, /\['all', 'scheduled', 'processing', 'posted', 'failed'\]/);
+});
+
 test('no credential material ever reaches the dashboard payload', async () => {
   const data = await fetchDashboardData();
   const serialized = JSON.stringify(data);

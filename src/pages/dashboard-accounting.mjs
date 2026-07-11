@@ -170,7 +170,12 @@ export function summarizeDashboardCampaigns(jobs) {
       hasFailures: false,
       hasRetryRequired: false
     };
-    const status = text(job?.campaignJobStatus || job?.status).toLowerCase() || 'unknown';
+    // A private YouTube upload must never roll up into the campaign's
+    // public 'Published' bucket — check that truth before the usual
+    // campaignJobStatus/status fallback.
+    const status = isUploadedPrivate(job)
+      ? 'uploaded_private'
+      : (text(job?.campaignJobStatus || job?.status).toLowerCase() || 'unknown');
     campaign.jobCount += 1;
     campaign.statusCounts[status] = (campaign.statusCounts[status] || 0) + 1;
     if (status === 'failed') campaign.hasFailures = true;
@@ -202,9 +207,10 @@ const SUCCESS_STATUSES = new Set(['posted', 'published', 'completed', 'success']
 
 /**
  * True when a job's success state is a PRIVATE YouTube upload
- * (providerStatus 'uploaded_private'). These jobs keep the internal
- * 'posted' status — filters and counts are unchanged — but must be labeled
- * 'Uploaded Private', never the public-sounding 'Published'.
+ * (providerStatus 'uploaded_private'). The job keeps the internal 'posted'
+ * status (API contract untouched), but every aggregate/display surface
+ * (status chips, top-level counts, Campaign Overview) must treat this
+ * distinctly from the public-sounding 'Published' bucket.
  */
 export function isUploadedPrivate(job) {
   return providerOf(job) === 'youtube' && SUCCESS_STATUSES.has(text(job?.status).toLowerCase());

@@ -18,7 +18,7 @@ function providerDisplayName(provider) {
   return PROVIDER_LABELS[provider] || 'Channel';
 }
 
-const STATUS_FILTERS = ['all', 'scheduled', 'processing', 'posted', 'failed'];
+const STATUS_FILTERS = ['all', 'scheduled', 'processing', 'posted', 'uploaded_private', 'failed'];
 const STATUS_ALIASES = {
   queued: 'scheduled',
   publishing: 'processing',
@@ -41,6 +41,7 @@ const STATUS_LABELS = {
   posting: 'Publishing',
   ready: 'Needs Review',
   posted: 'Published',
+  uploaded_private: 'Uploaded Private',
   failed: 'Needs Review',
   cancelled: 'Cancelled',
   retry_required: 'Retry Required'
@@ -118,6 +119,13 @@ function normalizeJob(job) {
     lastResult?.error,
     lastResult?.message
   ));
+  const status = normalizeStatus(job.status, scheduledAt);
+  // A private YouTube upload keeps the internal 'posted' status (filters,
+  // API contract, and TikTok's own "Published" vocabulary are untouched),
+  // but every aggregate surface (status chips, top-level counts, Campaign
+  // Overview) must count and label it as a private upload, never as
+  // public "Published".
+  const displayStatus = isUploadedPrivate(job) ? 'uploaded_private' : status;
 
   return {
     ...job,
@@ -125,6 +133,7 @@ function normalizeJob(job) {
     provider: asText(firstValue(job.provider, job.platform)).toLowerCase() || 'tiktok',
     connectedAccountId: asText(job.connectedAccountId),
     providerStatus: asText(job.providerStatus).toLowerCase(),
+    displayStatus,
     title: asText(firstValue(
       job.title,
       job.postTitle,
@@ -140,7 +149,7 @@ function normalizeJob(job) {
     postedAt: firstValue(job.postedAt, job.publishedAt, job.completedAt),
     acceptedAt: firstValue(job.acceptedAt),
     lastAttemptAt: firstValue(lastResult?.completedAt),
-    status: normalizeStatus(job.status, scheduledAt),
+    status,
     campaignId: asText(firstValue(job.campaignId, job.campaign_id)),
     campaignJobStatus: asText(firstValue(job.campaignJobStatus, job.campaign_job_status)).toLowerCase(),
     errorEvidence,
@@ -314,9 +323,6 @@ function CopyEvidenceButton({ payload }) {
 }
 
 function JobCard({ job, account }) {
-  // A YouTube success is a PRIVATE upload — label it truthfully, never as
-  // the public-sounding "Published".
-  const uploadedPrivate = isUploadedPrivate(job);
   // Campaign evidence payload — operational fields only, never tokens or auth data.
   const evidencePayload = {
     jobId: job.id,
@@ -355,8 +361,8 @@ function JobCard({ job, account }) {
             <h2>{job.title}</h2>
           </div>
           <div className="status-badges">
-            <span className={`status-badge status-${job.status}`}>
-              {uploadedPrivate ? 'Uploaded Private' : statusDisplay(job.status)}
+            <span className={`status-badge status-${job.displayStatus}`}>
+              {statusDisplay(job.displayStatus)}
             </span>
             {job.campaignJobStatus === 'retry_required' && (
               <span className="status-badge status-retry_required">Retry Required</span>
@@ -497,11 +503,11 @@ export default function AutoPosterDashboard() {
   ));
 
   const visibleJobs = accountScopedJobs.filter((job) => (
-    statusFilter === 'all' || job.status === statusFilter
+    statusFilter === 'all' || job.displayStatus === statusFilter
   ));
 
   const counts = accountScopedJobs.reduce((result, job) => {
-    result[job.status] = (result[job.status] || 0) + 1;
+    result[job.displayStatus] = (result[job.displayStatus] || 0) + 1;
     return result;
   }, { all: accountScopedJobs.length });
 
@@ -559,7 +565,7 @@ export default function AutoPosterDashboard() {
 
       {!loading && !error && (
         <section className="metric-grid" aria-label="Campaign state overview">
-          {['all', 'scheduled', 'processing', 'posted', 'failed'].map((status) => (
+          {STATUS_FILTERS.map((status) => (
             <button
               type="button"
               className={statusFilter === status ? 'metric-card active' : 'metric-card'}

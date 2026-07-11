@@ -384,6 +384,7 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
 .status-scheduled { border-color: rgba(184, 160, 119, 0.26); background: var(--warn-bg); color: var(--warn); }
 .status-processing { border-color: rgba(212, 212, 216, 0.24); background: var(--neutral-badge); color: #d4d4d8; }
 .status-posted { border-color: rgba(134, 176, 146, 0.26); background: var(--ok-bg); color: var(--ok); }
+.status-uploaded_private { border-color: rgba(134, 176, 146, 0.26); background: var(--ok-bg); color: var(--ok); }
 .status-failed { border-color: rgba(192, 133, 133, 0.24); background: var(--danger-bg); color: var(--danger); }
 .status-cancelled { border-color: var(--border); background: var(--surface2); color: var(--text3); }
 .status-queued { border-color: rgba(184, 160, 119, 0.26); background: var(--warn-bg); color: var(--warn); }
