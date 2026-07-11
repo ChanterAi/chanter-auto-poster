@@ -657,7 +657,7 @@ function boundedProviderMetadata(providerId, raw) {
   };
 }
 
-function normalizeTargetAccounts(defaults) {
+function normalizeTargetAccounts(defaults, providerId = 'tiktok') {
   // Multi-channel campaigns pass defaults.accounts (one entry per target
   // Publishing Channel). The legacy single-account fields remain the
   // fallback so every existing call site keeps working unchanged.
@@ -672,12 +672,17 @@ function normalizeTargetAccounts(defaults) {
   const seen = new Set();
   const targets = [];
   for (const raw of rawAccounts) {
-    const accountId = String((raw && (raw.accountId || raw.tiktokOpenId || raw.open_id)) || '').trim();
+    const accountId = String((raw && (
+      raw.accountId
+      || (providerId === 'tiktok' ? (raw.tiktokOpenId || raw.open_id) : '')
+    )) || '').trim();
     if (!accountId || accountId === 'legacy' || seen.has(accountId)) continue;
     seen.add(accountId);
     targets.push({
       accountId,
-      tiktokOpenId: String((raw && (raw.tiktokOpenId || raw.open_id)) || accountId).trim(),
+      tiktokOpenId: providerId === 'tiktok'
+        ? String((raw && (raw.tiktokOpenId || raw.open_id)) || accountId).trim()
+        : '',
       username: String((raw && (raw.username || raw.displayName)) || accountId).trim()
     });
   }
@@ -697,9 +702,9 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     throw error;
   }
   const providerId = providerResolution.providerId;
-  const targetAccounts = normalizeTargetAccounts(defaults);
+  const targetAccounts = normalizeTargetAccounts(defaults, providerId);
   if (targetAccounts.length === 0) {
-    const error = new Error('Select a connected TikTok account before creating scheduled posts');
+    const error = new Error('Select a connected publishing account before creating scheduled posts');
     error.status = 400;
     throw error;
   }
@@ -895,7 +900,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         runtimeIdempotencyKey: String(defaults.runtimeIdempotencyKey || '').trim(),
         runtimeScheduledBy: String(defaults.runtimeScheduledBy || '').trim(),
         accountId: target.accountId,
-        tiktokOpenId: target.tiktokOpenId,
+        tiktokOpenId: providerId === 'tiktok' ? target.tiktokOpenId : '',
         username: target.username,
         campaignId,
         originalName: file ? file.originalname : fileName,

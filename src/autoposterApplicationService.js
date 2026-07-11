@@ -183,7 +183,27 @@ function createAutoPosterApplicationService(dependencies = {}) {
           code: 'not_found'
         });
       }
-      if (requireConnected && !account.connected) {
+      const view = toConnectedAccountView(account);
+      if (view.ownerUserId !== context.userId || view.accountId !== accountId) {
+        throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
+          status: 404,
+          code: 'not_found'
+        });
+      }
+      if (
+        view.provider !== provider
+        || view.connectionId !== connectedAccounts.connectionId(provider, accountId)
+      ) {
+        throw new AutoPosterApplicationError(
+          'Selected publishing channel does not match the requested provider.',
+          {
+            status: 409,
+            code: 'provider_account_mismatch',
+            details: { accountId, requestedProvider: provider, accountProvider: view.provider }
+          }
+        );
+      }
+      if (requireConnected && view.connectionStatus === connectedAccounts.CONNECTION_STATUS.DISCONNECTED) {
         throw new AutoPosterApplicationError('Publishing channel needs to be reconnected before it can be scheduled.', {
           status: 409
         });
@@ -192,7 +212,6 @@ function createAutoPosterApplicationService(dependencies = {}) {
         // Connection existence and publishing readiness are different: a
         // connected channel may still be blocked (token expired without a
         // refresh token, or a recorded scope that excludes video.publish).
-        const view = toConnectedAccountView(account);
         if (!view.publishingReady) {
           const blocker = view.readinessBlockers[0];
           throw new AutoPosterApplicationError(
@@ -516,12 +535,12 @@ function createAutoPosterApplicationService(dependencies = {}) {
       publicMediaUrl: String(input.mediaUrl || input.publicMediaUrl || '').trim(),
       accounts: accounts.map((account) => ({
         accountId: account.accountId,
-        tiktokOpenId: account.open_id,
+        tiktokOpenId: provider === PROVIDER_TIKTOK ? account.open_id : '',
         username: account.username
       })),
       // Preserve the legacy single-account constructor contract.
       accountId: firstAccount.accountId,
-      tiktokOpenId: firstAccount.open_id,
+      tiktokOpenId: provider === PROVIDER_TIKTOK ? firstAccount.open_id : '',
       username: firstAccount.username,
       preparedMedia: input.preparedMedia,
       selfApprove,

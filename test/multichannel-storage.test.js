@@ -172,6 +172,42 @@ test('single-channel campaign keeps the legacy defaults contract and gains a cam
   assert.ok(created[0].campaignId, 'single-channel jobs also carry a campaignId');
 });
 
+test('YouTube jobs keep provider-native identity and never populate the TikTok alias', async (t) => {
+  const { storage, committed, cleanup } = installMocks();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-youtube-account-'));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    cleanup();
+  });
+
+  const created = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'youtube.mp4')], {
+    provider: 'youtube',
+    accounts: [{ accountId: 'UC-chanter', tiktokOpenId: 'must-not-survive', username: 'chanterCy' }],
+    accountId: 'UC-chanter',
+    tiktokOpenId: 'must-not-survive',
+    username: 'chanterCy',
+    providerMetadata: { youtube: { title: 'Private proof', description: '' } }
+  });
+
+  assert.equal(created.length, 1);
+  assert.equal(committed.length, 1);
+  assert.equal(created[0].provider, 'youtube');
+  assert.equal(created[0].accountId, 'UC-chanter');
+  assert.equal(created[0].connectedAccountId, 'youtube:UC-chanter');
+  assert.equal(created[0].tiktokOpenId, '');
+
+  await assert.rejects(
+    () => storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'youtube-alias-only.mp4')], {
+      provider: 'youtube',
+      accounts: [{ tiktokOpenId: 'tt-placeholder', username: 'wrong-provider' }],
+      tiktokOpenId: 'tt-placeholder',
+      providerMetadata: { youtube: { title: 'Must not be created', description: '' } }
+    }),
+    /Select a connected publishing account/
+  );
+  assert.equal(committed.length, 1, 'a TikTok-only alias cannot create a YouTube job');
+});
+
 test('duplicate and invalid channel entries are dropped; zero valid channels throws', async (t) => {
   const { storage, committed, cleanup } = installMocks();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-dedupe-'));
@@ -196,7 +232,7 @@ test('duplicate and invalid channel entries are dropped; zero valid channels thr
       accounts: [{ accountId: 'legacy' }],
       publicMediaUrl: 'https://cdn.example.com/asset.jpg'
     }),
-    /Select a connected TikTok account/
+    /Select a connected publishing account/
   );
 });
 

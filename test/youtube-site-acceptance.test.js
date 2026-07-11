@@ -28,20 +28,35 @@ const config = require('../src/config');
 
 const CANARY_ENVELOPE_CT = 'CANARY-ENVELOPE-CIPHERTEXT';
 const OWNER = config.defaultUserId;
+const TIKTOK_ACCOUNT_ID = 'tt-site-account';
 
 const youtubeAccounts = [];
+const tiktokAccounts = [{
+  accountId: TIKTOK_ACCOUNT_ID,
+  open_id: TIKTOK_ACCOUNT_ID,
+  userId: OWNER,
+  provider: 'tiktok',
+  platform: 'tiktok',
+  username: 'tiktok_only_target',
+  displayName: 'TikTok only target',
+  connected: true,
+  access_token: 'CANARY-TIKTOK-ACCESS',
+  refresh_token: 'CANARY-TIKTOK-REFRESH',
+  scope: 'user.info.basic,video.publish'
+}];
 const posts = [];
 
-storage.getTikTokAccounts = async () => [];
-storage.getTikTokAccount = async () => null;
-storage.getTikTokAuth = async () => ({ connected: false, access_token: '', open_id: '' });
+storage.getTikTokAccounts = async () => tiktokAccounts;
+storage.getTikTokAccount = async (userId, accountId) =>
+  tiktokAccounts.find((account) => account.accountId === accountId && account.userId === userId) || null;
+storage.getTikTokAuth = async () => ({ connected: true, access_token: 'CANARY-TIKTOK-ACCESS', open_id: TIKTOK_ACCOUNT_ID });
 storage.getYouTubeAccounts = async () => youtubeAccounts;
 storage.getYouTubeAccount = async (userId, accountId) =>
   youtubeAccounts.find((account) => account.accountId === accountId && account.userId === userId) || null;
 storage.getPosts = async () => posts;
 storage.getSettings = async () => ({ dailyPostTime: '09:00' });
 storage.getDashboardJobs = async () => posts;
-tiktok.getTikTokAuthStatus = async () => ({ connected: false });
+tiktok.getTikTokAuthStatus = async () => ({ connected: true, accountId: TIKTOK_ACCOUNT_ID });
 tiktok.queryCreatorInfo = async () => ({ privacy_level_options: [] });
 instagram.getInstagramAuthStatus = async () => ({ connected: false, state: 'disconnected', label: 'Disconnected' });
 instagram.getInstagramHealth = async () => ({ configured: false, canPublish: false, missing: [] });
@@ -118,9 +133,52 @@ test('connected: safe channel identity, readiness, reauthorization state, and di
   assert.match(html, /name="youtubeTitle"/);
   assert.match(html, /Private \(locked\)/);
   assert.match(html, /name="youtubeChannelId"/);
+  const youtubeTargetInputs = html.match(/<input\s+type="radio"\s+name="youtubeChannelId"[\s\S]*?\/>/g) || [];
+  assert.equal(youtubeTargetInputs.length, 1, 'one ready YouTube target is rendered once');
+  assert.match(youtubeTargetInputs[0], /value="UC-chanter"/);
+  assert.match(youtubeTargetInputs[0], /data-channel-provider="youtube"/);
+  assert.match(youtubeTargetInputs[0], /checked/, 'the sole YouTube target is selected automatically');
+  assert.doesNotMatch(youtubeTargetInputs[0], new RegExp(TIKTOK_ACCOUNT_ID), 'YouTube targets never contain TikTok identities');
+  assert.match(html, /data-provider-targets="youtube" hidden/);
+  assert.match(html, /data-provider-targets="tiktok"/);
+  assert.match(html, new RegExp(`name="targetChannels"[\\s\\S]*?value="${TIKTOK_ACCOUNT_ID}"`));
+  assert.match(html, /\[data-provider-targets\]\[hidden\][^}]*display:\s*none\s*!important/);
   // Custody: the encrypted envelope never reaches the page.
   assert.doesNotMatch(html, new RegExp(CANARY_ENVELOPE_CT));
   assert.doesNotMatch(html, /CANARY-SITE-CLIENT-SECRET/);
+});
+
+test('multiple YouTube accounts require explicit selection and exclude non-ready channels', async () => {
+  youtubeAccounts.push(
+    {
+      ...youtubeAccounts[0],
+      accountId: 'UC-second',
+      id: 'UC-second',
+      channelId: 'UC-second',
+      username: 'secondChannel',
+      displayName: 'Second Channel'
+    },
+    {
+      ...youtubeAccounts[0],
+      accountId: 'UC-not-ready',
+      id: 'UC-not-ready',
+      channelId: 'UC-not-ready',
+      username: 'blockedChannel',
+      displayName: 'Blocked Channel',
+      grantedScopes: 'https://www.googleapis.com/auth/youtube.readonly',
+      scope: 'https://www.googleapis.com/auth/youtube.readonly'
+    }
+  );
+
+  const html = await renderPage();
+  const youtubeTargetInputs = html.match(/<input\s+type="radio"\s+name="youtubeChannelId"[\s\S]*?\/>/g) || [];
+  assert.equal(youtubeTargetInputs.length, 2, 'only publishing-ready YouTube accounts are targets');
+  youtubeTargetInputs.forEach((input) => assert.doesNotMatch(input, /checked/, 'multiple targets start unselected'));
+  assert.match(youtubeTargetInputs.map(String).join('\n'), /value="UC-chanter"/);
+  assert.match(youtubeTargetInputs.map(String).join('\n'), /value="UC-second"/);
+  assert.doesNotMatch(youtubeTargetInputs.map(String).join('\n'), /UC-not-ready/);
+
+  youtubeAccounts.splice(1);
 });
 
 test('reauthorization required is displayed truthfully with a real reauthorize control', async () => {

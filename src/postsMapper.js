@@ -59,14 +59,18 @@ function normalizeQueueStatus(value) {
 function postFromDoc(doc) {
   const data = doc.data() || {};
   const id = doc.id;
-  const accountId = data.accountId || data.tiktokAccountId || data.tiktokOpenId || data.open_id || '';
-  const tiktokOpenId = data.tiktokOpenId || data.open_id || (accountId !== 'legacy' ? accountId : '');
   // Provider compatibility rule: a MISSING legacy provider value normalizes
   // to TikTok; an EXPLICIT stored value is preserved as-is (even when
   // unknown) so consumers can reject it instead of silently treating it as
   // TikTok. providerSource records which case applied.
   const explicitProvider = String(data.provider || data.platform || '').trim().toLowerCase();
   const provider = explicitProvider || 'tiktok';
+  const accountId = data.accountId || (provider === 'tiktok'
+    ? (data.tiktokAccountId || data.tiktokOpenId || data.open_id || '')
+    : '');
+  const tiktokOpenId = provider === 'tiktok'
+    ? (data.tiktokOpenId || data.open_id || (accountId !== 'legacy' ? accountId : ''))
+    : '';
 
   return {
     id,

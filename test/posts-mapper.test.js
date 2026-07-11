@@ -38,6 +38,23 @@ test('preserves TikTok account ownership fields on jobs', () => {
   assert.equal(restored.accountAssignment, 'assigned');
 });
 
+test('explicit YouTube jobs never derive account identity from TikTok-only aliases', () => {
+  const restored = postFromDoc({
+    id: 'malformed-youtube-job',
+    data: () => ({
+      provider: 'youtube',
+      platform: 'youtube',
+      tiktokOpenId: 'tt-placeholder',
+      open_id: 'tt-placeholder'
+    })
+  });
+
+  assert.equal(restored.accountId, 'legacy');
+  assert.equal(restored.connectedAccountId, '');
+  assert.equal(restored.tiktokOpenId, '');
+  assert.equal(restored.accountAssignment, 'legacy');
+});
+
 test('legacy scheduledTimeUTC remains readable during queue migration', () => {
   const iso = '2026-06-20T09:15:00.000Z';
   const restored = postFromDoc({

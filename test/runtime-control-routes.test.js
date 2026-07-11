@@ -18,8 +18,8 @@ const storage = require('../src/storage');
 const TOKEN = 'test-runtime-token-1234567890';
 
 const accounts = [
-  { accountId: 'account-a', open_id: 'open-a', username: 'creator_a', connected: true },
-  { accountId: 'account-cold', open_id: 'open-cold', username: 'creator_cold', connected: false }
+  { accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok', username: 'creator_a', connected: true },
+  { accountId: 'account-cold', open_id: 'open-cold', userId: 'owner', platform: 'tiktok', username: 'creator_cold', connected: false }
 ];
 
 function makePost(overrides = {}) {

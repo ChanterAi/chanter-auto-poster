@@ -56,15 +56,20 @@ function tiktokAccount() {
   };
 }
 
-function buildService({ account = youtubeAccount(), existingPosts = [] } = {}) {
+function buildService({
+  account = youtubeAccount(),
+  tiktok = tiktokAccount(),
+  existingPosts = [],
+  trustLookupOwner = false
+} = {}) {
   const calls = { addUploadedPosts: [] };
   const storageFake = {
     getYouTubeAccount: async (userId, accountId) =>
-      (account && userId === account.userId && accountId === account.accountId ? account : null),
+      (account && (trustLookupOwner || userId === account.userId) && accountId === account.accountId ? account : null),
     getYouTubeAccounts: async () => (account ? [account] : []),
     getTikTokAccount: async (userId, accountId) =>
-      (accountId === 'tt-account' && userId === 'owner' ? tiktokAccount() : null),
-    getTikTokAccounts: async () => [tiktokAccount()],
+      (tiktok && (trustLookupOwner || userId === tiktok.userId) && accountId === tiktok.accountId ? tiktok : null),
+    getTikTokAccounts: async () => (tiktok ? [tiktok] : []),
     getPosts: async () => existingPosts,
     getPost: async () => null,
     addUploadedPosts: async (userId, files, defaults) => {
@@ -145,10 +150,59 @@ test('website and runtime create the same canonical YouTube queue shape', async 
   assert.equal(website.creationSource, 'website');
   assert.equal(runtime.creationSource, 'runtime');
   assert.equal(runtime.runtimeIdempotencyKey, 'mission-key-1');
+  assert.equal(website.tiktokOpenId, '', 'YouTube jobs never borrow the TikTok identity alias');
+  assert.equal(website.accounts[0].tiktokOpenId, '', 'YouTube targets stay provider-native');
   // Neither surface self-approves a YouTube draft here: publishing still
   // requires the human approval gate.
   assert.equal(website.selfApprove, null);
   assert.equal(runtime.selfApprove, null);
+});
+
+test('YouTube request with a TikTok connected account is rejected before queue creation', async () => {
+  const { service, calls } = buildService({ account: tiktokAccount() });
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput({ accountIds: ['tt-account'] })),
+    (error) => error.code === 'provider_account_mismatch'
+  );
+  assert.equal(calls.addUploadedPosts.length, 0);
+});
+
+test('TikTok request with a YouTube connected account is rejected before queue creation', async () => {
+  const { service, calls } = buildService({ tiktok: youtubeAccount() });
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, {
+      provider: 'tiktok',
+      accountIds: ['UC-chanter'],
+      mediaUrl: 'https://res.cloudinary.com/demo/video/upload/clip.mp4',
+      caption: 'A caption',
+      schedule: { mode: 'explicit', scheduledAt }
+    }),
+    (error) => error.code === 'provider_account_mismatch'
+  );
+  assert.equal(calls.addUploadedPosts.length, 0);
+});
+
+test('a storage lookup cannot return another owner account into queue creation', async () => {
+  const { service, calls } = buildService({
+    account: youtubeAccount({ userId: 'someone-else' }),
+    trustLookupOwner: true
+  });
+  await assert.rejects(
+    () => service.schedulePost(websiteContext, youtubeInput()),
+    (error) => error.status === 404 && error.code === 'not_found'
+  );
+  assert.equal(calls.addUploadedPosts.length, 0);
+});
+
+test('one valid YouTube account creates exactly one provider-native draft', async () => {
+  const { service, calls } = buildService();
+  const result = await service.schedulePost(websiteContext, youtubeInput());
+  assert.equal(calls.addUploadedPosts.length, 1);
+  assert.equal(result.posts.length, 1);
+  assert.equal(result.posts[0].provider, 'youtube');
+  assert.equal(result.posts[0].connectedAccountId, 'youtube:UC-chanter');
+  assert.equal(calls.addUploadedPosts[0].defaults.tiktokOpenId, '');
+  assert.equal(calls.addUploadedPosts[0].defaults.selfApprove, null, 'approval gate remains closed');
 });
 
 test('a disconnected channel cannot schedule', async () => {

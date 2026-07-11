@@ -25,15 +25,17 @@ const { attachUser } = require('../src/auth');
 const accounts = [
   {
     accountId: 'chanter-open-id', open_id: 'chanter-open-id', username: '__chanter',
-    displayName: 'CHANTER', connected: true, access_token: 'secret-token-chanter', refresh_token: 'secret-refresh-chanter'
+    userId: 'owner', platform: 'tiktok', displayName: 'CHANTER', connected: true,
+    access_token: 'secret-token-chanter', refresh_token: 'secret-refresh-chanter'
   },
   {
     accountId: 'cdwarrior-open-id', open_id: 'cdwarrior-open-id', username: '_cdwarrior',
-    displayName: 'CD Warrior', connected: true, access_token: 'secret-token-cdwarrior', refresh_token: 'secret-refresh-cdwarrior'
+    userId: 'owner', platform: 'tiktok', displayName: 'CD Warrior', connected: true,
+    access_token: 'secret-token-cdwarrior', refresh_token: 'secret-refresh-cdwarrior'
   },
   {
     accountId: 'retired-open-id', open_id: 'retired-open-id', username: 'retired_channel',
-    displayName: 'Retired', connected: false, access_token: '', refresh_token: ''
+    userId: 'owner', platform: 'tiktok', displayName: 'Retired', connected: false, access_token: '', refresh_token: ''
   }
 ];
 

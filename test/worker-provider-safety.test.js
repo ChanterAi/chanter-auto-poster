@@ -1,5 +1,7 @@
 'use strict';
 
+process.env.YOUTUBE_ENABLED = 'false';
+
 // Worker provider safety: the publish worker must keep processing legacy
 // and explicit TikTok jobs, must refuse a job whose EXPLICIT provider has
 // no publish handler (never falling through to the TikTok path), and must

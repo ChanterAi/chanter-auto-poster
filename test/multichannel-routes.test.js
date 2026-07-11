@@ -25,15 +25,17 @@ const { attachUser } = require('../src/auth');
 const accounts = [
   {
     accountId: 'chanter-open-id', open_id: 'chanter-open-id', username: '__chanter',
-    displayName: 'CHANTER', connected: true, access_token: 'secret-token-chanter', refresh_token: 'secret-refresh-chanter'
+    userId: 'owner', platform: 'tiktok', displayName: 'CHANTER', connected: true,
+    access_token: 'secret-token-chanter', refresh_token: 'secret-refresh-chanter'
   },
   {
     accountId: 'cdwarrior-open-id', open_id: 'cdwarrior-open-id', username: '_cdwarrior',
-    displayName: 'CD Warrior', connected: true, access_token: 'secret-token-cdwarrior', refresh_token: 'secret-refresh-cdwarrior'
+    userId: 'owner', platform: 'tiktok', displayName: 'CD Warrior', connected: true,
+    access_token: 'secret-token-cdwarrior', refresh_token: 'secret-refresh-cdwarrior'
   },
   {
     accountId: 'retired-open-id', open_id: 'retired-open-id', username: 'retired_channel',
-    displayName: 'Retired', connected: false, access_token: '', refresh_token: ''
+    userId: 'owner', platform: 'tiktok', displayName: 'Retired', connected: false, access_token: '', refresh_token: ''
   }
 ];
 
@@ -159,16 +161,22 @@ test('multi-channel scheduling end-to-end at the route layer', async (t) => {
   const pageHtml = await pageResponse.text();
   assert.equal(pageResponse.status, 200);
 
-  // Both connected channels are selectable targets; the disconnected one is not.
+  // Only connected TikTok channels are rendered as selectable targets.
   assert.match(pageHtml, /Target Publishing Channels/);
   assert.match(pageHtml, /name="targetChannels"[^>]*value="chanter-open-id"/);
   assert.match(pageHtml, /name="targetChannels"[^>]*value="cdwarrior-open-id"/);
   assert.match(pageHtml, /@__chanter/);
   assert.match(pageHtml, /@_cdwarrior/);
-  assert.match(pageHtml, /Reconnect Required/);
-  const disconnectedOption = pageHtml.match(/<input[^>]*value="retired-open-id"[^>]*\/>/);
-  assert.ok(disconnectedOption, 'disconnected channel renders as an option');
-  assert.match(disconnectedOption[0], /disabled/);
+  assert.doesNotMatch(
+    pageHtml,
+    /<input[^>]*name="targetChannels"[^>]*value="retired-open-id"[^>]*\/>/,
+    'disconnected channels are not target controls'
+  );
+  assert.match(
+    pageHtml,
+    /class="btn btn-primary btn-create"[^>]*data-provider-ready="true"/,
+    'TikTok-only pages preserve initial submit readiness without a provider switcher'
+  );
   // The active channel is pre-selected and marked.
   const activeOption = pageHtml.match(/<input[^>]*value="chanter-open-id"[^>]*\/>/);
   assert.ok(activeOption);

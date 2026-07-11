@@ -15,9 +15,9 @@ const {
 
 function makeHarness() {
   const accounts = [
-    { accountId: 'account-a', open_id: 'open-a', username: 'creator_a', connected: true },
-    { accountId: 'account-b', open_id: 'open-b', username: 'creator_b', connected: true },
-    { accountId: 'account-cold', open_id: 'open-cold', username: 'creator_cold', connected: false }
+    { accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok', username: 'creator_a', connected: true },
+    { accountId: 'account-b', open_id: 'open-b', userId: 'owner', platform: 'tiktok', username: 'creator_b', connected: true },
+    { accountId: 'account-cold', open_id: 'open-cold', userId: 'owner', platform: 'tiktok', username: 'creator_cold', connected: false }
   ];
   const posts = [];
   const calls = { add: [], update: [], auto: [], explicit: [], delete: [], approve: [], revoke: [] };
@@ -255,7 +255,10 @@ test('a concurrent Firestore create race returns the already-created scheduled i
   let addCalls = 0;
   const storage = {
     async getTikTokAccount() {
-      return { accountId: 'account-a', open_id: 'open-a', username: 'creator_a', connected: true };
+      return {
+        accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok',
+        username: 'creator_a', connected: true
+      };
     },
     async getPosts() { return []; },
     async getPost() { return existing; },

@@ -1,5 +1,7 @@
 'use strict';
 
+process.env.YOUTUBE_ENABLED = 'false';
+
 // Provider + connected-account foundation: website and Agent Runtime must
 // resolve the same connected account through the same application service,
 // unknown/disabled providers must fail closed identically on both paths,

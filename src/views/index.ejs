@@ -259,6 +259,7 @@
 
       /* ─── Target Publishing Channels ─── */
       .channel-picker { display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.02); padding: 16px; }
+      [data-provider-targets][hidden], [data-youtube-fields][hidden] { display: none !important; }
       .channel-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
       .channel-picker-head .field-heading { color: var(--text2); font-size: 11px; }
       .channel-select-all {
@@ -836,74 +837,102 @@
                 <span class="field-note">MP4, MOV, or WebM video. You can add more than one. Images can't be scheduled.</span>
                 <input type="file" name="images" accept="video/mp4,video/quicktime,video/webm" multiple data-media-upload data-reset-after-submit />
               </label>
-              <% const connectedYouTubeChannels = youtubeChannels.filter(function(channel) { return channel.connectionStatus === 'connected'; }); %>
-              <% if (connectedYouTubeChannels.length > 0) { %>
+              <%
+                const connectedTikTokAccounts = tiktokAccounts.filter(function(channel) { return channel.connected; });
+                const readyYouTubeChannels = youtubeChannels.filter(function(channel) {
+                  return channel.connectionStatus === 'connected' && channel.publishingReady;
+                });
+                const defaultTargetProvider = connectedTikTokAccounts.length > 0 ? 'tiktok' : 'youtube';
+                const defaultProviderReady = defaultTargetProvider === 'tiktok'
+                  ? connectedTikTokAccounts.length > 0
+                  : readyYouTubeChannels.length > 0;
+              %>
+              <% if (readyYouTubeChannels.length > 0) { %>
                 <div class="wide" data-provider-picker>
                   <span class="field-heading">Target Provider</span>
                   <span class="field-note">TikTok posts to the channels you check below. YouTube uploads privately to one selected channel.</span>
                   <div class="channel-options">
                     <label class="channel-option is-active-channel">
-                      <input type="radio" name="provider" value="tiktok" checked data-provider-option />
+                      <input type="radio" name="provider" value="tiktok" data-provider-option <%= defaultTargetProvider === 'tiktok' ? 'checked' : '' %> <%= connectedTikTokAccounts.length > 0 ? '' : 'disabled' %> />
                       <span class="channel-option-copy"><strong>TikTok</strong><small>Existing queue behavior</small></span>
                     </label>
                     <label class="channel-option">
-                      <input type="radio" name="provider" value="youtube" data-provider-option />
+                      <input type="radio" name="provider" value="youtube" data-provider-option <%= defaultTargetProvider === 'youtube' ? 'checked' : '' %> />
                       <span class="channel-option-copy"><strong>YouTube</strong><small>Private upload, notifications off</small></span>
                     </label>
                   </div>
                 </div>
+                <div class="wide channel-picker" data-provider-targets="youtube" hidden>
+                  <div class="channel-picker-head">
+                    <span class="field-heading">Target Publishing Channel</span>
+                  </div>
+                  <span class="field-note"><%= readyYouTubeChannels.length === 1 ? 'The only connected, publishing-ready YouTube channel is selected automatically.' : 'Select one connected, publishing-ready YouTube channel.' %></span>
+                  <div class="channel-options">
+                    <% readyYouTubeChannels.forEach(function(channel) { %>
+                      <label class="channel-option">
+                        <input
+                          type="radio"
+                          name="youtubeChannelId"
+                          value="<%= channel.accountId %>"
+                          data-channel-option
+                          data-channel-provider="youtube"
+                          data-channel-handle="<%= channel.label %>"
+                          data-channel-connected="true"
+                          <%= readyYouTubeChannels.length === 1 ? 'checked' : '' %>
+                        />
+                        <span class="channel-option-copy">
+                          <strong><%= channel.label %></strong>
+                          <small>Connected · Ready for private uploads</small>
+                        </span>
+                      </label>
+                    <% }); %>
+                  </div>
+                  <p class="channel-plan" data-channel-plan="youtube" aria-live="polite"></p>
+                </div>
                 <div class="wide" data-youtube-fields hidden>
                   <label>
-                    YouTube channel
-                    <select name="youtubeChannelId" data-youtube-channel-select>
-                      <% connectedYouTubeChannels.forEach(function(channel) { %>
-                        <option value="<%= channel.accountId %>"><%= channel.label %><%= channel.publishingReady ? '' : ' (not ready — see channel status above)' %></option>
-                      <% }); %>
-                    </select>
-                  </label>
-                  <label>
                     YouTube title <span class="field-note">Required. Not copied from the TikTok caption.</span>
-                    <input type="text" name="youtubeTitle" maxlength="100" placeholder="Video title" data-youtube-title data-reset-after-submit />
+                    <input type="text" name="youtubeTitle" maxlength="100" placeholder="Video title" data-youtube-title data-youtube-input data-reset-after-submit />
                   </label>
                   <label>
                     YouTube description
-                    <textarea name="youtubeDescription" maxlength="5000" placeholder="Optional description…" data-reset-after-submit></textarea>
+                    <textarea name="youtubeDescription" maxlength="5000" placeholder="Optional description…" data-youtube-input data-reset-after-submit></textarea>
                   </label>
                   <p class="field-note">Privacy: <strong>Private (locked)</strong> · Subscriber notifications: <strong>Disabled</strong>. These cannot be changed in this milestone.</p>
                 </div>
               <% } %>
-              <% if (tiktokAccounts.length > 0) { %>
-                <div class="wide channel-picker" data-channel-picker>
+              <% if (connectedTikTokAccounts.length > 0) { %>
+                <div class="wide channel-picker" data-channel-picker data-provider-targets="tiktok">
                   <div class="channel-picker-head">
                     <span class="field-heading">Target Publishing Channels</span>
                     <button type="button" class="channel-select-all" data-select-all-channels>Select all connected</button>
                   </div>
                   <span class="field-note">Posts to every channel you select. Disconnected channels can't be scheduled.</span>
                   <div class="channel-options">
-                    <% tiktokAccounts.forEach(function(channel) { %>
+                    <% connectedTikTokAccounts.forEach(function(channel) { %>
                       <%
                         const channelHandle = channel.username ? `@${channel.username}` : (channel.displayName || `TikTok ${String(channel.accountId || '').slice(0, 8)}`);
                         const isActiveChannel = activeTikTokAccount && activeTikTokAccount.accountId === channel.accountId;
                       %>
-                      <label class="channel-option <%= channel.connected ? '' : 'is-disconnected' %> <%= isActiveChannel && channel.connected ? 'is-active-channel' : '' %>">
+                      <label class="channel-option <%= isActiveChannel ? 'is-active-channel' : '' %>">
                         <input
                           type="checkbox"
                           name="targetChannels"
                           value="<%= channel.accountId %>"
                           data-channel-option
+                          data-channel-provider="tiktok"
                           data-channel-handle="<%= channelHandle %>"
-                          data-channel-connected="<%= channel.connected ? 'true' : 'false' %>"
-                          <%= channel.connected ? '' : 'disabled' %>
-                          <%= isActiveChannel && channel.connected ? 'checked' : '' %>
+                          data-channel-connected="true"
+                          <%= isActiveChannel ? 'checked' : '' %>
                         />
                         <span class="channel-option-copy">
                           <strong><%= channelHandle %></strong>
-                          <small><%= channel.connected ? (isActiveChannel ? 'Active channel' : 'Connected') : 'Reconnect Required' %></small>
+                          <small><%= isActiveChannel ? 'Active channel' : 'Connected' %></small>
                         </span>
                       </label>
                     <% }); %>
                   </div>
-                  <p class="channel-plan" data-channel-plan aria-live="polite"></p>
+                  <p class="channel-plan" data-channel-plan="tiktok" aria-live="polite"></p>
                 </div>
 
                 <div class="wide schedule-plan" data-schedule-plan>
@@ -986,7 +1015,7 @@
               </div>
               <p class="submit-status" data-submit-status></p>
             </div>
-            <div class="actions upload-actions"><button type="submit" class="btn btn-primary btn-create" data-tiktok-ready="<%= tiktokConfigured ? 'true' : 'false' %>" <%= (!tiktokConfigured && connectedYouTubeChannels.length === 0) ? 'disabled' : '' %>>Prepare Campaign</button></div>
+            <div class="actions upload-actions"><button type="submit" class="btn btn-primary btn-create" data-tiktok-ready="<%= connectedTikTokAccounts.length > 0 ? 'true' : 'false' %>" data-youtube-ready="<%= readyYouTubeChannels.length > 0 ? 'true' : 'false' %>" data-provider-ready="<%= defaultProviderReady ? 'true' : 'false' %>" <%= defaultProviderReady ? '' : 'disabled' %>>Prepare Campaign</button></div>
           </form>
         </section>
 
@@ -1001,10 +1030,13 @@
             const options = form.querySelectorAll('[data-provider-option]');
             if (options.length === 0) return;
             const youtubeFields = form.querySelector('[data-youtube-fields]');
+            const youtubeInputs = Array.from(form.querySelectorAll('[data-youtube-input]'));
             const youtubeTitle = form.querySelector('[data-youtube-title]');
-            const tiktokPicker = form.querySelector('[data-channel-picker]');
+            const targetGroups = Array.from(form.querySelectorAll('[data-provider-targets]'));
+            const targetControls = Array.from(form.querySelectorAll('[data-channel-option]'));
             const submitButton = form.querySelector('.btn-create');
             const tiktokReady = submitButton && submitButton.getAttribute('data-tiktok-ready') === 'true';
+            const youtubeReady = submitButton && submitButton.getAttribute('data-youtube-ready') === 'true';
 
             function currentProvider() {
               const checked = form.querySelector('[data-provider-option]:checked');
@@ -1014,10 +1046,28 @@
             function applyProvider() {
               const provider = currentProvider();
               const isYouTube = provider === 'youtube';
+              const providerReady = isYouTube ? youtubeReady : tiktokReady;
+              targetGroups.forEach(function (group) {
+                group.hidden = group.dataset.providerTargets !== provider;
+              });
+              const activeTargets = targetControls.filter(function (control) {
+                const active = control.dataset.channelProvider === provider;
+                control.disabled = !active;
+                control.required = false;
+                return active;
+              });
+              if (isYouTube && activeTargets.length > 0) activeTargets[0].required = true;
               if (youtubeFields) youtubeFields.hidden = !isYouTube;
               if (youtubeTitle) youtubeTitle.required = isYouTube;
-              if (tiktokPicker) tiktokPicker.hidden = isYouTube;
-              if (submitButton) submitButton.disabled = isYouTube ? false : !tiktokReady;
+              youtubeInputs.forEach(function (input) { input.disabled = !isYouTube; });
+              options.forEach(function (option) {
+                const label = option.closest('.channel-option');
+                if (label) label.classList.toggle('is-active-channel', option.checked);
+              });
+              if (submitButton) {
+                submitButton.dataset.providerReady = providerReady ? 'true' : 'false';
+                submitButton.disabled = !providerReady;
+              }
             }
 
             options.forEach(function (option) {
@@ -1078,7 +1128,7 @@
           <li data-check="channel">Channel selected<span class="preflight-state" data-state-label>Checking</span></li>
           <li data-check="auth">Channel connected<span class="preflight-state" data-state-label>Checking</span></li>
           <li data-check="asset">Media added<span class="preflight-state" data-state-label>Checking</span></li>
-          <li data-check="caption">Caption written<span class="preflight-state" data-state-label>Checking</span></li>
+          <li data-check="caption"><span data-check-name>Caption written</span><span class="preflight-state" data-state-label>Checking</span></li>
           <li data-check="window">Posting time set<span class="preflight-state" data-state-label>Checking</span></li>
         </ul>
         <ul class="preflight-channels" data-preflight-channels aria-label="Per-channel preflight"></ul>
@@ -1739,7 +1789,6 @@
         const hashtagsInput = form.querySelector('[data-hashtags-input]');
         const submitButton = form.querySelector('[type="submit"]');
         if (!input || !publicUrlInput) return;
-        const submitInitiallyDisabled = Boolean(submitButton && submitButton.disabled);
         const autoCaptionInitiallyDisabled = Boolean(autoCaptionToggle && autoCaptionToggle.disabled);
         const autoMusicInitiallyDisabled = Boolean(autoMusicToggle && autoMusicToggle.disabled);
         let analysisToken = 0;
@@ -1749,7 +1798,12 @@
         let musicStatusTimer = null;
 
         const channelBoxes = Array.from(form.querySelectorAll('[data-channel-option]'));
-        const channelValidityTarget = channelBoxes.find(box => !box.disabled) || null;
+        const providerOptions = Array.from(form.querySelectorAll('[data-provider-option]'));
+        const currentProvider = () => {
+          const selected = providerOptions.find(option => option.checked);
+          return selected ? selected.value : 'tiktok';
+        };
+        const activeChannelBoxes = () => channelBoxes.filter(box => box.dataset.channelProvider === currentProvider());
 
         const validate = () => {
           const files = Array.from(input.files || []);
@@ -1758,14 +1812,17 @@
           let urlMsg = '';
           let channelMsg = '';
           if (files.length === 0 && !publicUrl) msg = 'Choose a video file or enter a Public Media URL.';
-          else if (files.some(f => getFileKind(f) !== 'video')) msg = 'TikTok posting is video-only. Choose MP4, MOV, or WebM video files.';
+          else if (files.some(f => getFileKind(f) !== 'video')) msg = 'Publishing is video-only. Choose MP4, MOV, or WebM video files.';
           if (publicUrl && !publicUrl.toLowerCase().startsWith('https://')) urlMsg = 'Public Media URL must use HTTPS.';
           else if (publicUrl && !isVideoUrl(publicUrl)) urlMsg = 'Public Media URL must point directly to an MP4, MOV, or WebM video file.';
-          if (channelBoxes.length > 0 && !channelBoxes.some(box => box.checked && !box.disabled)) {
+          const providerChannels = activeChannelBoxes();
+          if (providerChannels.length > 0 && !providerChannels.some(box => box.checked && !box.disabled)) {
             channelMsg = 'Select at least one publishing channel.';
           }
           input.setCustomValidity(msg);
           publicUrlInput.setCustomValidity(urlMsg);
+          channelBoxes.forEach(box => box.setCustomValidity(''));
+          const channelValidityTarget = providerChannels.find(box => !box.disabled) || null;
           if (channelValidityTarget) channelValidityTarget.setCustomValidity(channelMsg);
           return !msg && !urlMsg && !channelMsg;
         };
@@ -1800,7 +1857,7 @@
         };
         const setAnalyzing = (analyzing, token) => {
           if (token !== analysisToken) return;
-          if (submitButton) submitButton.disabled = submitInitiallyDisabled || analyzing;
+          if (submitButton) submitButton.disabled = submitButton.dataset.providerReady !== 'true' || analyzing;
           if (autoCaptionToggle) autoCaptionToggle.disabled = autoCaptionInitiallyDisabled || analyzing;
           if (autoMusicToggle) autoMusicToggle.disabled = autoMusicInitiallyDisabled || analyzing;
         };
@@ -1920,6 +1977,7 @@
         });
         publicUrlInput.addEventListener('input', validate);
         channelBoxes.forEach(box => box.addEventListener('change', validate));
+        providerOptions.forEach(option => option.addEventListener('change', validate));
         if (captionInput) {
           captionInput.addEventListener('input', () => captionInput.setCustomValidity(''));
         }
@@ -2112,9 +2170,11 @@
         const mediaInput = uploadForm ? uploadForm.querySelector('[data-media-upload]') : null;
         const publicUrlInput = uploadForm ? uploadForm.querySelector('[data-public-media-url]') : null;
         const captionInput = uploadForm ? uploadForm.querySelector('[data-caption-input]') : null;
+        const youtubeTitleInput = uploadForm ? uploadForm.querySelector('[data-youtube-title]') : null;
         const channelOptions = uploadForm ? Array.from(uploadForm.querySelectorAll('[data-channel-option]')) : [];
+        const providerOptions = uploadForm ? Array.from(uploadForm.querySelectorAll('[data-provider-option]')) : [];
         const selectAllButton = uploadForm ? uploadForm.querySelector('[data-select-all-channels]') : null;
-        const planLine = uploadForm ? uploadForm.querySelector('[data-channel-plan]') : null;
+        const planLines = uploadForm ? Array.from(uploadForm.querySelectorAll('[data-channel-plan]')) : [];
         const channelList = panel.querySelector('[data-preflight-channels]');
         const verdict = panel.querySelector('[data-preflight-verdict]');
         const message = panel.querySelector('[data-preflight-message]');
@@ -2122,7 +2182,12 @@
         const legacyChannelConnected = panel.dataset.channelConnected === 'true';
         const releaseWindow = String(panel.dataset.releaseWindow || '').trim();
 
-        const selectedChannels = () => channelOptions.filter((option) => option.checked && !option.disabled);
+        const currentProvider = () => {
+          const selected = providerOptions.find(option => option.checked);
+          return selected ? selected.value : 'tiktok';
+        };
+        const activeChannelOptions = () => channelOptions.filter((option) => option.dataset.channelProvider === currentProvider());
+        const selectedChannels = () => activeChannelOptions().filter((option) => option.checked && !option.disabled);
         const isConnected = (option) => option.dataset.channelConnected === 'true';
 
         const setCheck = (name, pass, passLabel, blockedLabel) => {
@@ -2140,6 +2205,7 @@
         };
 
         const renderPlan = () => {
+          const planLine = planLines.find(line => line.dataset.channelPlan === currentProvider()) || null;
           if (!planLine) return;
           const channels = selectedChannels().length;
           const sources = sourceCount();
@@ -2160,7 +2226,7 @@
         const renderChannelList = (campaignBlockedLabel) => {
           if (!channelList) return;
           channelList.textContent = '';
-          channelOptions.forEach((option) => {
+          activeChannelOptions().forEach((option) => {
             const item = document.createElement('li');
             const state = document.createElement('span');
             state.className = 'preflight-state';
@@ -2183,30 +2249,38 @@
         };
 
         const runPreflight = () => {
-          const hasPicker = channelOptions.length > 0;
+          const providerChannels = activeChannelOptions();
+          const hasPicker = providerChannels.length > 0;
           const targets = selectedChannels();
           const hasTargets = hasPicker ? targets.length > 0 : legacyChannelConnected;
           const allAuthorized = hasPicker
             ? hasTargets && targets.every(isConnected)
             : legacyChannelConnected;
           const hasAsset = sourceCount() > 0;
-          const hasCaption = Boolean(captionInput && captionInput.value.trim());
+          const isYouTube = currentProvider() === 'youtube';
+          const metadataInput = isYouTube ? youtubeTitleInput : captionInput;
+          const hasMetadata = Boolean(metadataInput && metadataInput.value.trim());
+          const metadataRequiredLabel = isYouTube ? 'Title Required' : 'Caption Required';
+          const metadataCheckName = panel.querySelector('[data-check="caption"] [data-check-name]');
+          if (metadataCheckName) metadataCheckName.textContent = isYouTube ? 'YouTube title written' : 'Caption written';
           const hasWindow = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(releaseWindow);
 
           setCheck('channel', hasTargets, hasPicker && targets.length > 0 ? `${targets.length} selected` : 'Selected', 'Channel Required');
           setCheck('auth', allAuthorized, 'Connected', hasTargets ? 'Reconnect Required' : 'Channel Required');
           setCheck('asset', hasAsset, 'Added', 'Asset Required');
-          setCheck('caption', hasCaption, 'Written', 'Caption Required');
+          setCheck('caption', hasMetadata, 'Written', metadataRequiredLabel);
           setCheck('window', hasWindow, 'Set', 'Time Required');
 
           const blockedReason = !hasTargets ? 'Channel Required — select at least one publishing channel.'
             : !allAuthorized ? 'Reconnect Required — a selected channel is no longer authorized.'
             : !hasAsset ? 'Asset Required — add a video or a public video URL.'
-            : !hasCaption ? 'Caption Required — write a caption or enable Auto Caption.'
+            : !hasMetadata ? (isYouTube
+              ? 'Title Required — write a YouTube title.'
+              : 'Caption Required — write a caption or enable Auto Caption.')
             : !hasWindow ? 'Posting Time Required — set a daily posting time.'
             : '';
           const shortReason = !hasAsset ? 'Asset Required'
-            : !hasCaption ? 'Caption Required'
+            : !hasMetadata ? metadataRequiredLabel
             : !hasWindow ? 'Time Required'
             : '';
 
@@ -2229,7 +2303,7 @@
         if (runButton) runButton.addEventListener('click', runPreflight);
         if (selectAllButton) {
           selectAllButton.addEventListener('click', () => {
-            channelOptions.forEach((option) => {
+            activeChannelOptions().forEach((option) => {
               if (option.disabled) return;
               option.checked = true;
               // Notify the form-validation listeners registered elsewhere.
@@ -2239,7 +2313,8 @@
           });
         }
         channelOptions.forEach((option) => option.addEventListener('change', runPreflight));
-        [mediaInput, publicUrlInput, captionInput].forEach((input) => {
+        providerOptions.forEach((option) => option.addEventListener('change', runPreflight));
+        [mediaInput, publicUrlInput, captionInput, youtubeTitleInput].forEach((input) => {
           if (!input) return;
           input.addEventListener('input', runPreflight);
           input.addEventListener('change', runPreflight);
@@ -2262,6 +2337,11 @@
         const list = panel.querySelector('[data-schedule-plan-list]');
         const tzLabel = panel.querySelector('[data-schedule-tz]');
         const channelOptions = Array.from(form.querySelectorAll('[data-channel-option]'));
+        const providerOptions = Array.from(form.querySelectorAll('[data-provider-option]'));
+        const currentProvider = () => {
+          const selected = providerOptions.find(option => option.checked);
+          return selected ? selected.value : 'tiktok';
+        };
 
         if (tzLabel) {
           try { tzLabel.textContent = Intl.DateTimeFormat().resolvedOptions().timeZone; }
@@ -2281,7 +2361,9 @@
           const dateValue = dateInput ? dateInput.value : '';
           const timeValue = timeInput ? timeInput.value : '';
           const offsetMinutes = offsetInput ? Number(offsetInput.value) : NaN;
-          const selected = channelOptions.filter((option) => option.checked && !option.disabled);
+          const selected = channelOptions.filter((option) =>
+            option.dataset.channelProvider === currentProvider() && option.checked && !option.disabled
+          );
 
           if (!dateValue || !timeValue) {
             addRow('Set a start date and time to preview the plan, or leave blank to use the daily posting time.');
@@ -2328,6 +2410,7 @@
           input.addEventListener('change', render);
         });
         channelOptions.forEach((option) => option.addEventListener('change', render));
+        providerOptions.forEach((option) => option.addEventListener('change', render));
         render();
       })();
 
