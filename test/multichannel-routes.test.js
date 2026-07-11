@@ -78,6 +78,9 @@ storage.getPost = async (userId, id, accountId) => {
   return job;
 };
 storage.getDashboardJobs = async () => queueJobs;
+// Hermetic YouTube truth: the dashboard payload must not pick up real
+// connected channels from a live Firestore environment.
+storage.getYouTubeAccounts = async () => [];
 storage.getSettings = async () => ({ dailyPostTime: '18:00' });
 storage.getCounts = async () => ({ total: 2, pending: 0, scheduled: 2, processing: 0, ready: 0, posted: 0, failed: 0 });
 storage.addUploadedPosts = async (userId, files, defaults) => {

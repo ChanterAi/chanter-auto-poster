@@ -182,6 +182,18 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   text-transform: uppercase;
 }
 .connection-badge.connected { border-color: rgba(134, 176, 146, 0.26); background: var(--ok-bg); color: var(--ok); }
+.provider-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--neutral-badge);
+  color: var(--text2);
+  padding: 4px 7px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
 .active-account-badge { border: 1px solid var(--border2); border-radius: 999px; background: var(--surface2); color: var(--text); padding: 4px 7px; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
 
 .metric-grid { display: grid; grid-template-columns: repeat(5, minmax(110px, 1fr)); gap: 10px; margin-bottom: 18px; }
@@ -250,6 +262,7 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
 .status-filters button:hover { color: var(--text2); background: var(--surface2); }
 .status-filters button.active { border-color: var(--border2); background: var(--surface2); color: var(--text); }
 
+.toolbar-filters { display: flex; align-items: end; gap: 14px; }
 .account-filter { display: grid; gap: 5px; color: var(--text2); font-size: 11px; font-weight: 700; }
 .account-filter select {
   min-width: 190px;
@@ -524,6 +537,7 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   .account-group-header { align-items: flex-start; flex-wrap: wrap; padding: 13px; }
   .group-job-count { margin-left: 55px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
+  .toolbar-filters { flex-direction: column; align-items: stretch; }
   .account-filter select { width: 100%; }
   .job-card { grid-template-columns: 1fr; }
   .media-cell, .job-media, .media-placeholder { min-height: 220px; max-height: 360px; }

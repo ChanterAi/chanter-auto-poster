@@ -67,6 +67,9 @@ storage.getCounts = async () => ({
   failed: 0
 });
 storage.getDashboardJobs = async () => Object.values(postsByAccount).flat();
+// Hermetic YouTube truth: this file exercises a TikTok-only deployment, so
+// the dashboard payload must not pick up real connected channels.
+storage.getYouTubeAccounts = async () => [];
 tiktok.getTikTokAuthStatus = async (accountId) => ({
   connected: Boolean(accountId), accountId, open_id: accountId, username: accountId === 'account-b' ? 'account_b' : 'account_a'
 });

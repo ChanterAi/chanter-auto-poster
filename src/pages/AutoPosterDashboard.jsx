@@ -2,11 +2,21 @@ import { useEffect, useMemo, useState } from 'react';
 import './AutoPosterDashboard.css';
 import {
   assignDashboardJobs,
+  dashboardProviderOptions,
+  filterJobsByProvider,
   groupDashboardJobs,
+  isUploadedPrivate,
   normalizeDashboardAccounts,
   summarizeDashboardCampaigns,
   UNASSIGNED_ACCOUNT_ID
 } from './dashboard-accounting.mjs';
+
+const PROVIDER_LABELS = { tiktok: 'TikTok', youtube: 'YouTube' };
+const PROVIDER_MARKS = { tiktok: 'TT', youtube: 'YT' };
+
+function providerDisplayName(provider) {
+  return PROVIDER_LABELS[provider] || 'Channel';
+}
 
 const STATUS_FILTERS = ['all', 'scheduled', 'processing', 'posted', 'failed'];
 const STATUS_ALIASES = {
@@ -112,6 +122,9 @@ function normalizeJob(job) {
   return {
     ...job,
     id: asText(firstValue(job.id, job.jobId, job.postId)),
+    provider: asText(firstValue(job.provider, job.platform)).toLowerCase() || 'tiktok',
+    connectedAccountId: asText(job.connectedAccountId),
+    providerStatus: asText(job.providerStatus).toLowerCase(),
     title: asText(firstValue(
       job.title,
       job.postTitle,
@@ -131,7 +144,15 @@ function normalizeJob(job) {
     campaignId: asText(firstValue(job.campaignId, job.campaign_id)),
     campaignJobStatus: asText(firstValue(job.campaignJobStatus, job.campaign_job_status)).toLowerCase(),
     errorEvidence,
-    privacy: asText(firstValue(job.privacyLevel, job.privacy, job.privacy_level, 'Not set')),
+    // YouTube privacy truth comes from the provider metadata (the adapter
+    // forces 'private'); TikTok keeps its own privacy vocabulary.
+    privacy: asText(firstValue(
+      job.providerMetadata?.youtube?.privacyStatus,
+      job.privacyLevel,
+      job.privacy,
+      job.privacy_level,
+      'Not set'
+    )),
     attempts: Number(firstValue(job.claimAttempts, job.attempts, job.retryCount, 0)) || 0,
     lastError,
     mediaUrl,
@@ -151,13 +172,19 @@ function normalizeJob(job) {
 function accountLabel(account) {
   if (!account) return 'Legacy / Unassigned';
   if (account.username) return `@${account.username}`;
-  return account.displayName || account.id || 'TikTok account';
+  return account.displayName || account.id || `${providerDisplayName(account.provider)} account`;
+}
+
+function connectionStateLabel(account) {
+  if (account.connected) return 'Connected';
+  if (account.connectionStatus === 'reauthorization_required') return 'Reauthorization required';
+  return 'Unavailable';
 }
 
 function AccountAvatar({ account, className = 'account-avatar' }) {
   return (
     <div className={className} aria-hidden="true">
-      {account?.avatarUrl ? <img src={account.avatarUrl} alt="" /> : account ? 'TT' : '?'}
+      {account?.avatarUrl ? <img src={account.avatarUrl} alt="" /> : account ? PROVIDER_MARKS[account.provider] || 'TT' : '?'}
     </div>
   );
 }
@@ -169,23 +196,27 @@ function AccountCard({ account, jobCount, active }) {
       <div className="account-copy">
         <div className="account-title-row">
           <strong>{accountLabel(account)}</strong>
+          <span className="provider-badge">{providerDisplayName(account.provider)}</span>
           {active && <span className="active-account-badge">Active</span>}
           <span className={`connection-badge ${account.connected ? 'connected' : ''}`}>
-            {account.connected ? 'Connected' : 'Unavailable'}
+            {connectionStateLabel(account)}
           </span>
         </div>
-        <span>{account.displayName || 'Display name unavailable'} / {jobCount} {jobCount === 1 ? 'campaign' : 'campaigns'}</span>
+        <span>
+          {account.displayName || 'Display name unavailable'} / {jobCount} {jobCount === 1 ? 'campaign' : 'campaigns'}
+          {account.connected && account.publishingReady === false ? ' / Publishing blocked' : ''}
+        </span>
       </div>
     </article>
   );
 }
 
-function JobAccountBadge({ account }) {
+function JobAccountBadge({ account, provider }) {
   return (
     <div className={`job-account-badge${account ? '' : ' unassigned'}`}>
       <AccountAvatar account={account} className="job-account-avatar" />
       <span>
-        <small>Channel</small>
+        <small>{providerDisplayName(account ? account.provider : provider)}</small>
         <strong>{account ? accountLabel(account) : 'Legacy / Unassigned'}</strong>
       </span>
     </div>
@@ -212,8 +243,9 @@ function AccountGroupHeader({ account, jobCount }) {
       <div className="account-group-copy">
         <div className="account-group-title">
           <h3>{account.username ? `@${account.username}` : 'Username unavailable'}</h3>
+          <span className="provider-badge">{providerDisplayName(account.provider)}</span>
           <span className={`connection-badge ${account.connected ? 'connected' : ''}`}>
-            {account.connected ? 'Connected' : 'Unavailable'}
+            {connectionStateLabel(account)}
           </span>
         </div>
         <p>{account.displayName || 'Display name unavailable'}</p>
@@ -282,13 +314,19 @@ function CopyEvidenceButton({ payload }) {
 }
 
 function JobCard({ job, account }) {
+  // A YouTube success is a PRIVATE upload — label it truthfully, never as
+  // the public-sounding "Published".
+  const uploadedPrivate = isUploadedPrivate(job);
   // Campaign evidence payload — operational fields only, never tokens or auth data.
   const evidencePayload = {
     jobId: job.id,
     campaignId: job.campaignId || null,
+    provider: job.provider,
+    connectedAccountId: job.connectedAccountId || null,
     accountId: job.accountId,
     channelHandle: job.username ? `@${job.username}` : null,
     status: job.status,
+    providerStatus: job.providerStatus || null,
     scheduledAt: job.scheduledAt || null,
     publishedAt: job.postedAt || null,
     errorReason: job.lastError || null,
@@ -307,7 +345,7 @@ function JobCard({ job, account }) {
       <div className="media-cell"><MediaPreview job={job} /></div>
 
       <div className="job-content">
-        <JobAccountBadge account={account} />
+        <JobAccountBadge account={account} provider={job.provider} />
         <div className="job-heading">
           <div>
             <span className="account-kicker">
@@ -317,7 +355,9 @@ function JobCard({ job, account }) {
             <h2>{job.title}</h2>
           </div>
           <div className="status-badges">
-            <span className={`status-badge status-${job.status}`}>{statusDisplay(job.status)}</span>
+            <span className={`status-badge status-${job.status}`}>
+              {uploadedPrivate ? 'Uploaded Private' : statusDisplay(job.status)}
+            </span>
             {job.campaignJobStatus === 'retry_required' && (
               <span className="status-badge status-retry_required">Retry Required</span>
             )}
@@ -334,7 +374,7 @@ function JobCard({ job, account }) {
           <DetailItem label="Attempts" value={String(job.attempts)} />
           <DetailItem label="Created" value={formatDate(job.createdAt)} />
           {job.acceptedAt && <DetailItem label="Accepted" value={formatDate(job.acceptedAt)} />}
-          <DetailItem label="Published" value={formatDate(job.postedAt)} />
+          <DetailItem label={job.provider === 'youtube' ? 'Uploaded' : 'Published'} value={formatDate(job.postedAt)} />
           {job.lastAttemptAt && <DetailItem label="Last attempt" value={formatDate(job.lastAttemptAt)} />}
         </div>
 
@@ -383,6 +423,7 @@ export default function AutoPosterDashboard() {
   const [error, setError] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [accountFilter, setAccountFilter] = useState('all');
+  const [providerFilter, setProviderFilter] = useState('all');
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -431,7 +472,27 @@ export default function AutoPosterDashboard() {
     return new Map(accounts.map((account) => [account.id, account]));
   }, [accounts]);
 
-  const accountScopedJobs = jobs.filter((job) => (
+  // Provider filter: 'all' preserves today's behavior exactly; a specific
+  // provider scopes channels, queue, counts, and campaigns to it.
+  const providerOptions = useMemo(() => dashboardProviderOptions(accounts, jobs), [accounts, jobs]);
+  const visibleAccounts = providerFilter === 'all'
+    ? accounts
+    : accounts.filter((account) => account.provider === providerFilter);
+  const providerScopedJobs = filterJobsByProvider(jobs, providerFilter);
+
+  const changeProviderFilter = (provider) => {
+    setProviderFilter(provider);
+    if (accountFilter === 'all' || provider === 'all') return;
+    // Legacy/unassigned jobs are TikTok by the documented compatibility rule.
+    if (accountFilter === UNASSIGNED_ACCOUNT_ID) {
+      if (provider !== 'tiktok') setAccountFilter('all');
+      return;
+    }
+    const selected = accountMap.get(accountFilter);
+    if (!selected || selected.provider !== provider) setAccountFilter('all');
+  };
+
+  const accountScopedJobs = providerScopedJobs.filter((job) => (
     accountFilter === 'all' || job.accountId === accountFilter
   ));
 
@@ -447,7 +508,7 @@ export default function AutoPosterDashboard() {
   const jobGroups = accountFilter === 'all'
     ? groupDashboardJobs(visibleJobs, accounts)
     : [];
-  const hasUnassignedJobs = jobs.some((job) => job.accountId === UNASSIGNED_ACCOUNT_ID);
+  const hasUnassignedJobs = providerScopedJobs.some((job) => job.accountId === UNASSIGNED_ACCOUNT_ID);
   const campaigns = summarizeDashboardCampaigns(accountScopedJobs);
 
   return (
@@ -484,12 +545,12 @@ export default function AutoPosterDashboard() {
             <div><p className="eyebrow">Channels</p><h2 id="accounts-heading">Publishing Channels</h2></div>
           </div>
           <div className="account-grid">
-            {accounts.map((account) => (
+            {visibleAccounts.map((account) => (
               <AccountCard
                 account={account}
                 jobCount={jobs.filter((job) => job.accountId === account.id).length}
-                active={account.id === data.selectedAccountId}
-                key={account.id}
+                active={account.provider === 'tiktok' && account.id === data.selectedAccountId}
+                key={account.connectedAccountId || account.id}
               />
             ))}
           </div>
@@ -564,16 +625,29 @@ export default function AutoPosterDashboard() {
             ))}
           </div>
 
-          <label className="account-filter">
-            <span>Channel</span>
-            <select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
-              <option value="all">All channels</option>
-              {accounts.map((account) => (
-                <option value={account.id} key={account.id}>{accountLabel(account)}</option>
-              ))}
-              {hasUnassignedJobs && <option value={UNASSIGNED_ACCOUNT_ID}>Legacy / Unassigned campaigns</option>}
-            </select>
-          </label>
+          <div className="toolbar-filters">
+            {providerOptions.length > 1 && (
+              <label className="account-filter">
+                <span>Provider</span>
+                <select value={providerFilter} onChange={(event) => changeProviderFilter(event.target.value)}>
+                  <option value="all">All providers</option>
+                  {providerOptions.map((provider) => (
+                    <option value={provider} key={provider}>{providerDisplayName(provider)}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label className="account-filter">
+              <span>Channel</span>
+              <select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
+                <option value="all">All channels</option>
+                {visibleAccounts.map((account) => (
+                  <option value={account.id} key={account.connectedAccountId || account.id}>{accountLabel(account)}</option>
+                ))}
+                {hasUnassignedJobs && <option value={UNASSIGNED_ACCOUNT_ID}>Legacy / Unassigned campaigns</option>}
+              </select>
+            </label>
+          </div>
         </div>
 
         {error && (

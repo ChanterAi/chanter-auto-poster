@@ -300,9 +300,14 @@ router.get('/private/autoposter/dashboard', requireAdminPage, (req, res) => {
 });
 
 router.get('/api/private/autoposter/dashboard', requireAdminApi, asyncRoute(async (req, res) => {
-  const [queue, accountContext] = await Promise.all([
+  const [queue, accountContext, youtubeChannels] = await Promise.all([
     applicationService.listQueue(websiteContext(req), { limit: 1000 }),
-    resolveTikTokAccountContext(req, res)
+    resolveTikTokAccountContext(req, res),
+    // TikTok truth must still render when YouTube storage is unreachable.
+    resolveYouTubeChannelViews(resolveUserId(req)).catch((youtubeError) => {
+      console.warn('[routes] YouTube channels unavailable for dashboard', youtubeError.message);
+      return [];
+    })
   ]);
   const jobs = queue.items;
   const { accounts, activeAccount } = accountContext;
@@ -311,7 +316,10 @@ router.get('/api/private/autoposter/dashboard', requireAdminApi, asyncRoute(asyn
   res.set('Cache-Control', 'no-store');
   res.json({
     ok: true,
-    accounts: accounts.map(publicTikTokAccount),
+    accounts: [
+      ...accounts.map(publicTikTokAccount),
+      ...youtubeChannels.map(publicYouTubeChannel)
+    ],
     selectedAccountId,
     jobs,
     appTimeZone: config.appTimeZone
@@ -1319,11 +1327,34 @@ function publicTikTokAccount(account) {
     platform: 'tiktok',
     provider: 'tiktok',
     connectedAccountId: connectedAccounts.connectionId('tiktok', account.accountId),
+    providerAccountId: account.open_id || account.accountId,
     username: account.username || '',
     displayName: account.displayName || '',
     avatarUrl: account.avatarUrl || '',
     connected: Boolean(account.connected),
     clientAccessEnabled: Boolean(account.clientAccessEnabled)
+  };
+}
+
+// Safe Command Center shape for one YouTube channel, parallel to
+// publicTikTokAccount. Built only from the allowlisted connected-account
+// view (see resolveYouTubeChannelViews), so token presence metadata and
+// credentials can never pass through.
+function publicYouTubeChannel(view) {
+  return {
+    id: view.accountId,
+    accountId: view.accountId,
+    platform: 'youtube',
+    provider: 'youtube',
+    connectedAccountId: view.connectionId,
+    providerAccountId: view.providerAccountId,
+    username: view.username || '',
+    displayName: view.displayName || '',
+    avatarUrl: view.avatarUrl || '',
+    connected: view.connectionStatus === 'connected',
+    connectionStatus: view.connectionStatus,
+    publishingReady: Boolean(view.publishingReady),
+    clientAccessEnabled: Boolean(view.clientAccessEnabled)
   };
 }
 

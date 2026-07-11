@@ -1,8 +1,20 @@
 export const UNASSIGNED_ACCOUNT_ID = 'legacy-unassigned';
 
+// Providers the Command Center may surface. Anything else in stored data is
+// never offered as a channel group or filter option.
+export const DASHBOARD_PROVIDERS = ['tiktok', 'youtube'];
+
 function text(value) {
   if (value === undefined || value === null) return '';
   return String(value).trim();
+}
+
+// Canonical provider id for an account or job. A missing value is a legacy
+// TikTok record (the documented compatibility rule); explicit values are
+// preserved as-is so unknown providers stay visible instead of becoming
+// TikTok.
+export function providerOf(record) {
+  return text(record?.provider || record?.platform).toLowerCase() || 'tiktok';
 }
 
 function usernameKey(value) {
@@ -31,6 +43,7 @@ function uniqueValues(values) {
 
 export function normalizeDashboardAccount(account) {
   const id = text(account?.id || account?.accountId || account?.open_id || account?.tiktokOpenId);
+  const provider = providerOf(account);
   return {
     ...account,
     id,
@@ -38,8 +51,12 @@ export function normalizeDashboardAccount(account) {
     username: text(account?.username),
     displayName: text(account?.displayName),
     avatarUrl: text(account?.avatarUrl),
-    platform: 'tiktok',
-    connected: Boolean(account?.connected)
+    platform: provider,
+    provider,
+    connectedAccountId: text(account?.connectedAccountId) || (id ? `${provider}:${id}` : ''),
+    providerAccountId: text(account?.providerAccountId || account?.open_id) || id,
+    connected: Boolean(account?.connected),
+    connectionStatus: text(account?.connectionStatus) || (account?.connected ? 'connected' : 'disconnected')
   };
 }
 
@@ -57,6 +74,8 @@ function buildAccountIndexes(accounts) {
     uniqueValues([
       account.id,
       account.accountId,
+      account.connectedAccountId,
+      account.providerAccountId,
       account.open_id,
       account.openId,
       account.tiktokOpenId
@@ -82,11 +101,17 @@ function oneMatchOrNull(matches) {
 }
 
 export function resolveJobAccount(job, rawAccounts) {
-  const accounts = normalizeDashboardAccounts(rawAccounts);
+  // Identity resolution is provider-scoped: a YouTube job may only resolve
+  // to a YouTube channel and a TikTok job to a TikTok account, even when
+  // two providers reuse the same raw account id or username.
+  const jobProvider = providerOf(job);
+  const accounts = normalizeDashboardAccounts(rawAccounts)
+    .filter((account) => account.provider === jobProvider);
   const { identity, usernames } = buildAccountIndexes(accounts);
   const nestedAccount = job?.account && typeof job.account === 'object' ? job.account : {};
 
   const identityReferences = uniqueValues([
+    job?.connectedAccountId,
     job?.accountId,
     job?.tiktokAccountId,
     job?.tiktokOpenId,
@@ -154,6 +179,35 @@ export function summarizeDashboardCampaigns(jobs) {
   });
 
   return [...campaigns.values()];
+}
+
+export function filterJobsByProvider(jobs, providerId) {
+  const wanted = text(providerId).toLowerCase();
+  const list = Array.isArray(jobs) ? jobs : [];
+  if (!wanted || wanted === 'all') return list;
+  return list.filter((job) => providerOf(job) === wanted);
+}
+
+// Provider filter options: only supported providers that actually appear in
+// the connected accounts or the queue — never a fake or reserved provider.
+export function dashboardProviderOptions(accounts, jobs) {
+  const present = new Set([
+    ...(Array.isArray(accounts) ? accounts : []).map(providerOf),
+    ...(Array.isArray(jobs) ? jobs : []).map(providerOf)
+  ]);
+  return DASHBOARD_PROVIDERS.filter((id) => present.has(id));
+}
+
+const SUCCESS_STATUSES = new Set(['posted', 'published', 'completed', 'success']);
+
+/**
+ * True when a job's success state is a PRIVATE YouTube upload
+ * (providerStatus 'uploaded_private'). These jobs keep the internal
+ * 'posted' status — filters and counts are unchanged — but must be labeled
+ * 'Uploaded Private', never the public-sounding 'Published'.
+ */
+export function isUploadedPrivate(job) {
+  return providerOf(job) === 'youtube' && SUCCESS_STATUSES.has(text(job?.status).toLowerCase());
 }
 
 export function groupDashboardJobs(jobs, accounts) {

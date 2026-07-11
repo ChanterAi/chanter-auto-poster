@@ -79,6 +79,9 @@ storage.getPost = async (userId, id, accountId) => {
   return job && (!accountId || job.accountId === accountId) ? job : null;
 };
 storage.getDashboardJobs = async () => queueJobs;
+// Hermetic YouTube truth: the dashboard payload must not pick up real
+// connected channels from a live Firestore environment.
+storage.getYouTubeAccounts = async () => [];
 storage.getSettings = async () => ({ dailyPostTime: '18:00' });
 storage.getCounts = async (userId, accountId) => {
   const jobs = queueJobs.filter((job) => !accountId || job.accountId === accountId);
