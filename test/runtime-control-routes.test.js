@@ -62,6 +62,7 @@ storage.getTikTokAccount = async (userId, accountId) => {
   if (userId !== config.defaultUserId) return null;
   return accounts.find((account) => account.accountId === accountId) || null;
 };
+storage.getYouTubeAccount = async () => null;
 storage.getPosts = async (userId, accountId) => {
   if (state.getPostsError) throw state.getPostsError;
   if (userId !== config.defaultUserId) return [];

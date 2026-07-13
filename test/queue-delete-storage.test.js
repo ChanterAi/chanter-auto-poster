@@ -68,10 +68,25 @@ function installStorageMocks({ seededDocs = [], seededCollections = {}, failDele
   }
 
   const postsCollection = {
-    where: () => ({
-      get: async () => ({ docs: [...docs.entries()].map(([id, data]) => ({ id, data: () => data })) }),
-      select: () => ({ get: async () => ({ docs: [] }) })
-    }),
+    where: (field, operator, value) => {
+      const matchingDocs = () => [...docs.entries()]
+        .filter(([, data]) => operator === '==' ? data[field] === value : true)
+        .map(([id, data]) => ({ id, data: () => data }));
+      const query = {
+        get: async () => {
+          const result = matchingDocs();
+          return { docs: result, empty: result.length === 0 };
+        },
+        select: () => ({ get: async () => ({ docs: [] }) }),
+        limit: (count) => ({
+          get: async () => {
+            const result = matchingDocs().slice(0, count);
+            return { docs: result, empty: result.length === 0 };
+          }
+        })
+      };
+      return query;
+    },
     doc: (id) => documentReference('posts', id)
   };
 
@@ -218,4 +233,30 @@ test('deletePost propagates a failed Firestore delete instead of claiming succes
   await assert.rejects(storage.deletePost('owner', 'job-flaky'), /Firestore delete unavailable/);
   assert.equal(docs.has('job-flaky'), true, 'the post is still there after the failure');
   assert.deepEqual(destroyed, [], 'media is not destroyed when the document delete failed');
+});
+
+test('deletePost preserves a shared recurring media asset until the final reference is removed', async (t) => {
+  const { storage, destroyed, cleanup } = installStorageMocks({
+    seededDocs: [
+      {
+        id: 'series-job-1', userId: 'owner', accountId: 'account-a', status: 'scheduled',
+        cloudinaryPublicId: 'uploads/shared-series', cloudinaryResourceType: 'video',
+        fileName: 'shared-series.mp4', sharedMediaAsset: true
+      },
+      {
+        id: 'series-job-2', userId: 'owner', accountId: 'account-a', status: 'scheduled',
+        cloudinaryPublicId: 'uploads/shared-series', cloudinaryResourceType: 'video',
+        fileName: 'shared-series.mp4', sharedMediaAsset: true
+      }
+    ]
+  });
+  t.after(cleanup);
+
+  assert.equal(await storage.deletePost('owner', 'series-job-1'), true);
+  assert.deepEqual(destroyed, [], 'the first delete must keep the shared asset alive');
+
+  assert.equal(await storage.deletePost('owner', 'series-job-2'), true);
+  assert.deepEqual(destroyed, [
+    { publicId: 'uploads/shared-series', resourceType: 'video' }
+  ]);
 });

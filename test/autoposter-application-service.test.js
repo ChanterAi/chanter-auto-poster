@@ -60,8 +60,19 @@ function makeHarness({ planId = 'legacy_full_access' } = {}) {
         error.code = 6;
         throw error;
       }
-      const created = defaults.accounts.map((account) => {
+      const scheduleEntries = Array.isArray(defaults.scheduleEntries) && defaults.scheduleEntries.length > 0
+        ? defaults.scheduleEntries
+        : defaults.accounts.map((account) => ({
+            accountId: account.accountId,
+            scheduledAt: defaults.scheduledAt || null,
+            occurrenceIndex: null,
+            occurrenceDate: ''
+          }));
+      const sources = Array.isArray(files) && files.length > 0 ? files : [null];
+      const created = sources.flatMap((source) => scheduleEntries.map((entry) => {
+        const account = defaults.accounts.find((candidate) => candidate.accountId === entry.accountId);
         const now = '2026-07-10T10:00:00.000Z';
+        const scheduledAt = entry.scheduledAt || defaults.scheduledAt || null;
         const post = postFromDoc({
           id: defaults.documentId || `post-${++sequence}`,
           data: () => ({
@@ -77,13 +88,23 @@ function makeHarness({ planId = 'legacy_full_access' } = {}) {
             accountId: account.accountId,
             tiktokOpenId: account.tiktokOpenId,
             username: account.username,
+            campaignId: defaults.scheduleSeries ? 'series-1' : '',
+            seriesId: defaults.scheduleSeries ? 'series-1' : '',
+            seriesFrequency: defaults.scheduleSeries ? defaults.scheduleSeries.frequency : '',
+            seriesStartDate: defaults.scheduleSeries ? defaults.scheduleSeries.startDate : '',
+            seriesEndDate: defaults.scheduleSeries ? defaults.scheduleSeries.endDate : '',
+            seriesOccurrenceIndex: entry.occurrenceIndex,
+            seriesOccurrenceCount: defaults.scheduleSeries ? defaults.scheduleSeries.occurrenceCount : 0,
+            seriesSourceCount: defaults.scheduleSeries ? defaults.scheduleSeries.sourceCount : 0,
+            seriesTimezone: defaults.scheduleSeries ? defaults.scheduleSeries.timezone : '',
+            seriesOccurrenceDate: entry.occurrenceDate || '',
             mediaType: 'video',
             mediaUrl: defaults.publicMediaUrl || 'https://cdn.example.com/upload.mp4',
             publicMediaUrl: defaults.publicMediaUrl || 'https://cdn.example.com/upload.mp4',
             caption: defaults.caption,
             hashtags: defaults.hashtags,
-            scheduledAt: defaults.scheduledAt ? { toDate: () => new Date(defaults.scheduledAt) } : null,
-            status: defaults.scheduledAt ? 'scheduled' : 'pending',
+            scheduledAt: scheduledAt ? { toDate: () => new Date(scheduledAt) } : null,
+            status: scheduledAt ? 'scheduled' : 'pending',
             approvedAt: defaults.selfApprove ? { toDate: () => new Date(now) } : null,
             approvedBy: defaults.selfApprove ? defaults.selfApprove.approvedBy : null,
             createdAt: { toDate: () => new Date(now) },
@@ -92,7 +113,7 @@ function makeHarness({ planId = 'legacy_full_access' } = {}) {
         });
         posts.push(post);
         return post;
-      });
+      }));
       return created;
     },
     async updatePost(userId, id, patch, accountId, historyEvent) {
@@ -237,6 +258,159 @@ test('website and Runtime schedules share one operation and canonical queue shap
   assert.equal(runtime.post.provider, 'tiktok');
   assert.equal(runtime.post.status, 'scheduled');
   assert.equal(runtime.post.scheduledAt, '2026-07-12T09:00:00.000Z');
+});
+
+test('daily recurring website schedule creates one bounded series across every selected channel', async () => {
+  const harness = makeHarness();
+  const result = await harness.service.schedulePost(
+    context({ accountId: 'account-a' }),
+    {
+      accountIds: ['account-a', 'account-b'],
+      mediaUrl: 'https://cdn.example.com/daily.mp4',
+      caption: 'Daily campaign',
+      schedule: {
+        mode: 'recurring_daily',
+        startDate: '2026-07-11',
+        endDate: '2026-07-13',
+        startTime: '09:00',
+        timezoneOffsetMinutes: 0,
+        offsetMinutes: 5
+      }
+    }
+  );
+
+  assert.equal(result.schedule.mode, 'recurring_daily');
+  assert.equal(result.schedule.plan.occurrenceCount, 3);
+  assert.equal(result.schedule.plan.jobCount, 6);
+  assert.equal(result.posts.length, 6);
+  assert.equal(result.scheduledCount, 6);
+
+  const defaults = harness.calls.add[0].defaults;
+  assert.equal(defaults.scheduleEntries.length, 6);
+  assert.deepEqual(defaults.scheduleSeries, {
+    frequency: 'daily',
+    startDate: '2026-07-11',
+    endDate: '2026-07-13',
+    occurrenceCount: 3,
+    sourceCount: 1,
+    timezone: ''
+  });
+  assert.deepEqual(defaults.scheduleEntries.map((entry) => entry.scheduledAt), [
+    '2026-07-11T09:00:00.000Z',
+    '2026-07-11T09:05:00.000Z',
+    '2026-07-12T09:00:00.000Z',
+    '2026-07-12T09:05:00.000Z',
+    '2026-07-13T09:00:00.000Z',
+    '2026-07-13T09:05:00.000Z'
+  ]);
+  assert.equal(harness.calls.authorizeSchedule[0].quantity, 6);
+  assert.equal(harness.calls.authorizeSchedule[0].scheduledAt, '2026-07-13T09:05:00.000Z');
+  assert.equal(result.posts[0].seriesFrequency, 'daily');
+  assert.equal(result.posts[5].seriesOccurrenceIndex, 2);
+});
+
+test('daily recurring schedule coexists with a one-off post at the same account and time', async () => {
+  const harness = makeHarness();
+  await harness.service.schedulePost(
+    context({ accountId: 'account-a' }),
+    {
+      accountId: 'account-a',
+      mediaUrl: 'https://cdn.example.com/one-off.mp4',
+      schedule: {
+        mode: 'max',
+        startDate: '2026-07-11',
+        startTime: '09:00',
+        timezoneOffsetMinutes: 0
+      }
+    }
+  );
+
+  const recurring = await harness.service.schedulePost(
+    context({ accountId: 'account-a' }),
+    {
+      accountId: 'account-a',
+      mediaUrl: 'https://cdn.example.com/daily.mp4',
+      schedule: {
+        mode: 'recurring_daily',
+        startDate: '2026-07-11',
+        endDate: '2026-07-12',
+        startTime: '09:00',
+        timezoneOffsetMinutes: 0
+      }
+    }
+  );
+
+  assert.equal(recurring.scheduledCount, 2);
+  assert.equal(harness.posts.length, 3, 'the one-off job and both daily occurrences remain queued');
+  assert.equal(harness.posts.filter((post) => post.scheduledAt === '2026-07-11T09:00:00.000Z').length, 2);
+});
+
+test('daily recurring schedule counts all uploaded videos before commercial authorization', async () => {
+  const harness = makeHarness();
+  const result = await harness.service.schedulePost(
+    context({ accountId: 'account-a' }),
+    {
+      accountIds: ['account-a', 'account-b'],
+      files: [
+        { originalname: 'one.mp4', mimetype: 'video/mp4', size: 10 },
+        { originalname: 'two.mp4', mimetype: 'video/mp4', size: 10 }
+      ],
+      schedule: {
+        mode: 'recurring_daily',
+        startDate: '2026-07-11',
+        endDate: '2026-07-13',
+        startTime: '09:00',
+        timezoneOffsetMinutes: 0
+      }
+    }
+  );
+  assert.equal(result.schedule.plan.jobCount, 12);
+  assert.equal(harness.calls.authorizeSchedule[0].quantity, 12);
+  assert.equal(harness.calls.add[0].defaults.scheduleSeries.sourceCount, 2);
+});
+
+test('daily recurring schedule rejects a first release that is not in the future', async () => {
+  const harness = makeHarness();
+  await assert.rejects(
+    () => harness.service.schedulePost(
+      context({ accountId: 'account-a' }),
+      {
+        accountId: 'account-a',
+        mediaUrl: 'https://cdn.example.com/daily.mp4',
+        schedule: {
+          mode: 'recurring_daily',
+          startDate: '2026-07-10',
+          endDate: '2026-07-12',
+          startTime: '09:00',
+          timezoneOffsetMinutes: 0
+        }
+      }
+    ),
+    /first daily release must be scheduled in the future/i
+  );
+  assert.equal(harness.calls.add.length, 0);
+});
+
+test('daily recurring schedule rejects an end date before the start date before queue creation', async () => {
+  const harness = makeHarness();
+  await assert.rejects(
+    () => harness.service.schedulePost(
+      context({ accountId: 'account-a' }),
+      {
+        accountId: 'account-a',
+        mediaUrl: 'https://cdn.example.com/daily.mp4',
+        schedule: {
+          mode: 'recurring_daily',
+          startDate: '2026-07-13',
+          endDate: '2026-07-12',
+          startTime: '09:00',
+          timezoneOffsetMinutes: 0
+        }
+      }
+    ),
+    /end date must be on or after/i
+  );
+  assert.equal(harness.calls.add.length, 0);
 });
 
 test('runtime idempotency uses one deterministic create-only queue document', async () => {

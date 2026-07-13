@@ -1104,13 +1104,21 @@
                   </div>
                   <p class="channel-plan" data-channel-plan="tiktok" aria-live="polite"></p>
                 </div>
-
+              <% } %>
+              <% if (connectedTikTokAccounts.length > 0 || readyYouTubeChannels.length > 0) { %>
                 <div class="wide schedule-plan" data-schedule-plan>
                   <div class="channel-picker-head">
                     <span class="field-heading">Custom start time</span>
                   </div>
-                  <span class="field-note">Optional. Set an exact start time — each channel posts a few minutes after the last. Leave blank to use the daily posting time instead.</span>
+                  <span class="field-note">Choose one release or repeat the same video every day. Extra posts remain allowed between recurring releases.</span>
                   <div class="schedule-plan-inputs">
+                    <label>
+                      Repeat
+                      <select name="repeatMode" data-schedule-repeat>
+                        <option value="once">One time</option>
+                        <option value="daily">Every day</option>
+                      </select>
+                    </label>
                     <label>
                       Start date
                       <input type="date" name="startDate" data-schedule-start-date data-reset-after-submit />
@@ -1120,11 +1128,30 @@
                       <input type="time" name="startTime" data-schedule-start-time data-reset-after-submit />
                       <small>Your local time (<span data-schedule-tz>—</span>).</small>
                     </label>
+                    <label data-recurring-end-field hidden>
+                      End date
+                      <input type="date" name="endDate" data-schedule-end-date data-reset-after-submit />
+                    </label>
                     <label>
                       Minutes between channels
                       <input type="number" name="offsetMinutes" min="0" step="1" value="<%= defaultOffsetMinutes %>" data-schedule-offset />
                     </label>
                   </div>
+                  <label class="auto-caption-row recurring-approval-row" data-recurring-approval-field hidden>
+                    <span class="auto-caption-copy">
+                      <strong>Approve the full daily series now</strong>
+                      <span>One human approval covers every generated release in this series. You can still add one-off posts between them.</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      name="approveSeries"
+                      value="1"
+                      data-recurring-approval
+                      checked
+                      disabled
+                    />
+                  </label>
+                  <input type="hidden" name="timezoneName" data-timezone-name />
                   <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
                   <ul class="schedule-plan-list" data-schedule-plan-list aria-live="polite"></ul>
                 </div>
@@ -1761,6 +1788,12 @@
       function hydrateQueueRegion(root) {
         root.querySelectorAll('[data-timezone-offset]').forEach(el => {
           el.value = String(new Date().getTimezoneOffset());
+        });
+        let browserTimeZone = '';
+        try { browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; }
+        catch (error) { browserTimeZone = ''; }
+        root.querySelectorAll('[data-timezone-name]').forEach(el => {
+          el.value = browserTimeZone;
         });
 
         // Edit form: public media URL validation
@@ -2493,18 +2526,22 @@
         runPreflight();
       })();
 
-      // Max Scheduler — Release Plan preview. Pure client-side math that
-      // mirrors src/maxScheduler.js's computeMaxSchedulePlan(): base time
-      // plus index * offset minutes, in the browser's own local time. No
-      // network round-trip; the server recomputes the identical plan
-      // authoritatively from the same submitted fields at /upload.
+      // Release Plan preview. The server recomputes the authoritative
+      // one-time or daily plan from the same fields at /upload.
       (() => {
         const form = document.querySelector('[data-upload-form]');
         const panel = form ? form.querySelector('[data-schedule-plan]') : null;
         if (!form || !panel) return;
+        const repeatInput = panel.querySelector('[data-schedule-repeat]');
         const dateInput = panel.querySelector('[data-schedule-start-date]');
         const timeInput = panel.querySelector('[data-schedule-start-time]');
+        const endDateInput = panel.querySelector('[data-schedule-end-date]');
+        const endDateField = panel.querySelector('[data-recurring-end-field]');
+        const approvalField = panel.querySelector('[data-recurring-approval-field]');
+        const approvalInput = panel.querySelector('[data-recurring-approval]');
         const offsetInput = panel.querySelector('[data-schedule-offset]');
+        const mediaInput = form.querySelector('[data-media-upload]');
+        const publicUrlInput = form.querySelector('[data-public-media-url]');
         const list = panel.querySelector('[data-schedule-plan-list]');
         const tzLabel = panel.querySelector('[data-schedule-tz]');
         const channelOptions = Array.from(form.querySelectorAll('[data-channel-option]'));
@@ -2513,6 +2550,20 @@
           const selected = providerOptions.find(option => option.checked);
           return selected ? selected.value : 'tiktok';
         };
+        const isDaily = () => repeatInput && repeatInput.value === 'daily';
+        const sourceCount = () => {
+          const uploaded = mediaInput && mediaInput.files ? mediaInput.files.length : 0;
+          if (uploaded > 0) return uploaded;
+          return publicUrlInput && publicUrlInput.value.trim() ? 1 : 0;
+        };
+
+        if (dateInput) {
+          const localToday = new Date();
+          const year = localToday.getFullYear();
+          const month = String(localToday.getMonth() + 1).padStart(2, '0');
+          const day = String(localToday.getDate()).padStart(2, '0');
+          dateInput.min = `${year}-${month}-${day}`;
+        }
 
         if (tzLabel) {
           try { tzLabel.textContent = Intl.DateTimeFormat().resolvedOptions().timeZone; }
@@ -2524,20 +2575,45 @@
           if (state) item.dataset.state = state;
           item.textContent = text;
           list.appendChild(item);
+          return item;
+        };
+
+        const calendarDayNumber = (value) => {
+          const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if (!match) return NaN;
+          return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+        };
+
+        const syncRecurringFields = () => {
+          const daily = isDaily();
+          if (endDateField) endDateField.hidden = !daily;
+          if (approvalField) approvalField.hidden = !daily;
+          if (approvalInput) approvalInput.disabled = !daily;
+          if (dateInput) dateInput.required = daily;
+          if (timeInput) timeInput.required = daily;
+          if (endDateInput) {
+            endDateInput.required = daily;
+            endDateInput.min = dateInput && dateInput.value ? dateInput.value : '';
+            if (!daily) endDateInput.setCustomValidity('');
+          }
         };
 
         const render = () => {
           if (!list) return;
+          syncRecurringFields();
           list.textContent = '';
           const dateValue = dateInput ? dateInput.value : '';
           const timeValue = timeInput ? timeInput.value : '';
+          const endDateValue = endDateInput ? endDateInput.value : '';
           const offsetMinutes = offsetInput ? Number(offsetInput.value) : NaN;
           const selected = channelOptions.filter((option) =>
             option.dataset.channelProvider === currentProvider() && option.checked && !option.disabled
           );
 
           if (!dateValue || !timeValue) {
-            addRow('Set a start date and time to preview the plan, or leave blank to use the daily posting time.');
+            addRow(isDaily()
+              ? 'Daily posting requires a start date, end date, and posting time.'
+              : 'Set a start date and time to preview one exact release, or leave both blank to use the daily posting time.');
             return;
           }
           if (selected.length === 0) {
@@ -2548,16 +2624,57 @@
             addRow('Offset must be zero or a positive number of minutes.', 'blocked');
             return;
           }
+          const videos = sourceCount();
+          if (videos < 1) {
+            addRow('Add at least one video to preview the release count.', 'blocked');
+            return;
+          }
 
           const base = new Date(`${dateValue}T${timeValue}`);
           if (Number.isNaN(base.getTime())) {
             addRow('The start date/time could not be parsed.', 'blocked');
             return;
           }
+          if (isDaily() && base.getTime() <= Date.now()) {
+            addRow('The first daily release must be scheduled in the future.', 'blocked');
+            return;
+          }
 
-          const jobs = selected.length;
-          addRow(`This campaign will create ${jobs} release ${jobs === 1 ? 'job' : 'jobs'} across ${jobs} selected ${jobs === 1 ? 'channel' : 'channels'}.`, '');
-          list.lastElementChild.classList.add('schedule-plan-summary');
+          let occurrenceCount = 1;
+          if (isDaily()) {
+            if (!endDateValue) {
+              addRow('Set the end date for this daily campaign.', 'blocked');
+              return;
+            }
+            const startDay = calendarDayNumber(dateValue);
+            const endDay = calendarDayNumber(endDateValue);
+            occurrenceCount = Math.floor((endDay - startDay) / 86400000) + 1;
+            if (!Number.isFinite(occurrenceCount) || occurrenceCount < 1) {
+              if (endDateInput) endDateInput.setCustomValidity('End date must be on or after the start date.');
+              addRow('End date must be on or after the start date.', 'blocked');
+              return;
+            }
+            if (occurrenceCount > 365) {
+              if (endDateInput) endDateInput.setCustomValidity('Daily campaigns are limited to 365 days.');
+              addRow('Daily campaigns are limited to 365 days.', 'blocked');
+              return;
+            }
+            if (endDateInput) endDateInput.setCustomValidity('');
+          }
+
+          const jobs = videos * selected.length * occurrenceCount;
+          if (isDaily() && jobs > 200) {
+            addRow('A recurring campaign can create at most 200 release jobs. Shorten the date range, remove videos, or select fewer channels.', 'blocked');
+            return;
+          }
+          const summary = isDaily()
+            ? (videos === 1
+                ? `This daily campaign will create ${jobs} release ${jobs === 1 ? 'job' : 'jobs'}: ${occurrenceCount} ${occurrenceCount === 1 ? 'day' : 'days'} × ${selected.length} ${selected.length === 1 ? 'channel' : 'channels'}.`
+                : `This daily campaign will create ${jobs} release jobs: ${videos} videos × ${occurrenceCount} days × ${selected.length} channels.`)
+            : (videos === 1
+                ? `This campaign will create ${jobs} release ${jobs === 1 ? 'job' : 'jobs'} across ${selected.length} selected ${selected.length === 1 ? 'channel' : 'channels'}.`
+                : `This campaign will create ${jobs} release jobs: ${videos} videos × ${selected.length} channels.`);
+          addRow(summary).classList.add('schedule-plan-summary');
 
           selected.forEach((option, index) => {
             const at = new Date(base.getTime() + index * offsetMinutes * 60000);
@@ -2569,13 +2686,20 @@
             const label = document.createElement('strong');
             label.textContent = handle;
             const detail = document.createElement('span');
-            detail.textContent = `${at.toLocaleString()} · ${offsetLabel}${connected ? '' : ' · Reconnect Required'}`;
+            detail.textContent = `${at.toLocaleString()} · ${offsetLabel}${isDaily() ? ` · repeats daily through ${endDateValue}` : ''}${connected ? '' : ' · Reconnect Required'}`;
             item.append(label, detail);
             list.appendChild(item);
           });
+
+          if (isDaily()) {
+            addRow(approvalInput && approvalInput.checked
+              ? 'All generated releases will be approved together when you create the series.'
+              : 'The generated releases will remain drafts until they are approved.');
+            addRow('Other one-off posts can still be scheduled between these daily releases.');
+          }
         };
 
-        [dateInput, timeInput, offsetInput].forEach((input) => {
+        [repeatInput, dateInput, timeInput, endDateInput, approvalInput, offsetInput, mediaInput, publicUrlInput].forEach((input) => {
           if (!input) return;
           input.addEventListener('input', render);
           input.addEventListener('change', render);

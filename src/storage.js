@@ -1223,6 +1223,42 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   // Idempotent application operations may reserve one deterministic post ID.
   // Firestore batch.create then makes concurrent requests converge on one
   // queue document instead of allowing a read-before-write duplicate race.
+  const rawScheduleEntries = Array.isArray(defaults.scheduleEntries)
+    ? defaults.scheduleEntries
+    : [];
+  const scheduleEntries = rawScheduleEntries.map((entry, index) => {
+    const accountId = String((entry && entry.accountId) || '').trim();
+    const scheduledAt = toTimestampOrNull(entry && entry.scheduledAt);
+    if (!accountId || !targetAccounts.some((account) => account.accountId === accountId)) {
+      const error = new Error('Recurring schedule contains an unknown publishing account');
+      error.status = 400;
+      throw error;
+    }
+    if (!scheduledAt) {
+      const error = new Error('Recurring schedule contains an invalid timestamp');
+      error.status = 400;
+      throw error;
+    }
+    return {
+      accountId,
+      scheduledAt,
+      occurrenceIndex: Number.isInteger(Number(entry.occurrenceIndex)) ? Number(entry.occurrenceIndex) : index,
+      occurrenceDate: String(entry.occurrenceDate || '').trim(),
+      offsetMinutes: Number.isFinite(Number(entry.offsetMinutes)) ? Number(entry.offsetMinutes) : 0,
+      order: Number.isInteger(Number(entry.order)) ? Number(entry.order) : 0
+    };
+  });
+  const scheduleEntriesByAccount = new Map(targetAccounts.map((account) => [account.accountId, []]));
+  for (const entry of scheduleEntries) scheduleEntriesByAccount.get(entry.accountId).push(entry);
+  if (scheduleEntries.length > 0 && [...scheduleEntriesByAccount.values()].some((entries) => entries.length === 0)) {
+    const error = new Error('Recurring schedule must include every selected publishing account');
+    error.status = 400;
+    throw error;
+  }
+
+  // Idempotent application operations may reserve one deterministic post ID.
+  // Firestore batch.create then makes concurrent requests converge on one
+  // queue document instead of allowing a read-before-write duplicate race.
   const requestedDocumentId = String(defaults.documentId || '').trim();
   if (requestedDocumentId) {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestedDocumentId)) {
@@ -1230,7 +1266,8 @@ async function addUploadedPosts(userId, files, defaults = {}) {
       error.status = 400;
       throw error;
     }
-    if (targetAccounts.length * sources.length !== 1) {
+    const requestedJobCount = sources.length * (scheduleEntries.length || targetAccounts.length);
+    if (requestedJobCount !== 1) {
       const error = new Error('A deterministic queue item identifier can only be used for one post');
       error.status = 400;
       throw error;
@@ -1242,15 +1279,69 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     error.status = 400;
     throw error;
   }
+  const scheduleSeries = defaults.scheduleSeries && typeof defaults.scheduleSeries === 'object'
+    ? {
+        frequency: String(defaults.scheduleSeries.frequency || '').trim(),
+        startDate: String(defaults.scheduleSeries.startDate || '').trim(),
+        endDate: String(defaults.scheduleSeries.endDate || '').trim(),
+        occurrenceCount: Number(defaults.scheduleSeries.occurrenceCount || 0),
+        sourceCount: Number(defaults.scheduleSeries.sourceCount || 0),
+        timezone: String(defaults.scheduleSeries.timezone || '').trim()
+      }
+    : null;
+  if (scheduleEntries.length > 0 && (
+    !scheduleSeries
+    || scheduleSeries.frequency !== 'daily'
+    || !scheduleSeries.startDate
+    || !scheduleSeries.endDate
+    || !Number.isInteger(scheduleSeries.occurrenceCount)
+    || scheduleSeries.occurrenceCount < 1
+    || !Number.isInteger(scheduleSeries.sourceCount)
+    || scheduleSeries.sourceCount < 1
+    || scheduleSeries.sourceCount > 100
+  )) {
+    const error = new Error('Recurring schedule series metadata is invalid');
+    error.status = 400;
+    throw error;
+  }
+  if (scheduleEntries.length > 0) {
+    if (scheduleSeries.sourceCount !== sources.length) {
+      const error = new Error('Recurring schedule source count does not match the submitted media');
+      error.status = 400;
+      throw error;
+    }
+    const expectedEntryCount = targetAccounts.length * scheduleSeries.occurrenceCount;
+    if (scheduleEntries.length !== expectedEntryCount) {
+      const error = new Error('Recurring schedule must contain every occurrence for every selected publishing account');
+      error.status = 400;
+      throw error;
+    }
+    for (const [accountId, entries] of scheduleEntriesByAccount.entries()) {
+      const occurrenceIndexes = new Set(entries.map((entry) => entry.occurrenceIndex));
+      const hasCompleteIndexRange = occurrenceIndexes.size === scheduleSeries.occurrenceCount
+        && [...occurrenceIndexes].every((index) => Number.isInteger(index) && index >= 0 && index < scheduleSeries.occurrenceCount);
+      if (entries.length !== scheduleSeries.occurrenceCount || !hasCompleteIndexRange) {
+        const error = new Error(`Recurring schedule is incomplete for publishing account ${accountId}`);
+        error.status = 400;
+        throw error;
+      }
+    }
+  }
+  const campaignStartAtTimestamp = toTimestampOrNull(defaults.campaignStartAt);
+  if (defaults.campaignStartAt && !campaignStartAtTimestamp) {
+    const error = new Error('campaignStartAt is not a parseable timestamp');
+    error.status = 400;
+    throw error;
+  }
 
   // One parent campaign per prepare action; every child job carries this id
   // so evidence and the dashboard can group per-channel releases together.
   const campaignId = String(defaults.campaignId || '').trim() || randomUUID();
 
-  // Client-portal single-post scheduling records its own explicit approval
-  // at creation (the client filled in and submitted that one post). The
-  // admin batch intake never passes this — those jobs stay drafts until a
-  // human approves them in the Release Queue.
+  // A human-controlled website flow may record explicit approval at
+  // creation. Client single-post intake and the admin's optional recurring
+  // series approval use the same fail-closed contract; every other intake
+  // remains a draft until approved in the Release Queue.
   const selfApprove = defaults.selfApprove && String(defaults.selfApprove.approvedBy || '').trim()
     ? { approvedBy: String(defaults.selfApprove.approvedBy).trim() }
     : null;
@@ -1284,9 +1375,9 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   let committed = false;
 
   try {
-    // One child job per (target channel x source). Each child job uploads
-    // its own Cloudinary copy so deleting one channel's job can never
-    // destroy media that another channel's job still references.
+    // Upload once per (target channel x source). A recurring series then
+    // creates multiple queue records that share that one asset; deletePost
+    // reference-checks before destroying it.
     for (const target of targetAccounts) {
     for (const file of sources) {
       const mediaType = file ? getUploadMediaType(file) : getPublicMediaType(fallbackUrl);
@@ -1334,13 +1425,11 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         }
       }
 
-      const ref = postsCollection().doc(requestedDocumentId || randomUUID());
       const publicMediaUrl = cloudinaryPublicId ? mediaUrl : fallbackUrl;
 
-      // Duplicate protection (warn, never block): same filename+size — or
-      // the same public URL — already queued/posted on this channel is
-      // surfaced on the draft for human review. Repeat posting of one
-      // asset can be intentional, so the reviewer decides, not the code.
+      // Duplicate protection (warn, never block): compare against jobs that
+      // existed before this intake. Intentional occurrences inside one daily
+      // series do not warn against each other.
       const fileSize = file ? Number(file.size || 0) : 0;
       const duplicateKey = file ? `file:${file.originalname}:${fileSize}` : `url:${fallbackUrl}`;
       const accountDuplicateKeys = duplicateKeysByAccount.get(target.accountId);
@@ -1352,98 +1441,124 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         ? 'Possible duplicate: this channel already has a job with the same media. Posting the same content repeatedly can hurt account trust.'
         : '';
 
-      let history = appendHistoryEntry([], 'created', `Draft created for @${target.username} (campaign ${campaignId.slice(0, 8)}).`);
-      history = appendHistoryEntry(history, 'validated', duplicateWarning || 'Media accepted and stored.');
-      if (selfApprove) {
-        history = appendHistoryEntry(history, 'approved', `Approved at creation by ${selfApprove.approvedBy}.`);
-      }
-      if (initialScheduledAt) {
-        const scheduleHistory = defaults.scheduleHistory || {};
-        history = appendHistoryEntry(
+      const jobSchedules = scheduleEntries.length > 0
+        ? scheduleEntriesByAccount.get(target.accountId)
+        : [null];
+
+      for (const scheduleEntry of jobSchedules) {
+        const ref = postsCollection().doc(requestedDocumentId || randomUUID());
+        const jobScheduledAt = scheduleEntry ? scheduleEntry.scheduledAt : initialScheduledAt;
+        const occurrenceNumber = scheduleEntry ? scheduleEntry.occurrenceIndex + 1 : 0;
+
+        let history = appendHistoryEntry([], 'created', `Draft created for @${target.username} (campaign ${campaignId.slice(0, 8)}).`);
+        history = appendHistoryEntry(history, 'validated', duplicateWarning || 'Media accepted and stored.');
+        if (selfApprove) {
+          history = appendHistoryEntry(history, 'approved', `Approved at creation by ${selfApprove.approvedBy}.`);
+        }
+        if (jobScheduledAt) {
+          const scheduleHistory = defaults.scheduleHistory || {};
+          const recurringDetail = scheduleEntry && scheduleSeries
+            ? `Daily series occurrence ${occurrenceNumber}/${scheduleSeries.occurrenceCount} scheduled for ${jobScheduledAt.toDate().toISOString()}.`
+            : '';
+          history = appendHistoryEntry(
+            history,
+            scheduleEntry ? 'series_scheduled' : (scheduleHistory.event || 'scheduled'),
+            recurringDetail || scheduleHistory.detail || `Scheduled at creation for ${jobScheduledAt.toDate().toISOString()}.`
+          );
+        }
+
+        const data = {
+          userId: ownerId,
+          workspaceId: workspaceScope.workspaceId,
+          platform: providerId,
+          // Backward-compatible provider/source metadata for the canonical
+          // application contract. Older documents omit these and postsMapper
+          // derives provider from platform without inventing a creation source.
+          provider: providerId,
+          // Canonical connected-account identity (provider:accountId). Legacy
+          // documents omit it; postsMapper derives the same composite on read.
+          connectedAccountId: `${providerId}:${target.accountId}`,
+          creationSource: String(defaults.creationSource || '').trim(),
+          createdBy: String(defaults.createdBy || '').trim(),
+          correlationId: String(defaults.correlationId || '').trim(),
+          idempotencyKey: String(defaults.idempotencyKey || '').trim(),
+          runtimeIdempotencyKey: String(defaults.runtimeIdempotencyKey || '').trim(),
+          runtimeScheduledBy: String(defaults.runtimeScheduledBy || '').trim(),
+          accountId: target.accountId,
+          tiktokOpenId: providerId === 'tiktok' ? target.tiktokOpenId : '',
+          username: target.username,
+          campaignId,
+          campaignStartAt: campaignStartAtTimestamp,
+          channelOffsetMinutes: scheduleEntry ? scheduleEntry.offsetMinutes : 0,
+          channelOrder: scheduleEntry ? scheduleEntry.order : 0,
+          seriesId: scheduleEntry ? campaignId : '',
+          seriesFrequency: scheduleEntry && scheduleSeries ? scheduleSeries.frequency : '',
+          seriesStartDate: scheduleEntry && scheduleSeries ? scheduleSeries.startDate : '',
+          seriesEndDate: scheduleEntry && scheduleSeries ? scheduleSeries.endDate : '',
+          seriesOccurrenceIndex: scheduleEntry ? scheduleEntry.occurrenceIndex : null,
+          seriesOccurrenceCount: scheduleEntry && scheduleSeries ? scheduleSeries.occurrenceCount : 0,
+          seriesSourceCount: scheduleEntry && scheduleSeries ? scheduleSeries.sourceCount : 0,
+          seriesTimezone: scheduleEntry && scheduleSeries ? scheduleSeries.timezone : '',
+          seriesOccurrenceDate: scheduleEntry ? scheduleEntry.occurrenceDate : '',
+          originalName: file ? file.originalname : fileName,
+          fileName,
+          mimeType: autoMusicApplied ? 'video/mp4' : ((file && file.mimetype) || getPublicMediaMimeType(mediaType, publicMediaUrl)),
+          mediaType,
+          mediaUrl,
+          mediaPath: mediaUrl,
+          mediaStoragePath: '',
+          cloudinaryPublicId,
+          cloudinaryResourceType,
+          sharedMediaAsset: Boolean(scheduleEntry && cloudinaryPublicId),
+          videoPath: mediaType === 'video' ? mediaUrl : '',
+          imagePath: mediaType === 'photo' ? mediaUrl : '',
+          publicMediaUrl,
+          mediaSource: cloudinaryPublicId ? 'cloudinary' : 'public_url',
+          storageFallback,
+          autoMusicApplied,
+          musicTrackId: autoMusicApplied ? String(preparedMedia.trackId || '') : '',
+          musicCategory: autoMusicApplied ? String(preparedMedia.trackCategory || '') : '',
+          musicMood: autoMusicApplied ? String(preparedMedia.trackMood || '') : '',
+          caption: String(defaults.caption || '').trim(),
+          hashtags: String(defaults.hashtags || '').trim(),
+          publicImageUrl: mediaType === 'photo' ? publicMediaUrl : '',
+          instagramMediaUrl: String(defaults.instagramMediaUrl || publicMediaUrl).trim(),
+          privacyLevel:
+            String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
+          providerMetadata: boundedProviderMetadata(providerId, defaults.providerMetadata),
+          scheduledAt: jobScheduledAt,
+          status: jobScheduledAt ? 'scheduled' : 'pending',
+          // Approval gate: admin-intake jobs start unapproved (drafts) and
+          // are blocked from every publish path until a human approves them.
+          approvedAt: selfApprove ? now : null,
+          approvedBy: selfApprove ? selfApprove.approvedBy : null,
           history,
-          scheduleHistory.event || 'scheduled',
-          scheduleHistory.detail || `Scheduled at creation for ${initialScheduledAt.toDate().toISOString()}.`
-        );
-      }
+          fileSize,
+          duplicateWarning,
+          order: nextOrderFor(orderByAccount, target.accountId),
+          createdAt: now,
+          updatedAt: now,
+          postedAt: null,
+          readyAt: null,
+          lastResult: null,
+          lastInstagramResult: null,
+          disableComment: false,
+          disableDuet: false,
+          disableStitch: false,
+          contentDisclosure: false,
+          yourBrand: false,
+          brandedContent: false,
+          lockedAt: null,
+          lockedBy: null,
+          claimAttempts: 0
+        };
 
-      const data = {
-        userId: ownerId,
-        workspaceId: workspaceScope.workspaceId,
-        platform: providerId,
-        // Backward-compatible provider/source metadata for the canonical
-        // application contract. Older documents omit these and postsMapper
-        // derives provider from platform without inventing a creation source.
-        provider: providerId,
-        // Canonical connected-account identity (provider:accountId). Legacy
-        // documents omit it; postsMapper derives the same composite on read.
-        connectedAccountId: `${providerId}:${target.accountId}`,
-        creationSource: String(defaults.creationSource || '').trim(),
-        createdBy: String(defaults.createdBy || '').trim(),
-        correlationId: String(defaults.correlationId || '').trim(),
-        idempotencyKey: String(defaults.idempotencyKey || '').trim(),
-        runtimeIdempotencyKey: String(defaults.runtimeIdempotencyKey || '').trim(),
-        runtimeScheduledBy: String(defaults.runtimeScheduledBy || '').trim(),
-        accountId: target.accountId,
-        tiktokOpenId: providerId === 'tiktok' ? target.tiktokOpenId : '',
-        username: target.username,
-        campaignId,
-        originalName: file ? file.originalname : fileName,
-        fileName,
-        mimeType: autoMusicApplied ? 'video/mp4' : ((file && file.mimetype) || getPublicMediaMimeType(mediaType, publicMediaUrl)),
-        mediaType,
-        mediaUrl,
-        mediaPath: mediaUrl,
-        mediaStoragePath: '',
-        cloudinaryPublicId,
-        cloudinaryResourceType,
-        videoPath: mediaType === 'video' ? mediaUrl : '',
-        imagePath: mediaType === 'photo' ? mediaUrl : '',
-        publicMediaUrl,
-        mediaSource: cloudinaryPublicId ? 'cloudinary' : 'public_url',
-        storageFallback,
-        autoMusicApplied,
-        musicTrackId: autoMusicApplied ? String(preparedMedia.trackId || '') : '',
-        musicCategory: autoMusicApplied ? String(preparedMedia.trackCategory || '') : '',
-        musicMood: autoMusicApplied ? String(preparedMedia.trackMood || '') : '',
-        caption: String(defaults.caption || '').trim(),
-        hashtags: String(defaults.hashtags || '').trim(),
-        publicImageUrl: mediaType === 'photo' ? publicMediaUrl : '',
-        instagramMediaUrl: String(defaults.instagramMediaUrl || publicMediaUrl).trim(),
-        privacyLevel:
-          String(defaults.privacyLevel || config.tiktok.privacyLevel || 'SELF_ONLY').trim() || 'SELF_ONLY',
-        providerMetadata: boundedProviderMetadata(providerId, defaults.providerMetadata),
-        scheduledAt: initialScheduledAt,
-        status: initialScheduledAt ? 'scheduled' : 'pending',
-        // Approval gate: admin-intake jobs start unapproved (drafts) and
-        // are blocked from every publish path until a human approves them.
-        approvedAt: selfApprove ? now : null,
-        approvedBy: selfApprove ? selfApprove.approvedBy : null,
-        history,
-        fileSize,
-        duplicateWarning,
-        order: nextOrderFor(orderByAccount, target.accountId),
-        createdAt: now,
-        updatedAt: now,
-        postedAt: null,
-        readyAt: null,
-        lastResult: null,
-        lastInstagramResult: null,
-        disableComment: false,
-        disableDuet: false,
-        disableStitch: false,
-        contentDisclosure: false,
-        yourBrand: false,
-        brandedContent: false,
-        lockedAt: null,
-        lockedBy: null,
-        claimAttempts: 0
-      };
-
-      if (!defaults.usageReservation) {
-        if (requestedDocumentId && defaults.createOnly) batch.create(ref, data);
-        else batch.set(ref, data);
+        if (!defaults.usageReservation) {
+          if (requestedDocumentId && defaults.createOnly) batch.create(ref, data);
+          else batch.set(ref, data);
+        }
+        created.push({ ref, data });
       }
-      created.push({ ref, data });
     }
     }
 
@@ -1719,9 +1834,25 @@ async function deletePost(userId, id, accountId, workspaceScope) {
 
   if (!deletedData) return false;
   const fileName = deletedData.fileName;
-  await destroyMediaAsset(deletedData.cloudinaryPublicId, deletedData.cloudinaryResourceType);
+  const cloudinaryPublicId = String(deletedData.cloudinaryPublicId || '').trim();
+  let mediaStillReferenced = false;
 
-  if (fileName) {
+  // Daily-series jobs intentionally share one uploaded asset per account and
+  // source. Never destroy that asset while another queue record still points
+  // at it. Legacy one-job/one-asset records continue to destroy immediately.
+  if (cloudinaryPublicId) {
+    const remaining = await postsCollection()
+      .where('cloudinaryPublicId', '==', cloudinaryPublicId)
+      .limit(1)
+      .get();
+    mediaStillReferenced = !remaining.empty;
+  }
+
+  if (!mediaStillReferenced) {
+    await destroyMediaAsset(cloudinaryPublicId, deletedData.cloudinaryResourceType);
+  }
+
+  if (fileName && !mediaStillReferenced) {
     const uploadPath = path.resolve(config.uploadsDir, fileName);
     if (uploadPath.startsWith(path.resolve(config.uploadsDir))) {
       try {

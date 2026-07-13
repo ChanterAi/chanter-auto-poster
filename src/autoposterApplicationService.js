@@ -12,7 +12,7 @@ const connectedAccounts = require('./connectedAccounts');
 const commercialService = require('./commercialService');
 const { sanitizePostResult, sanitizeHistory } = require('./postsMapper');
 const { parseDateTimeLocal } = require('./timeUtil');
-const { computeMaxSchedulePlan } = require('./maxScheduler');
+const { computeMaxSchedulePlan, computeDailySchedulePlan } = require('./maxScheduler');
 const { validateYouTubeMetadata } = require('./youtube');
 
 const PROVIDER_TIKTOK = providers.PROVIDER_TIKTOK;
@@ -179,6 +179,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
   const policy = dependencies.mediaPolicy || mediaPolicy;
   const now = dependencies.now || (() => Date.now());
   const maxSchedulePlanner = dependencies.computeMaxSchedulePlan || computeMaxSchedulePlan;
+  const dailySchedulePlanner = dependencies.computeDailySchedulePlan || computeDailySchedulePlan;
   const commercialAdapter = dependencies.commercialService || commercialService;
 
   async function resolveCommercialContext(context) {
@@ -438,7 +439,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
     };
   }
 
-  function resolveSchedule(context, input, accounts) {
+  function resolveSchedule(context, input, accounts, sourceCount) {
     const schedule = input.schedule || {};
     const mode = String(schedule.mode || 'automatic').trim();
     if (mode === 'automatic') return { mode };
@@ -471,8 +472,10 @@ function createAutoPosterApplicationService(dependencies = {}) {
       const plan = maxSchedulePlanner({
         startDate: schedule.startDate,
         startTime: schedule.startTime,
+        timezoneName: schedule.timezoneName,
         timezoneOffsetMinutes: schedule.timezoneOffsetMinutes,
         offsetMinutes: schedule.offsetMinutes,
+        sourceCount,
         channels: accounts.map((account) => ({
           accountId: account.accountId,
           tiktokOpenId: account.open_id,
@@ -481,6 +484,30 @@ function createAutoPosterApplicationService(dependencies = {}) {
         }))
       });
       if (!plan.ok) throw new AutoPosterApplicationError(plan.reason);
+      return { mode, plan };
+    }
+
+    if (mode === 'recurring_daily') {
+      const plan = dailySchedulePlanner({
+        startDate: schedule.startDate,
+        endDate: schedule.endDate,
+        startTime: schedule.startTime,
+        timezoneName: schedule.timezoneName,
+        timezoneOffsetMinutes: schedule.timezoneOffsetMinutes,
+        offsetMinutes: schedule.offsetMinutes,
+        sourceCount,
+        channels: accounts.map((account) => ({
+          accountId: account.accountId,
+          tiktokOpenId: account.open_id,
+          username: account.username,
+          connected: account.connected
+        }))
+      });
+      if (!plan.ok) throw new AutoPosterApplicationError(plan.reason);
+      const firstScheduledAt = plan.jobs && plan.jobs[0] && plan.jobs[0].scheduledAt;
+      if (!firstScheduledAt || Date.parse(firstScheduledAt) <= now()) {
+        throw new AutoPosterApplicationError('The first daily release must be scheduled in the future.');
+      }
       return { mode, plan };
     }
 
@@ -546,10 +573,12 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   function entitlementScheduleTimestamp(schedule, commercialContext, accounts, sourceCount) {
     if (schedule.mode === 'explicit') return schedule.scheduledAt;
-    if (schedule.mode === 'max') {
-      const values = (schedule.plan && Array.isArray(schedule.plan.channels))
-        ? schedule.plan.channels.map((channel) => channel.scheduledAt).filter(Boolean)
-        : [];
+    if (schedule.mode === 'max' || schedule.mode === 'recurring_daily') {
+      const values = (schedule.plan && Array.isArray(schedule.plan.jobs))
+        ? schedule.plan.jobs.map((job) => job.scheduledAt).filter(Boolean)
+        : ((schedule.plan && Array.isArray(schedule.plan.channels))
+            ? schedule.plan.channels.map((channel) => channel.scheduledAt).filter(Boolean)
+            : []);
       return values.sort().at(-1) || null;
     }
 
@@ -609,12 +638,15 @@ function createAutoPosterApplicationService(dependencies = {}) {
     const commercialContext = await resolveCommercialContext(context);
     const accountIds = normalizeAccountIds(context, input);
     const accounts = await resolveOwnedAccounts(context, accountIds, { provider, commercialContext });
-    const schedule = resolveSchedule(context, input, accounts);
-    const idempotencyKey = context.idempotency.key;
     const sourceCount = Array.isArray(input.files) && input.files.filter(Boolean).length > 0
       ? input.files.filter(Boolean).length
       : 1;
-    const quantity = accounts.length * sourceCount;
+    const schedule = resolveSchedule(context, input, accounts, sourceCount);
+    const idempotencyKey = context.idempotency.key;
+    const occurrenceCount = schedule.mode === 'recurring_daily'
+      ? Number((schedule.plan && schedule.plan.occurrenceCount) || 0)
+      : 1;
+    const quantity = accounts.length * sourceCount * Math.max(1, occurrenceCount);
 
     if (context.source === 'runtime' && !idempotencyKey) {
       throw new AutoPosterApplicationError('idempotencyKey is required.');
@@ -720,6 +752,9 @@ function createAutoPosterApplicationService(dependencies = {}) {
       runtimeIdempotencyKey: context.source === 'runtime' ? idempotencyKey : '',
       runtimeScheduledBy: context.source === 'runtime' ? requestedBy : '',
       scheduledAt: schedule.mode === 'explicit' ? schedule.scheduledAt : '',
+      scheduleEntries: schedule.mode === 'recurring_daily' ? schedule.plan.jobs : undefined,
+      scheduleSeries: schedule.mode === 'recurring_daily' ? schedule.plan.series : undefined,
+      campaignStartAt: schedule.mode === 'recurring_daily' ? schedule.plan.baseAt : undefined,
       scheduleHistory: schedule.mode === 'explicit'
         ? (context.source === 'runtime'
             ? {
@@ -727,7 +762,12 @@ function createAutoPosterApplicationService(dependencies = {}) {
                 detail: `Scheduled via Agent Runtime by ${requestedBy || 'agent-runtime'} for ${schedule.scheduledAt}. Draft awaits human approval before publishing.`
               }
             : { event: 'scheduled', detail: `Posting time set during website intake for ${schedule.scheduledAt}.` })
-        : null,
+        : (schedule.mode === 'recurring_daily'
+            ? {
+                event: 'series_scheduled',
+                detail: `Daily series scheduled from ${schedule.plan.series.startDate} through ${schedule.plan.series.endDate}.`
+              }
+            : null),
       documentId: deterministicId,
       createOnly: Boolean(deterministicId),
       workspaceId: commercialContext.workspace.workspaceId,
@@ -793,11 +833,17 @@ function createAutoPosterApplicationService(dependencies = {}) {
     }
 
     try {
-      if (schedule.mode === 'explicit') {
+      if (schedule.mode === 'explicit' || schedule.mode === 'recurring_daily') {
         if (created.some((post) => !post.scheduledAt || post.status !== 'scheduled')) {
           throw partialScheduleError(
             created,
             'Queue item creation returned without its requested schedule. Review the visible draft before retrying.'
+          );
+        }
+        if (schedule.mode === 'recurring_daily' && created.length !== quantity) {
+          throw partialScheduleError(
+            created,
+            `Expected ${quantity} recurring queue items, got ${created.length}. Review the visible drafts before retrying.`
           );
         }
         return {

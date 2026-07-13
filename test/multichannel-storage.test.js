@@ -72,7 +72,13 @@ function installMocks({ seededDocs = [] } = {}) {
           commit: async () => {}
         })
       }),
-      Timestamp: { now: () => timestamp, fromDate: () => timestamp },
+      Timestamp: {
+        now: () => timestamp,
+        fromDate: (date) => ({
+          toDate: () => new Date(date),
+          toMillis: () => new Date(date).getTime()
+        })
+      },
       FieldValue: { serverTimestamp: () => timestamp, increment: () => 1 }
     }
   };
@@ -147,6 +153,81 @@ test('two-channel campaign creates one child job per channel with shared campaig
   assert.equal(jobB.status, 'pending');
   assert.equal(committed[0].data.campaignId, jobA.campaignId);
   assert.equal(committed[1].data.campaignId, jobA.campaignId);
+});
+
+test('daily recurring campaign uploads once and creates one scheduled job per occurrence', async (t) => {
+  const { storage, committed, uploadCalls, cleanup } = installMocks();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-recurring-'));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    cleanup();
+  });
+
+  const created = await storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'daily.mp4')], {
+    provider: 'tiktok',
+    accounts: [{ accountId: 'chanter-open-id', tiktokOpenId: 'chanter-open-id', username: '__chanter' }],
+    scheduleEntries: [
+      { accountId: 'chanter-open-id', scheduledAt: '2026-07-11T09:00:00.000Z', occurrenceIndex: 0, occurrenceDate: '2026-07-11', offsetMinutes: 0, order: 0 },
+      { accountId: 'chanter-open-id', scheduledAt: '2026-07-12T09:00:00.000Z', occurrenceIndex: 1, occurrenceDate: '2026-07-12', offsetMinutes: 0, order: 0 },
+      { accountId: 'chanter-open-id', scheduledAt: '2026-07-13T09:00:00.000Z', occurrenceIndex: 2, occurrenceDate: '2026-07-13', offsetMinutes: 0, order: 0 }
+    ],
+    scheduleSeries: {
+      frequency: 'daily',
+      startDate: '2026-07-11',
+      endDate: '2026-07-13',
+      occurrenceCount: 3,
+      sourceCount: 1,
+      timezone: ''
+    },
+    campaignStartAt: '2026-07-11T09:00:00.000Z'
+  });
+
+  assert.equal(uploadCalls.length, 1, 'the same uploaded video is stored once for the series');
+  assert.equal(created.length, 3);
+  assert.equal(committed.length, 3);
+  assert.deepEqual(created.map((post) => post.scheduledAt), [
+    '2026-07-11T09:00:00.000Z',
+    '2026-07-12T09:00:00.000Z',
+    '2026-07-13T09:00:00.000Z'
+  ]);
+  assert.equal(new Set(committed.map((entry) => entry.data.cloudinaryPublicId)).size, 1);
+  assert.equal(new Set(created.map((post) => post.seriesId)).size, 1);
+  assert.equal(created[0].seriesFrequency, 'daily');
+  assert.equal(created[2].seriesOccurrenceIndex, 2);
+  assert.equal(created[2].seriesOccurrenceCount, 3);
+  assert.equal(committed.every((entry) => entry.data.sharedMediaAsset === true), true);
+});
+
+test('daily recurring campaign rejects an incomplete occurrence matrix before upload', async (t) => {
+  const { storage, committed, uploadCalls, cleanup } = installMocks();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chanter-recurring-invalid-'));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    cleanup();
+  });
+
+  await assert.rejects(
+    storage.addUploadedPosts('owner', [makeTempFile(tempDir, 'daily-invalid.mp4')], {
+      provider: 'tiktok',
+      accounts: [{ accountId: 'chanter-open-id', tiktokOpenId: 'chanter-open-id', username: '__chanter' }],
+      scheduleEntries: [
+        { accountId: 'chanter-open-id', scheduledAt: '2026-07-11T09:00:00.000Z', occurrenceIndex: 0, occurrenceDate: '2026-07-11', offsetMinutes: 0, order: 0 }
+      ],
+      scheduleSeries: {
+        frequency: 'daily',
+        startDate: '2026-07-11',
+        endDate: '2026-07-12',
+        occurrenceCount: 2,
+        sourceCount: 1,
+        timezone: ''
+      },
+      campaignStartAt: '2026-07-11T09:00:00.000Z'
+    }),
+    /every occurrence for every selected publishing account/
+  );
+
+  assert.equal(uploadCalls.length, 0);
+  assert.equal(committed.length, 0);
 });
 
 test('single-channel campaign keeps the legacy defaults contract and gains a campaignId', async (t) => {

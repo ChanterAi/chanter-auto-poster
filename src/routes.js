@@ -1081,12 +1081,18 @@ router.post('/upload', requireAdminPage, uploadCampaignMedia, asyncRoute(async (
   const requestedChannelIds = normalizeTargetChannelIds(req.body.targetChannels);
   const startDate = String(req.body.startDate || '').trim();
   const startTime = String(req.body.startTime || '').trim();
+  const endDate = String(req.body.endDate || '').trim();
+  const repeatMode = String(req.body.repeatMode || 'once').trim().toLowerCase();
+  const approveSeries = repeatMode === 'daily' && String(req.body.approveSeries || '').trim() === '1';
   const preparedMedia = resolvePreparedMedia(req.body.autoMusicToken, userId, files);
   const contextAccountId = provider === 'youtube' ? youtubeChannelId : account.accountId;
   let result;
   try {
     result = await applicationService.schedulePost(
-      websiteContext(req, { accountId: contextAccountId }),
+      websiteContext(req, {
+        accountId: contextAccountId,
+        approval: approveSeries ? { approvedBy: `admin:${userId}` } : null
+      }),
       {
         provider,
         accountIds: provider === 'youtube'
@@ -1106,15 +1112,26 @@ router.post('/upload', requireAdminPage, uploadCampaignMedia, asyncRoute(async (
               description: String(req.body.youtubeDescription || '')
             }
           : undefined,
-        schedule: (startDate || startTime)
+        schedule: repeatMode === 'daily'
           ? {
-              mode: 'max',
+              mode: 'recurring_daily',
               startDate,
+              endDate,
               startTime,
+              timezoneName: req.body.timezoneName,
               timezoneOffsetMinutes: req.body.timezoneOffsetMinutes,
               offsetMinutes: req.body.offsetMinutes
             }
-          : { mode: 'automatic' }
+          : ((startDate || startTime)
+              ? {
+                  mode: 'max',
+                  startDate,
+                  startTime,
+                  timezoneName: req.body.timezoneName,
+                  timezoneOffsetMinutes: req.body.timezoneOffsetMinutes,
+                  offsetMinutes: req.body.offsetMinutes
+                }
+              : { mode: 'automatic' })
       }
     );
   } catch (error) {
@@ -1150,6 +1167,7 @@ router.post('/upload', requireAdminPage, uploadCampaignMedia, asyncRoute(async (
   const scheduledCount = result.scheduledCount;
   const targetAccounts = result.accounts;
   const useMaxScheduler = result.schedule.mode === 'max';
+  const useRecurringDaily = result.schedule.mode === 'recurring_daily';
   const maxSchedulePlan = result.schedule.plan || null;
 
   const usedFallback = created.some((post) => post.storageFallback);
@@ -1163,14 +1181,19 @@ router.post('/upload', requireAdminPage, uploadCampaignMedia, asyncRoute(async (
   const youtubeNotice = provider === 'youtube'
     ? ' YouTube uploads are locked to Private with subscriber notifications disabled.'
     : '';
-  const scheduleNotice = useMaxScheduler
-    ? ` First post at ${viewHelpers.formatDateTime(maxSchedulePlan.baseAt)}, ${maxSchedulePlan.offsetMinutes}m apart per channel.`
-    : '';
+  const scheduleNotice = useRecurringDaily
+    ? ` Daily through ${maxSchedulePlan.series.endDate}: ${maxSchedulePlan.occurrenceCount} ${maxSchedulePlan.occurrenceCount === 1 ? 'day' : 'days'}, ${maxSchedulePlan.jobCount} total release jobs. Other posts can still be added between these releases.`
+    : (useMaxScheduler
+        ? ` First post at ${viewHelpers.formatDateTime(maxSchedulePlan.baseAt)}, ${maxSchedulePlan.offsetMinutes}m apart per channel.`
+        : '');
   const duplicateCount = created.filter((post) => post.duplicateWarning).length;
   const duplicateNotice = duplicateCount > 0
     ? ` ${duplicateCount} flagged as ${duplicateCount === 1 ? 'a possible duplicate' : 'possible duplicates'} — check the warnings below.`
     : '';
-  respondWithNotice(req, res, `Created ${created.length} ${created.length === 1 ? 'post' : 'posts'}${channelNotice}. ${scheduledCount} scheduled as ${scheduledCount === 1 ? 'a draft' : 'drafts'} — review and approve in the Release Queue before anything publishes.${youtubeNotice}${scheduleNotice}${sourceNotice}${musicNotice}${duplicateNotice}`);
+  const approvalNotice = useRecurringDaily && approveSeries
+    ? `${scheduledCount} scheduled and approved together as one daily series.`
+    : `${scheduledCount} scheduled as ${scheduledCount === 1 ? 'a draft' : 'drafts'} — review and approve in the Release Queue before anything publishes.`;
+  respondWithNotice(req, res, `Created ${created.length} ${created.length === 1 ? 'post' : 'posts'}${channelNotice}. ${approvalNotice}${youtubeNotice}${scheduleNotice}${sourceNotice}${musicNotice}${duplicateNotice}`);
 }));
 
 router.post('/settings', requireAdminPage, asyncRoute(async (req, res) => {

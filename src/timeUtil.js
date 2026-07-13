@@ -1,11 +1,12 @@
 'use strict';
 
+const { DateTime, IANAZone } = require('luxon');
+
 // Shared local-time parsing for anything that accepts a browser
-// datetime-local style value plus the browser's timezone offset
-// (Date.prototype.getTimezoneOffset()). Used by the per-post release-window
-// edit form (routes.js) and the Max Scheduler campaign start date/time
-// (maxScheduler.js) so both compute the identical UTC instant from the
-// identical local-time contract.
+// datetime-local style value plus either an IANA timezone name or the
+// browser's numeric timezone offset (Date.prototype.getTimezoneOffset()).
+// The named-zone path is required for recurring schedules because a fixed
+// offset cannot preserve the same local wall-clock time across DST changes.
 
 /**
  * Convert a `YYYY-MM-DDTHH:MM` local value + timezoneOffsetMinutes into an
@@ -25,9 +26,35 @@ function parseDateTimeLocal(value, timezoneOffsetMinutes) {
   return Number.isFinite(utc) ? new Date(utc).toISOString() : null;
 }
 
+function normalizeTimeZoneName(value) {
+  const zone = String(value || '').trim();
+  if (!zone || zone.length > 100 || !IANAZone.isValidZone(zone)) return '';
+  return zone;
+}
+
+/**
+ * Parse one local wall-clock value in an IANA timezone. This preserves a
+ * recurring campaign's local posting time when the UTC offset changes. A
+ * nonexistent local time (for example, during a DST spring-forward gap) is
+ * rejected instead of being silently shifted by the date library.
+ */
+function parseDateTimeInZone(value, timezoneName, timezoneOffsetMinutes) {
+  const localValue = String(value || '').trim();
+  const rawZone = String(timezoneName || '').trim();
+  const zone = normalizeTimeZoneName(rawZone);
+  if (rawZone && !zone) return null;
+  if (!zone) return parseDateTimeLocal(localValue, timezoneOffsetMinutes);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(localValue)) return null;
+
+  const dateTime = DateTime.fromISO(localValue, { zone, setZone: true });
+  if (!dateTime.isValid) return null;
+  if (dateTime.toFormat("yyyy-MM-dd'T'HH:mm") !== localValue) return null;
+  return dateTime.toUTC().toISO({ suppressMilliseconds: false });
+}
+
 /**
  * Combine a `YYYY-MM-DD` date and `HH:MM` time into the `datetime-local`
- * shape `parseDateTimeLocal` expects.
+ * shape the parsers expect.
  */
 function combineDateAndTime(date, time) {
   const cleanDate = String(date || '').trim();
@@ -36,4 +63,9 @@ function combineDateAndTime(date, time) {
   return `${cleanDate}T${cleanTime}`;
 }
 
-module.exports = { parseDateTimeLocal, combineDateAndTime };
+module.exports = {
+  parseDateTimeLocal,
+  parseDateTimeInZone,
+  normalizeTimeZoneName,
+  combineDateAndTime
+};

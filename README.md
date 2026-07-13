@@ -16,6 +16,7 @@ This app does not scrape TikTok, bypass TikTok security, automate unofficial acc
 - Encrypted YouTube OAuth custody and private-only video uploads.
 - Multi-channel campaign scheduling when multiple target channels are selected.
 - Max Scheduler start-time plus per-channel release offset.
+- Daily recurring campaigns with inclusive start/end dates, one-series approval, live job-count preview, and timezone-stable local posting times. See [docs/AUTOPOSTER_RECURRING_CAMPAIGNS.md](docs/AUTOPOSTER_RECURRING_CAMPAIGNS.md).
 - Release Queue views for active channel and all channels.
 - Auto Caption and Auto Music for uploaded videos when providers/tools are configured.
 - Manual verification and manual-post fallback when API publication cannot be verified.

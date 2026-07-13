@@ -159,3 +159,140 @@ test('a non-UTC browser offset still produces the correct UTC instant', () => {
   assert.equal(plan.ok, true);
   assert.equal(plan.baseAt, '2026-07-07T14:00:00.000Z');
 });
+
+test('daily campaign expands an inclusive date range across every selected channel', () => {
+  const { computeDailySchedulePlan } = require('../src/maxScheduler');
+  const plan = computeDailySchedulePlan({
+    startDate: '2026-07-11',
+    endDate: '2026-07-13',
+    startTime: '09:00',
+    timezoneOffsetMinutes: UTC_OFFSET,
+    offsetMinutes: 5,
+    channels: [
+      { accountId: 'a', username: 'a', connected: true },
+      { accountId: 'b', username: 'b', connected: true }
+    ]
+  });
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.occurrenceCount, 3);
+  assert.equal(plan.jobCount, 6);
+  assert.equal(plan.occurrences.length, 3);
+  assert.equal(plan.jobs.length, 6);
+  assert.deepEqual(plan.jobs.map((job) => job.scheduledAt), [
+    '2026-07-11T09:00:00.000Z',
+    '2026-07-11T09:05:00.000Z',
+    '2026-07-12T09:00:00.000Z',
+    '2026-07-12T09:05:00.000Z',
+    '2026-07-13T09:00:00.000Z',
+    '2026-07-13T09:05:00.000Z'
+  ]);
+  assert.deepEqual(plan.series, {
+    frequency: 'daily',
+    startDate: '2026-07-11',
+    endDate: '2026-07-13',
+    occurrenceCount: 3,
+    sourceCount: 1,
+    timezone: ''
+  });
+  assert.match(plan.summary, /3 days × 2 channels/);
+});
+
+test('daily campaign counts every selected video and rejects a total above the 200-job safety cap', () => {
+  const { computeDailySchedulePlan } = require('../src/maxScheduler');
+  const plan = computeDailySchedulePlan({
+    startDate: '2026-07-11',
+    endDate: '2026-07-13',
+    startTime: '09:00',
+    timezoneOffsetMinutes: UTC_OFFSET,
+    sourceCount: 2,
+    channels: [
+      { accountId: 'a', connected: true },
+      { accountId: 'b', connected: true }
+    ]
+  });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.sourceCount, 2);
+  assert.equal(plan.jobCount, 12);
+  assert.equal(plan.jobs.length, 6, 'schedule entries remain one per day/channel and are reused per video');
+  assert.match(plan.summary, /2 videos × 3 days × 2 channels/);
+
+  const blocked = computeDailySchedulePlan({
+    startDate: '2026-01-01',
+    endDate: '2026-04-11',
+    startTime: '09:00',
+    sourceCount: 2,
+    channels: [{ accountId: 'a', connected: true }]
+  });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.reason, /at most 200 release jobs/i);
+});
+
+test('daily campaign preserves the same local time across a timezone offset change', () => {
+  const { computeDailySchedulePlan } = require('../src/maxScheduler');
+  const plan = computeDailySchedulePlan({
+    startDate: '2026-10-24',
+    endDate: '2026-10-26',
+    startTime: '09:00',
+    timezoneName: 'Europe/Nicosia',
+    timezoneOffsetMinutes: -180,
+    channels: [{ accountId: 'a', connected: true }]
+  });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.timezone, 'Europe/Nicosia');
+  assert.deepEqual(plan.jobs.map((job) => job.scheduledAt), [
+    '2026-10-24T06:00:00.000Z',
+    '2026-10-25T07:00:00.000Z',
+    '2026-10-26T07:00:00.000Z'
+  ]);
+});
+
+test('daily campaign rejects an invalid named timezone instead of silently using a numeric offset', () => {
+  const { computeDailySchedulePlan } = require('../src/maxScheduler');
+  const plan = computeDailySchedulePlan({
+    startDate: '2026-07-11',
+    endDate: '2026-07-11',
+    startTime: '09:00',
+    timezoneName: 'Not/A_Real_Zone',
+    timezoneOffsetMinutes: 0,
+    channels: [{ accountId: 'a', connected: true }]
+  });
+  assert.equal(plan.ok, false);
+  assert.match(plan.reason, /could not be parsed/i);
+});
+
+test('daily campaign rejects a nonexistent local time during the DST spring-forward gap', () => {
+  const { computeDailySchedulePlan } = require('../src/maxScheduler');
+  const plan = computeDailySchedulePlan({
+    startDate: '2026-03-29',
+    endDate: '2026-03-29',
+    startTime: '03:30',
+    timezoneName: 'Europe/Nicosia',
+    channels: [{ accountId: 'a', connected: true }]
+  });
+  assert.equal(plan.ok, false);
+  assert.match(plan.reason, /could not be parsed/i);
+});
+
+test('daily campaign blocks reversed and oversized date ranges', () => {
+  const { computeDailySchedulePlan, MAX_DAILY_OCCURRENCES } = require('../src/maxScheduler');
+  const reversed = computeDailySchedulePlan({
+    startDate: '2026-07-13',
+    endDate: '2026-07-12',
+    startTime: '09:00',
+    channels: [{ accountId: 'a', connected: true }]
+  });
+  assert.equal(reversed.ok, false);
+  assert.match(reversed.reason, /on or after/i);
+
+  const oversizedEnd = new Date(Date.UTC(2026, 0, 1) + MAX_DAILY_OCCURRENCES * 86400000)
+    .toISOString().slice(0, 10);
+  const oversized = computeDailySchedulePlan({
+    startDate: '2026-01-01',
+    endDate: oversizedEnd,
+    startTime: '09:00',
+    channels: [{ accountId: 'a', connected: true }]
+  });
+  assert.equal(oversized.ok, false);
+  assert.match(oversized.reason, /at most/i);
+});

@@ -96,17 +96,30 @@ storage.addUploadedPosts = async (userId, files, defaults) => {
     ? defaults.accounts
     : [{ accountId: defaults.accountId, tiktokOpenId: defaults.tiktokOpenId, username: defaults.username }];
   const campaignId = `cmp-new-${addUploadedPostsCalls.length}`;
-  const created = targets.map((target, index) => ({
-    id: `created-${addUploadedPostsCalls.length}-${index}`,
-    accountId: target.accountId,
-    tiktokOpenId: target.tiktokOpenId || target.accountId,
-    username: target.username,
-    campaignId,
-    status: 'pending',
-    storageFallback: false,
-    autoMusicApplied: false,
-    createdAt: new Date().toISOString()
-  }));
+  const scheduleEntries = Array.isArray(defaults.scheduleEntries) && defaults.scheduleEntries.length > 0
+    ? defaults.scheduleEntries
+    : targets.map((target) => ({ accountId: target.accountId, scheduledAt: defaults.scheduledAt || null }));
+  const created = scheduleEntries.map((entry, index) => {
+    const target = targets.find((candidate) => candidate.accountId === entry.accountId);
+    return {
+      id: `created-${addUploadedPostsCalls.length}-${index}`,
+      accountId: target.accountId,
+      tiktokOpenId: target.tiktokOpenId || target.accountId,
+      username: target.username,
+      campaignId,
+      seriesId: defaults.scheduleSeries ? campaignId : '',
+      seriesFrequency: defaults.scheduleSeries ? defaults.scheduleSeries.frequency : '',
+      seriesOccurrenceIndex: Number.isInteger(entry.occurrenceIndex) ? entry.occurrenceIndex : null,
+      seriesOccurrenceCount: defaults.scheduleSeries ? defaults.scheduleSeries.occurrenceCount : 0,
+      status: entry.scheduledAt ? 'scheduled' : 'pending',
+      scheduledAt: entry.scheduledAt || null,
+      approvedAt: defaults.selfApprove ? new Date().toISOString() : null,
+      approvedBy: defaults.selfApprove ? defaults.selfApprove.approvedBy : null,
+      storageFallback: false,
+      autoMusicApplied: false,
+      createdAt: new Date().toISOString()
+    };
+  });
   queueJobs.push(...created);
   return created;
 };
@@ -209,6 +222,12 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   assert.match(defaultHtml, /name="startDate"/);
   assert.match(defaultHtml, /name="startTime"/);
   assert.match(defaultHtml, /name="offsetMinutes"/);
+  assert.match(defaultHtml, /name="repeatMode"/);
+  assert.match(defaultHtml, /name="approveSeries"/);
+  assert.match(defaultHtml, /Approve the full daily series now/);
+  assert.match(defaultHtml, /name="endDate"/);
+  assert.match(defaultHtml, /name="timezoneName"/);
+  assert.match(defaultHtml, /value="daily">Every day/);
 
   // ── Active Channel mode: only the active channel's job, plus the
   // required explanatory copy ─────────────────────────────────────────────
@@ -282,6 +301,50 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   assert.equal(customOffsetResponse.status, 302);
   const secondPlan = applyExplicitScheduleCalls[1].plan;
   assert.equal(secondPlan.channels[1].scheduledAt, '2026-07-08T10:10:00.000Z');
+
+  // ── Daily recurring schedule: inclusive date range × selected channels ──
+  const recurringCallsBefore = addUploadedPostsCalls.length;
+  const explicitCallsBeforeRecurring = applyExplicitScheduleCalls.length;
+  const autoCallsBeforeRecurring = autoScheduleCalls.length;
+  const recurringBody = new FormData();
+  recurringBody.append('publicMediaUrl', 'https://cdn.example.com/daily.mp4');
+  recurringBody.append('caption', 'Daily same-time campaign');
+  recurringBody.append('targetChannels', 'chanter-open-id');
+  recurringBody.append('targetChannels', 'cdwarrior-open-id');
+  recurringBody.append('repeatMode', 'daily');
+  recurringBody.append('startDate', '2099-07-11');
+  recurringBody.append('endDate', '2099-07-13');
+  recurringBody.append('startTime', '09:00');
+  recurringBody.append('offsetMinutes', '5');
+  recurringBody.append('timezoneOffsetMinutes', '0');
+  recurringBody.append('approveSeries', '1');
+  const recurringResponse = await fetch(`${baseUrl}/upload`, {
+    method: 'POST', redirect: 'manual', headers: { Cookie: adminCookie }, body: recurringBody
+  });
+  assert.equal(recurringResponse.status, 302);
+  assert.equal(addUploadedPostsCalls.length, recurringCallsBefore + 1);
+  assert.equal(applyExplicitScheduleCalls.length, explicitCallsBeforeRecurring, 'recurring jobs are scheduled atomically at creation');
+  assert.equal(autoScheduleCalls.length, autoCallsBeforeRecurring, 'recurring jobs do not enter legacy auto-scheduling');
+  const recurringDefaults = addUploadedPostsCalls.at(-1).defaults;
+  assert.equal(recurringDefaults.scheduleEntries.length, 6);
+  assert.deepEqual(recurringDefaults.selfApprove, { approvedBy: 'admin:owner' });
+  assert.deepEqual(recurringDefaults.scheduleSeries, {
+    frequency: 'daily', startDate: '2099-07-11', endDate: '2099-07-13', occurrenceCount: 3, sourceCount: 1, timezone: ''
+  });
+  assert.deepEqual(recurringDefaults.scheduleEntries.map((entry) => entry.scheduledAt), [
+    '2099-07-11T09:00:00.000Z',
+    '2099-07-11T09:05:00.000Z',
+    '2099-07-12T09:00:00.000Z',
+    '2099-07-12T09:05:00.000Z',
+    '2099-07-13T09:00:00.000Z',
+    '2099-07-13T09:05:00.000Z'
+  ]);
+  const recurringJobs = queueJobs.filter((job) => job.id.startsWith(`created-${addUploadedPostsCalls.length}-`));
+  assert.equal(recurringJobs.length, 6);
+  assert.equal(recurringJobs.every((job) => job.status === 'scheduled'), true);
+  assert.equal(recurringJobs.every((job) => Boolean(job.approvedAt)), true);
+  assert.equal(recurringJobs.every((job) => job.approvedBy === 'admin:owner'), true);
+  assert.equal(new Set(recurringJobs.map((job) => job.seriesId)).size, 1);
 
   // ── Preflight: Max Scheduler blocks a disconnected channel server-side ──
   const disconnectedBody = new FormData();
@@ -445,15 +508,15 @@ test('Max Scheduler campaign creation and Release Queue visibility', async (t) =
   assert.ok(formStart >= 0 && formEnd > formStart, 'upload form renders');
   const uploadFormHtml = intakeHtml.slice(formStart, formEnd);
   const fieldTag = (name) => {
-    const match = uploadFormHtml.match(new RegExp(`<(?:input|textarea)\\b[^>]*\\bname="${name}"[^>]*>`, 'i'));
+    const match = uploadFormHtml.match(new RegExp(`<(?:input|textarea|select)\\b[^>]*\\bname="${name}"[^>]*>`, 'i'));
     assert.ok(match, `${name} field renders`);
     return match[0];
   };
 
-  for (const name of ['images', 'publicMediaUrl', 'caption', 'startDate', 'startTime', 'autoMusicToken']) {
+  for (const name of ['images', 'publicMediaUrl', 'caption', 'startDate', 'startTime', 'endDate', 'autoMusicToken']) {
     assert.match(fieldTag(name), /data-reset-after-submit/, `${name} is cleared after confirmed success`);
   }
-  for (const name of ['targetChannels', 'offsetMinutes', 'hashtags', 'autoCaption', 'autoMusic']) {
+  for (const name of ['targetChannels', 'repeatMode', 'offsetMinutes', 'hashtags', 'autoCaption', 'autoMusic']) {
     assert.doesNotMatch(fieldTag(name), /data-reset-after-submit/, `${name} remains a reusable session default`);
   }
 

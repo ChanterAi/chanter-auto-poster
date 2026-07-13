@@ -216,6 +216,18 @@ function postFromDoc(doc) {
     campaignStartAt: toIsoOrNull(data.campaignStartAt),
     channelOffsetMinutes: Number.isFinite(Number(data.channelOffsetMinutes)) ? Number(data.channelOffsetMinutes) : 0,
     channelOrder: Number.isFinite(Number(data.channelOrder)) ? Number(data.channelOrder) : 0,
+    // Daily-series metadata. This is intentionally persisted now even
+    // before pause/resume/edit-series controls exist, so every generated job
+    // remains attributable to one bounded recurring campaign.
+    seriesId: String(data.seriesId || '').trim(),
+    seriesFrequency: String(data.seriesFrequency || '').trim(),
+    seriesStartDate: String(data.seriesStartDate || '').trim(),
+    seriesEndDate: String(data.seriesEndDate || '').trim(),
+    seriesOccurrenceIndex: Number.isInteger(Number(data.seriesOccurrenceIndex)) ? Number(data.seriesOccurrenceIndex) : null,
+    seriesOccurrenceCount: Number.isInteger(Number(data.seriesOccurrenceCount)) ? Number(data.seriesOccurrenceCount) : 0,
+    seriesSourceCount: Number.isInteger(Number(data.seriesSourceCount)) ? Number(data.seriesSourceCount) : 0,
+    seriesTimezone: String(data.seriesTimezone || '').trim(),
+    seriesOccurrenceDate: String(data.seriesOccurrenceDate || '').trim(),
     title: data.title || data.postTitle || data.name || data.originalName || data.fileName || '',
     originalName: data.originalName || '',
     fileName: data.fileName || '',
@@ -228,6 +240,7 @@ function postFromDoc(doc) {
     mediaStoragePath: data.mediaStoragePath || '',
     cloudinaryPublicId: data.cloudinaryPublicId || '',
     cloudinaryResourceType: data.cloudinaryResourceType || '',
+    sharedMediaAsset: Boolean(data.sharedMediaAsset),
     caption: data.caption || '',
     hashtags: data.hashtags || '',
     publicMediaUrl: data.publicMediaUrl || data.mediaUrl || data.publicImageUrl || '',
