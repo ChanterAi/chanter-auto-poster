@@ -3,11 +3,26 @@
 const { randomUUID } = require('crypto');
 const config = require('./config');
 const { postsCollection, getFirestore, Timestamp, FieldValue } = require('./firestore');
-const { postFromDoc, toTimestampOrNull, appendHistoryEntry } = require('./postsMapper');
+const {
+  postFromDoc,
+  toTimestampOrNull,
+  appendHistoryEntry,
+  sanitizePostResult
+} = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
 const youtube = require('./youtube');
 const providers = require('./providers');
+const {
+  USAGE_METRIC_SCHEDULED_POSTS,
+  createUsageService
+} = require('./usageService');
+
+let defaultUsageService = null;
+function getUsageService() {
+  defaultUsageService ||= createUsageService({ db: getFirestore() });
+  return defaultUsageService;
+}
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
 const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
@@ -321,7 +336,7 @@ async function reclaimOne(ref) {
           failedAt: FieldValue.serverTimestamp(),
           errorMessage: reason,
           updatedAt: FieldValue.serverTimestamp(),
-          lastResult: { ok: false, mode: 'api', reason, completedAt: new Date().toISOString() },
+          lastResult: sanitizePostResult({ ok: false, mode: 'api', reason, completedAt: new Date().toISOString() }),
           history: appendHistoryEntry(data.history, 'failed', reason)
         });
         return;
@@ -513,6 +528,7 @@ async function finalize(id, workerId, result) {
   const reason = result.reason || 'TikTok publish failed';
   let applied = false;
   let retryScheduled = false;
+  let usageReconciliationRequired = false;
 
   // Extract a durable publish identifier from the TikTok API response
   // so we can guard against duplicate publishing on retry.
@@ -526,6 +542,33 @@ async function finalize(id, workerId, result) {
     const providerId = String(data.provider || data.platform || providers.PROVIDER_TIKTOK)
       .trim()
       .toLowerCase();
+
+    let usageTransition = null;
+    if (data.usageLedgerId && data.workspaceId && data.usageCycleId) {
+      const locator = {
+        workspaceId: data.workspaceId,
+        usageCycleId: data.usageCycleId,
+        metric: data.usageMetric || USAGE_METRIC_SCHEDULED_POSTS,
+        ledgerId: data.usageLedgerId,
+        relatedResourceId: id
+      };
+      try {
+        if (result.ok) {
+          usageTransition = await getUsageService().transaction.consumeReservation(tx, locator);
+        } else if (result.outcomeUnknown) {
+          usageTransition = await getUsageService().transaction.markOutcomeUnknown(tx, {
+            ...locator,
+            reason: result.code || 'provider_reconciliation_required'
+          });
+        }
+      } catch (usageError) {
+        // Provider truth has priority after an external attempt. Preserve the
+        // reservation (fail-closed for quota), record reconciliation on the
+        // queue item, and never hide a real provider result.
+        usageReconciliationRequired = true;
+        console.error(`[USAGE_RECONCILIATION_REQUIRED] id=${id} code=${usageError.code || 'usage_transition_failed'}`);
+      }
+    }
 
     if (result.ok) {
       const successDetail = providerId === providers.PROVIDER_YOUTUBE
@@ -541,7 +584,9 @@ async function finalize(id, workerId, result) {
         errorMessage: null,
         lockedAt: null,
         lockedBy: null,
-        lastResult: { ...result, completedAt },
+        lastResult: sanitizePostResult({ ...result, completedAt }),
+        usageState: usageTransition ? usageTransition.state : (data.usageState || ''),
+        usageReconciliationRequired,
         history: appendHistoryEntry(data.history, 'posted', successDetail),
         updatedAt: FieldValue.serverTimestamp()
       };
@@ -565,14 +610,16 @@ async function finalize(id, workerId, result) {
         lockedAt: null,
         lockedBy: null,
         providerStatus: 'provider_reconciliation_required',
-        lastResult: {
+        lastResult: sanitizePostResult({
           ok: false,
           mode: result.mode || 'api',
           code: result.code || 'PROVIDER_RECONCILIATION_REQUIRED',
           outcomeUnknown: true,
           reason,
           completedAt
-        },
+        }),
+        usageState: usageTransition ? usageTransition.state : (data.usageState || 'reserved'),
+        usageReconciliationRequired,
         history: appendHistoryEntry(data.history, 'outcome_unknown', reason),
         updatedAt: FieldValue.serverTimestamp()
       });
@@ -599,7 +646,7 @@ async function finalize(id, workerId, result) {
           errorMessage: reason,
           lockedAt: null,
           lockedBy: null,
-          lastResult: { ...safeResult, willRetry: true, attempts },
+          lastResult: sanitizePostResult({ ...safeResult, willRetry: true, attempts }),
           history: appendHistoryEntry(data.history, 'retry_scheduled', reason),
           updatedAt: FieldValue.serverTimestamp()
         });
@@ -610,7 +657,7 @@ async function finalize(id, workerId, result) {
           errorMessage: reason,
           lockedAt: null,
           lockedBy: null,
-          lastResult: safeResult,
+          lastResult: sanitizePostResult(safeResult),
           history: appendHistoryEntry(data.history, 'failed', reason),
           updatedAt: FieldValue.serverTimestamp()
         });
@@ -622,14 +669,23 @@ async function finalize(id, workerId, result) {
   if (!applied) {
     return { ok: false, mode: 'skipped', postId: id, reason: 'Job lock changed before completion.' };
   }
-  if (result.ok) return { ok: true, mode: result.mode || 'api', postId: id };
+  if (result.ok) {
+    return { ok: true, mode: result.mode || 'api', postId: id, usageReconciliationRequired };
+  }
   if (retryScheduled) {
     console.warn(`[POST_RETRY_SCHEDULED] id=${id} reason=${reason}`);
     return { ok: false, mode: result.mode || 'api', postId: id, reason, retryScheduled: true };
   }
   if (result.outcomeUnknown) {
     console.warn(`[POST_OUTCOME_UNKNOWN] id=${id} reason=${reason}`);
-    return { ok: false, mode: result.mode || 'api', postId: id, reason, outcomeUnknown: true };
+    return {
+      ok: false,
+      mode: result.mode || 'api',
+      postId: id,
+      reason,
+      outcomeUnknown: true,
+      usageReconciliationRequired
+    };
   }
   return { ok: false, mode: result.mode || 'api', postId: id, reason };
 }

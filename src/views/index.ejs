@@ -565,6 +565,46 @@
       .history-card .queue-thumb { width: 90px; aspect-ratio: 1; }
       .history-empty { padding: 36px; text-align: center; color: var(--text3); font-size: 13px; }
 
+      /* Plan & Usage */
+      .plan-usage-section {
+        margin-bottom: 28px; padding: 22px;
+        border: 1px solid var(--border); border-radius: var(--r);
+        background: linear-gradient(145deg, rgba(25,25,29,.82), rgba(14,14,17,.76));
+        box-shadow: 0 16px 42px rgba(0,0,0,.2);
+      }
+      [data-plan-usage-region][aria-busy="true"] { opacity: .62; transition: opacity .12s ease; }
+      .plan-usage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 17px; }
+      .plan-usage-head h2 { font-size: 19px; font-weight: 800; letter-spacing: -.02em; }
+      .plan-usage-head p { margin-top: 4px; color: var(--text3); font-size: 12px; }
+      .plan-identity { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+      .plan-badge {
+        border: 1px solid var(--border2); border-radius: 999px; padding: 6px 10px;
+        background: rgba(255,255,255,.045); color: var(--text); font-size: 11px; font-weight: 800;
+      }
+      .plan-badge.is-internal { border-color: rgba(184,160,119,.3); background: var(--warn-bg); color: var(--warn); }
+      .subscription-state { color: var(--text3); font-size: 10px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+      .plan-usage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+      .plan-usage-metric { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-sm); background: rgba(0,0,0,.16); padding: 12px 13px; }
+      .plan-usage-metric span { display: block; color: var(--text3); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+      .plan-usage-metric strong { display: block; margin-top: 6px; color: var(--text); font: 700 17px 'DM Mono', monospace; }
+      .plan-usage-metric small { display: block; margin-top: 4px; color: var(--text3); font-size: 10px; line-height: 1.4; }
+      .plan-usage-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 13px; color: var(--text3); font-size: 11px; }
+      .plan-usage-facts strong { color: var(--text2); font-weight: 700; }
+      .plan-comparison { margin-top: 17px; border-top: 1px solid var(--border); padding-top: 15px; }
+      .plan-comparison > summary { width: max-content; max-width: 100%; color: var(--text2); font-size: 12px; font-weight: 750; cursor: pointer; }
+      .plan-comparison > summary:hover { color: var(--text); }
+      .plan-comparison-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 13px; }
+      .plan-comparison-card { border: 1px solid var(--border); border-radius: var(--r-sm); background: rgba(0,0,0,.14); padding: 14px; }
+      .plan-comparison-card.is-current { border-color: rgba(255,255,255,.28); background: rgba(255,255,255,.04); }
+      .plan-comparison-card header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 11px; }
+      .plan-comparison-card h3 { font-size: 14px; }
+      .current-plan-label { color: var(--ok); font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+      .plan-comparison-card dl { display: grid; gap: 7px; }
+      .plan-comparison-card dl div { display: flex; justify-content: space-between; gap: 10px; color: var(--text3); font-size: 10px; }
+      .plan-comparison-card dt { min-width: 0; }
+      .plan-comparison-card dd { flex: 0 0 auto; color: var(--text2); font-weight: 700; }
+      .billing-unavailable { margin-top: 13px; border: 1px solid var(--border); border-radius: var(--r-sm); background: rgba(255,255,255,.02); padding: 10px 12px; color: var(--text3); font-size: 11px; }
+
       /* ─── Divider ─── */
       .divider { height: 1px; background: var(--border); margin: 12px 0; }
 
@@ -577,6 +617,8 @@
       /* ─── Responsive ─── */
       @media (max-width: 860px) {
         .dashboard-grid { grid-template-columns: 1fr; }
+        .plan-usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .plan-comparison-grid { grid-template-columns: 1fr; }
         .queue-card { grid-template-columns: 1fr; }
         .queue-thumb { width: 100%; aspect-ratio: 16/9; }
         .schedule-row { grid-template-columns: 1fr; }
@@ -594,6 +636,10 @@
         .brand-lockup { justify-content: space-between; }
         .topbar-actions { width: 100%; justify-content: flex-start; }
         .topbar-actions .btn-prompt-evolver, .topbar-actions .btn-dashboard { order: 5; flex: 1 1 100%; }
+        .plan-usage-section { padding: 17px; }
+        .plan-usage-head { flex-direction: column; }
+        .plan-identity { justify-content: flex-start; }
+        .plan-usage-grid { grid-template-columns: 1fr; }
         .account-context { grid-template-columns: 1fr; margin-top: -8px; padding: 15px; }
         .account-connect-flow { grid-column: auto; }
         .account-connect-flow .btn { width: 100%; }
@@ -623,6 +669,12 @@
       const statusOf = (post) => String((post && post.status) || 'pending').toLowerCase();
       const activePosts = posts.filter((post) => statusOf(post) !== 'posted');
       const historyPosts = posts.filter((post) => statusOf(post) === 'posted');
+      const advancedEvidenceEnabled = Boolean(
+        typeof commercialView !== 'undefined'
+        && commercialView
+        && commercialView.available === true
+        && commercialView.advancedEvidence === true
+      );
       const privacyOptions = Array.isArray(creatorInfo && creatorInfo.privacy_level_options) && creatorInfo.privacy_level_options.length > 0
         ? creatorInfo.privacy_level_options
         : ['SELF_ONLY'];
@@ -820,6 +872,124 @@
       <% } %>
 
       <!-- ─── Dashboard Grid ─── -->
+      <!-- PLAN_USAGE_REGION_START -->
+      <div data-plan-usage-region>
+        <%
+          const safeCommercialView = typeof commercialView !== 'undefined'
+            && commercialView && commercialView.available === true
+            ? commercialView
+            : null;
+          const planUsageWorkspace = safeCommercialView && safeCommercialView.workspace && typeof safeCommercialView.workspace === 'object'
+            ? safeCommercialView.workspace : {};
+          const planUsagePlan = safeCommercialView && safeCommercialView.plan && typeof safeCommercialView.plan === 'object'
+            ? safeCommercialView.plan : {};
+          const planUsageCycle = safeCommercialView && safeCommercialView.cycle && typeof safeCommercialView.cycle === 'object'
+            ? safeCommercialView.cycle : {};
+          const planUsage = safeCommercialView && safeCommercialView.usage && typeof safeCommercialView.usage === 'object'
+            ? safeCommercialView.usage : {};
+          const planUsagePublicPlans = safeCommercialView && Array.isArray(safeCommercialView.publicPlans)
+            ? safeCommercialView.publicPlans.filter((plan) => plan && typeof plan === 'object') : [];
+          const planUsageNumber = (value, fallback = 0) => Number.isFinite(Number(value)) && Number(value) >= 0
+            ? Number(value) : fallback;
+          const planUsageLimit = (value) => value === null || value === undefined
+            ? 'Unlimited' : String(planUsageNumber(value));
+          const planUsageMetric = (name) => planUsage[name] && typeof planUsage[name] === 'object'
+            ? planUsage[name] : {};
+          const planUsageDate = (value) => /^\d{4}-\d{2}-\d{2}/.test(String(value || ''))
+            ? String(value).slice(0, 10) : 'Not available';
+          const planUsageLabel = planUsagePlan.id === 'legacy_full_access'
+            ? 'Legacy Full Access' : (String(planUsagePlan.displayName || '').trim() || 'Plan unavailable');
+          const planUsageBillingMessage = safeCommercialView && safeCommercialView.billing
+            && typeof safeCommercialView.billing.message === 'string'
+            && safeCommercialView.billing.message.trim()
+            ? safeCommercialView.billing.message.trim()
+            : 'Billing activation not yet available';
+        %>
+        <% if (safeCommercialView) { %>
+          <section class="plan-usage-section" aria-labelledby="plan-usage-heading">
+            <div class="plan-usage-head">
+              <div>
+                <span class="section-kicker">Workspace</span>
+                <h2 id="plan-usage-heading">Plan &amp; Usage</h2>
+                <p><%= String(planUsageWorkspace.displayName || '').trim() || 'Workspace unavailable' %> · <%= String(planUsageWorkspace.status || 'unknown') %></p>
+              </div>
+              <div class="plan-identity">
+                <span class="plan-badge<%= planUsagePlan.internalOnly ? ' is-internal' : '' %>"><%= planUsageLabel %></span>
+                <span class="subscription-state"><%= String(safeCommercialView.subscriptionStatus || 'none').replace(/_/g, ' ') %></span>
+              </div>
+            </div>
+
+            <div class="plan-usage-grid">
+              <%
+                const scheduledUsage = planUsageMetric('scheduledPosts');
+                const connectedUsage = planUsageMetric('connectedAccounts');
+                const providerUsage = planUsageMetric('activeProviders');
+                const queueUsage = planUsageMetric('activeQueue');
+              %>
+              <div class="plan-usage-metric">
+                <span>Scheduled posts</span>
+                <strong><%= planUsageNumber(scheduledUsage.used) %> / <%= planUsageLimit(scheduledUsage.limit) %></strong>
+                <small><%= planUsageLimit(scheduledUsage.remaining) %> remaining this cycle</small>
+              </div>
+              <div class="plan-usage-metric">
+                <span>Connected accounts</span>
+                <strong><%= planUsageNumber(connectedUsage.used) %> / <%= planUsageLimit(connectedUsage.limit) %></strong>
+                <small>Across implemented providers</small>
+              </div>
+              <div class="plan-usage-metric">
+                <span>Active providers</span>
+                <strong><%= planUsageNumber(providerUsage.used) %> / <%= planUsageLimit(providerUsage.limit) %></strong>
+                <small>Implemented providers only</small>
+              </div>
+              <div class="plan-usage-metric">
+                <span>Active queue</span>
+                <strong><%= planUsageNumber(queueUsage.used) %> / <%= planUsageLimit(queueUsage.limit) %></strong>
+                <small>Current non-terminal jobs</small>
+              </div>
+            </div>
+
+            <div class="plan-usage-facts">
+              <span>Usage cycle <strong><%= planUsageDate(planUsageCycle.start) %> – <%= planUsageDate(planUsageCycle.end) %></strong></span>
+              <span>Scheduling horizon <strong><%= safeCommercialView.schedulingHorizonDays === null ? 'Unlimited' : `${planUsageNumber(safeCommercialView.schedulingHorizonDays)} days` %></strong></span>
+              <span>Runtime scheduling <strong><%= safeCommercialView.runtimeScheduling ? 'Available' : 'Not available' %></strong></span>
+            </div>
+
+            <% if (planUsagePublicPlans.length > 0) { %>
+              <details class="plan-comparison">
+                <summary>Compare Starter, Creator, and Studio</summary>
+                <div class="plan-comparison-grid">
+                  <% planUsagePublicPlans.forEach((publicPlan) => {
+                    const entitlements = publicPlan.entitlements && typeof publicPlan.entitlements === 'object'
+                      ? publicPlan.entitlements : {};
+                    const isCurrentPlan = publicPlan.id === planUsagePlan.id;
+                  %>
+                    <article class="plan-comparison-card<%= isCurrentPlan ? ' is-current' : '' %>">
+                      <header>
+                        <h3><%= String(publicPlan.displayName || publicPlan.id || 'Plan') %></h3>
+                        <% if (isCurrentPlan) { %><span class="current-plan-label">Current plan</span><% } %>
+                      </header>
+                      <dl>
+                        <div><dt>Workspaces</dt><dd><%= planUsageLimit(entitlements.workspaceLimit) %></dd></div>
+                        <div><dt>Scheduled posts / cycle</dt><dd><%= planUsageLimit(entitlements.scheduledPostsPerCycle) %></dd></div>
+                        <div><dt>Connected accounts</dt><dd><%= planUsageLimit(entitlements.connectedAccountLimit) %></dd></div>
+                        <div><dt>Active providers</dt><dd><%= planUsageLimit(entitlements.providerLimit) %></dd></div>
+                        <div><dt>Active queue</dt><dd><%= planUsageLimit(entitlements.activeQueueLimit) %></dd></div>
+                        <div><dt>Batch size</dt><dd><%= planUsageLimit(entitlements.batchSizeLimit) %></dd></div>
+                        <div><dt>Scheduling horizon</dt><dd><%= entitlements.schedulingHorizonDays === null ? 'Unlimited' : `${planUsageNumber(entitlements.schedulingHorizonDays)} days` %></dd></div>
+                        <div><dt>Runtime scheduling</dt><dd><%= entitlements.runtimeScheduling ? 'Available' : 'Not available' %></dd></div>
+                        <div><dt>Advanced evidence</dt><dd><%= entitlements.advancedEvidence ? 'Available' : 'Not available' %></dd></div>
+                      </dl>
+                    </article>
+                  <% }); %>
+                </div>
+              </details>
+            <% } %>
+            <p class="billing-unavailable" role="status"><%= planUsageBillingMessage %></p>
+          </section>
+        <% } %>
+      </div>
+      <!-- PLAN_USAGE_REGION_END -->
+
       <div class="dashboard-grid" aria-label="Poster controls">
         <section class="panel panel-upload">
           <div class="panel-head panel-head-rich">
@@ -1282,8 +1452,8 @@
                       <p class="field-note">Description: <%= post.providerMetadata.youtube.description %></p>
                     <% } %>
                     <p class="field-note">Scheduled: <%= helpers.formatDateTime(post.scheduledAt) %>. To change YouTube metadata or timing, delete this draft and create it again.</p>
-                    <% if (result.hasDebug) { %><details class="advanced"><summary>Advanced</summary><pre><%= result.debugJson %></pre></details><% } %>
-                    <% if (Array.isArray(post.history) && post.history.length > 0) { %>
+                    <% if (advancedEvidenceEnabled && result.hasDebug) { %><details class="advanced"><summary>Advanced</summary><pre><%= result.debugJson %></pre></details><% } %>
+                    <% if (advancedEvidenceEnabled && Array.isArray(post.history) && post.history.length > 0) { %>
                       <details class="advanced">
                         <summary>Evidence log</summary>
                         <ul class="evidence-list">
@@ -1305,6 +1475,7 @@
                   data-has-local-media="<%= helpers.hasLocalMedia(post) ? 'true' : 'false' %>"
                 >
                   <input type="hidden" name="timezoneOffsetMinutes" data-timezone-offset />
+                  <input type="hidden" name="accountId" value="<%= post.accountId %>" />
 
                   <!-- ① Caption (required by TikTok as the post title) -->
                   <label>
@@ -1428,9 +1599,9 @@
                           />
                         </label>
                       <% } %>
-                      <% if (result.hasDebug) { %><pre><%= result.debugJson %></pre><% } %>
-                      <% if (enableInstagram && igResult.hasDebug) { %><pre><%= igResult.debugJson %></pre><% } %>
-                      <% if (Array.isArray(post.history) && post.history.length > 0) { %>
+                      <% if (advancedEvidenceEnabled && result.hasDebug) { %><pre><%= result.debugJson %></pre><% } %>
+                      <% if (advancedEvidenceEnabled && enableInstagram && igResult.hasDebug) { %><pre><%= igResult.debugJson %></pre><% } %>
+                      <% if (advancedEvidenceEnabled && Array.isArray(post.history) && post.history.length > 0) { %>
                         <div>
                           <span class="section-label">Evidence log</span>
                           <ul class="evidence-list">
@@ -1545,7 +1716,7 @@
                     <button type="submit" class="btn btn-danger">Remove</button>
                   </form>
                 </div>
-                <% if (result.hasDebug) { %>
+                <% if (advancedEvidenceEnabled && result.hasDebug) { %>
                   <details class="advanced"><summary>Details</summary><div class="advanced-body"><pre><%= result.debugJson %></pre></div></details>
                 <% } %>
               </div>
@@ -2473,21 +2644,27 @@
         const loadQueueView = async (url, { navigateOnFailure = true } = {}) => {
           const requestVersion = ++queueRequestVersion;
           const currentRegion = document.querySelector('[data-queue-view-region]');
+          const currentPlanUsageRegion = document.querySelector('[data-plan-usage-region]');
           if (!currentRegion) {
             if (navigateOnFailure) window.location.href = url;
             return;
           }
           currentRegion.setAttribute('aria-busy', 'true');
+          currentPlanUsageRegion?.setAttribute('aria-busy', 'true');
           try {
             const response = await fetch(url, { headers: { Accept: 'text/html' } });
             if (!response.ok) throw new Error(`Release Queue request failed: ${response.status}`);
             const html = await response.text();
-            const nextRegion = new DOMParser().parseFromString(html, 'text/html').querySelector('[data-queue-view-region]');
+            const nextDocument = new DOMParser().parseFromString(html, 'text/html');
+            const nextRegion = nextDocument.querySelector('[data-queue-view-region]');
+            const nextPlanUsageRegion = nextDocument.querySelector('[data-plan-usage-region]');
             if (!nextRegion) throw new Error('Release Queue region missing from response');
             if (requestVersion !== queueRequestVersion) return;
             const liveRegion = document.querySelector('[data-queue-view-region]');
             if (!liveRegion) throw new Error('Release Queue region missing from current page');
             liveRegion.replaceWith(nextRegion);
+            const livePlanUsageRegion = document.querySelector('[data-plan-usage-region]');
+            if (livePlanUsageRegion && nextPlanUsageRegion) livePlanUsageRegion.replaceWith(nextPlanUsageRegion);
             bindToggleLinks(nextRegion);
             hydrateQueueRegion(nextRegion);
           } catch (error) {
@@ -2495,6 +2672,7 @@
           } finally {
             if (requestVersion === queueRequestVersion) {
               document.querySelector('[data-queue-view-region]')?.removeAttribute('aria-busy');
+              document.querySelector('[data-plan-usage-region]')?.removeAttribute('aria-busy');
             }
           }
         };

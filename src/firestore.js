@@ -88,6 +88,39 @@ function youtubeAccountsCollection() {
   return getFirestore().collection('youtubeAccounts');
 }
 
+function workspacesCollection() {
+  return getFirestore().collection('workspaces');
+}
+
+function workspaceMembershipsCollection() {
+  return getFirestore().collection('workspaceMemberships');
+}
+
+function subscriptionsCollection() {
+  return getFirestore().collection('subscriptions');
+}
+
+function subscriptionPlanChangeIntentsCollection() {
+  return getFirestore().collection('subscriptionPlanChangeIntents');
+}
+
+function usageLedgerCollection() {
+  return getFirestore().collection('usageLedger');
+}
+
+function usageCountersCollection() {
+  return getFirestore().collection('usageCounters');
+}
+
+// One deterministic document per workspace serializes connected-account
+// activation/disconnect transactions. The account documents remain the
+// canonical provider-identity ownership records; this collection carries the
+// small, reconstructable capacity snapshot used to prevent concurrent limit
+// overruns.
+function connectedAccountCapacityCollection() {
+  return getFirestore().collection('connectedAccountCapacity');
+}
+
 // Short-lived, single-use OAuth transactions (state records and pending
 // channel selections). Documents are deleted on use; expired leftovers are
 // ignored and overwritten by TTL checks in oauthStateStore.js.
@@ -107,6 +140,13 @@ module.exports = {
   postsCollection,
   tiktokAccountsCollection,
   youtubeAccountsCollection,
+  workspacesCollection,
+  workspaceMembershipsCollection,
+  subscriptionsCollection,
+  subscriptionPlanChangeIntentsCollection,
+  usageLedgerCollection,
+  usageCountersCollection,
+  connectedAccountCapacityCollection,
   oauthTransactionsCollection,
   configDoc,
   // Static namespaces — safe to read without an initialized app.

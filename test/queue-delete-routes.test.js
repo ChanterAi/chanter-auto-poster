@@ -79,6 +79,8 @@ instagram.getInstagramHealth = async () => ({
   success: true, platform: 'instagram', configured: true, canPublish: false, mode: 'dry-run', missing: [], message: 'ok'
 });
 
+const { installCommercialFixture } = require('./helpers/commercial-fixture');
+installCommercialFixture(require('../src/commercialService'), storage);
 const routes = require('../src/routes');
 
 test('queue delete is truthful and works across channels; bulk delete reports per-post truth', async (t) => {

@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { mapPatchToFirestore, postFromDoc } = require('../src/postsMapper');
+const { mapPatchToFirestore, postFromDoc, sanitizePostResult } = require('../src/postsMapper');
 
 test('scheduledAt is stored and restored as one absolute UTC instant', () => {
   const iso = '2026-06-20T09:15:00.000Z';
@@ -89,4 +89,81 @@ test('canonical provider, source, approval, idempotency, and legacy status field
   assert.equal(restored.idempotencyKey, 'idem-1');
   assert.equal(restored.status, 'processing');
   assert.equal(restored.approvalState, 'unapproved');
+});
+
+test('provider evidence is allowlisted and secret-shaped legacy fields never reach projections', () => {
+  const restored = postFromDoc({
+    id: 'unsafe-evidence-job',
+    data: () => ({
+      provider: 'youtube',
+      history: [
+        { at: '2026-07-11T12:00:00.000Z', event: 'posted', detail: 'Stored safely.' },
+        { event: 'unsafe', detail: 'client_secret=HISTORY_SECRET_CANARY' }
+      ],
+      logs: [{ access_token: 'LOG_ACCESS_TOKEN_CANARY' }],
+      events: [{ externalCustomerId: 'cus_EVENTS_BILLING_CANARY' }],
+      lastResult: {
+        ok: true,
+        mode: 'api',
+        reason: 'Uploaded. Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.SENSITIVEPAYLOADCANARY.SIGNATURECANARY externalCustomerId=cus_REASON_BILLING_CANARY',
+        response: {
+          video_id: 'video-safe-1',
+          upload_status: 'uploaded',
+          access_token: 'RESULT_ACCESS_TOKEN_CANARY',
+          client_secret: 'RESULT_CLIENT_SECRET_CANARY',
+          credential: { ct: 'RESULT_ENVELOPE_CANARY' },
+          externalSubscriptionId: 'sub_RESULT_BILLING_CANARY',
+          data: { publish_id: 'publish-safe-1', refresh_token: 'RESULT_REFRESH_TOKEN_CANARY' }
+        }
+      },
+      lastInstagramResult: {
+        ok: false,
+        reason: 'client_secret=INSTAGRAM_SECRET_CANARY',
+        response: { post_id: 'instagram-safe-1', access_token: 'INSTAGRAM_TOKEN_CANARY' }
+      }
+    })
+  });
+
+  assert.equal(restored.lastResult.response.video_id, 'video-safe-1');
+  assert.equal(restored.lastResult.response.data.publish_id, 'publish-safe-1');
+  assert.equal(restored.lastInstagramResult.response.post_id, 'instagram-safe-1');
+  assert.equal(restored.logs, restored.history);
+  const serialized = JSON.stringify(restored);
+  for (const canary of [
+    'HISTORY_SECRET_CANARY',
+    'LOG_ACCESS_TOKEN_CANARY',
+    'EVENTS_BILLING_CANARY',
+    'RESULT_ACCESS_TOKEN_CANARY',
+    'RESULT_CLIENT_SECRET_CANARY',
+    'RESULT_ENVELOPE_CANARY',
+    'RESULT_BILLING_CANARY',
+    'RESULT_REFRESH_TOKEN_CANARY',
+    'INSTAGRAM_SECRET_CANARY',
+    'INSTAGRAM_TOKEN_CANARY',
+    'SENSITIVEPAYLOADCANARY',
+    'SIGNATURECANARY',
+    'cus_',
+    'sub_'
+  ]) {
+    assert.equal(serialized.includes(canary), false, canary);
+  }
+});
+
+test('write patches retain safe provider IDs while dropping nested credential and billing fields', () => {
+  const patch = mapPatchToFirestore({
+    lastResult: {
+      ok: true,
+      mode: 'api',
+      response: {
+        data: { publish_id: 'safe-publish-id', access_token: 'WRITE_TOKEN_CANARY' },
+        externalCustomerId: 'cus_WRITE_BILLING_CANARY'
+      }
+    }
+  });
+  assert.deepEqual(patch.lastResult, sanitizePostResult({
+    ok: true,
+    mode: 'api',
+    response: { data: { publish_id: 'safe-publish-id' } }
+  }));
+  assert.equal(JSON.stringify(patch).includes('CANARY'), false);
 });

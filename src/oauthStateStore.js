@@ -1,6 +1,6 @@
 'use strict';
 
-// Server-side, single-use OAuth transaction store (Part 3: YouTube).
+// Server-side, single-use OAuth transaction store (YouTube and admin TikTok).
 //
 // Two record kinds live in one short-lived collection:
 //
@@ -91,14 +91,15 @@ async function consumeRecord(id, { kind, userId, provider, now = Date.now() } = 
  * already be validated by auth.safeReturnTo — this module stores, it does
  * not re-derive trust.
  */
-async function createOAuthState({ userId, provider, returnTo, codeVerifier, mode, accountId }, options) {
+async function createOAuthState({ userId, provider, returnTo, codeVerifier, mode, accountId, workspaceId }, options) {
   return createRecord('oauth_state', STATE_TTL_MS, {
     userId: String(userId || ''),
     provider: String(provider || ''),
     returnTo: String(returnTo || ''),
     codeVerifier: String(codeVerifier || ''),
     mode: mode === 'reauthorize' ? 'reauthorize' : 'connect',
-    accountId: String(accountId || '')
+    accountId: String(accountId || ''),
+    workspaceId: String(workspaceId || '')
   }, options);
 }
 
@@ -110,13 +111,24 @@ async function consumeOAuthState(state, { userId, provider, now } = {}) {
  * Pending multi-channel selection. `credentialEnvelope` must already be an
  * encrypted vault envelope — this module never sees plaintext tokens.
  */
-async function createChannelSelection({ userId, provider, returnTo, mode, accountId, channels, credentialEnvelope, tokenMeta }, options) {
+async function createChannelSelection({
+  userId,
+  provider,
+  returnTo,
+  mode,
+  accountId,
+  workspaceId,
+  channels,
+  credentialEnvelope,
+  tokenMeta
+}, options) {
   return createRecord('channel_selection', SELECTION_TTL_MS, {
     userId: String(userId || ''),
     provider: String(provider || ''),
     returnTo: String(returnTo || ''),
     mode: mode === 'reauthorize' ? 'reauthorize' : 'connect',
     accountId: String(accountId || ''),
+    workspaceId: String(workspaceId || ''),
     channels: Array.isArray(channels) ? channels : [],
     credentialEnvelope: credentialEnvelope || null,
     tokenMeta: tokenMeta || null

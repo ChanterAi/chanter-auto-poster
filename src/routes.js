@@ -15,6 +15,7 @@ const youtube = require('./youtube');
 const oauthStateStore = require('./oauthStateStore');
 const providers = require('./providers');
 const connectedAccounts = require('./connectedAccounts');
+const { sanitizePostResult } = require('./postsMapper');
 const { DEFAULT_OFFSET_MINUTES } = require('./maxScheduler');
 const { summarizeCampaigns, latestCampaignChannelCount } = require('./campaignAccounting');
 const clientRoutes = require('./clientRoutes');
@@ -111,15 +112,38 @@ function asyncRoute(handler) {
 
 function websiteContext(req, options = {}) {
   const userId = resolveUserId(req);
+  const requestedWorkspaceId = String(
+    options.workspaceId
+    || (req.commercialContext && req.commercialContext.workspace && req.commercialContext.workspace.workspaceId)
+    || req.get('x-chanter-workspace-id')
+    || req.query.workspaceId
+    || ''
+  ).trim();
   return applicationService.createExecutionContext({
     userId,
     actorId: options.actorId || `admin:${userId}`,
     accountId: options.accountId || '',
     source: 'website',
+    workspaceId: requestedWorkspaceId,
+    commercialContext: options.commercialContext || req.commercialContext || null,
     correlationId: req.get('x-request-id') || req.get('x-correlation-id') || '',
     approval: options.approval || null,
     idempotency: { key: options.idempotencyKey || '' }
   });
+}
+
+async function resolveWebsiteCommercialContext(req, options = {}) {
+  if (req.commercialContext && !options.workspaceId) {
+    return { commercialContext: req.commercialContext, view: req.commercialView };
+  }
+  const resolved = await applicationService.getPlanUsage(websiteContext(req, options));
+  req.commercialContext = resolved.commercialContext;
+  req.commercialView = resolved.view;
+  return resolved;
+}
+
+function requestWorkspaceScope(req) {
+  return req.commercialContext ? req.commercialContext.workspaceScope : undefined;
 }
 
 // Release Queue view mode: "active" (today's behavior, scoped to the
@@ -137,6 +161,7 @@ function resolveQueueView(req, allPosts) {
 
 const renderAutoPoster = asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
+  const { view: commercialView } = await resolveWebsiteCommercialContext(req);
   const { accounts, activeAccount } = await resolveTikTokAccountContext(req, res);
   const activeAccountId = activeAccount ? activeAccount.accountId : '';
   const context = websiteContext(req);
@@ -148,13 +173,17 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
   const allPosts = allQueue.items;
   const queueView = resolveQueueView(req, allPosts);
   const posts = queueView === 'all' ? allPosts : activeAccountPosts;
-  const tiktokAuthStatus = await tiktok.getTikTokAuthStatus(activeAccountId, userId);
+  const tiktokAuthStatus = await tiktok.getTikTokAuthStatus(
+    activeAccountId,
+    userId,
+    requestWorkspaceScope(req)
+  );
   const instagramStatus = config.ENABLE_INSTAGRAM
     ? await instagram.getInstagramAuthStatus()
     : null;
   const instagramHealth = await instagram.getInstagramHealth();
   const creatorInfo = tiktokAuthStatus.connected
-    ? (await getCreatorInfoSafe(activeAccountId, userId)) || creatorInfoFromAccount(activeAccount)
+    ? (await getCreatorInfoSafe(activeAccountId, userId, requestWorkspaceScope(req))) || creatorInfoFromAccount(activeAccount)
     : creatorInfoFromAccount(activeAccount);
 
   // Refresh stored profile when TikTok reports a renamed handle.
@@ -166,7 +195,12 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
       avatarUrl: creatorInfo.creator_avatar_url || ''
     };
     try {
-      await storage.updateTikTokAccountProfile(userId, activeAccount.accountId, profile);
+      await storage.updateTikTokAccountProfile(
+        userId,
+        activeAccount.accountId,
+        profile,
+        requestWorkspaceScope(req)
+      );
     } catch (refreshError) {
       console.warn('[routes] profile refresh after render load failed', refreshError.message);
     }
@@ -210,7 +244,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
   const youtubeProvider = providers.getProviderStatus(providers.PROVIDER_YOUTUBE);
   let youtubeChannels = [];
   try {
-    youtubeChannels = await resolveYouTubeChannelViews(userId);
+    youtubeChannels = await resolveYouTubeChannelViews(userId, requestWorkspaceScope(req));
   } catch (youtubeError) {
     console.warn('[routes] YouTube channels unavailable', youtubeError.message);
   }
@@ -238,6 +272,7 @@ const renderAutoPoster = asyncRoute(async (req, res) => {
     instagramStatus,
     instagramHealth,
     creatorInfo,
+    commercialView,
     helpers: viewHelpers
   });
 });
@@ -300,11 +335,12 @@ router.get('/private/autoposter/dashboard', requireAdminPage, (req, res) => {
 });
 
 router.get('/api/private/autoposter/dashboard', requireAdminApi, asyncRoute(async (req, res) => {
+  const { view: commercial } = await resolveWebsiteCommercialContext(req);
   const [queue, accountContext, youtubeChannels] = await Promise.all([
     applicationService.listQueue(websiteContext(req), { limit: 1000 }),
     resolveTikTokAccountContext(req, res),
     // TikTok truth must still render when YouTube storage is unreachable.
-    resolveYouTubeChannelViews(resolveUserId(req)).catch((youtubeError) => {
+    resolveYouTubeChannelViews(resolveUserId(req), requestWorkspaceScope(req)).catch((youtubeError) => {
       console.warn('[routes] YouTube channels unavailable for dashboard', youtubeError.message);
       return [];
     })
@@ -322,6 +358,7 @@ router.get('/api/private/autoposter/dashboard', requireAdminApi, asyncRoute(asyn
     ],
     selectedAccountId,
     jobs,
+    commercial,
     appTimeZone: config.appTimeZone
   });
 }));
@@ -356,9 +393,23 @@ router.get('/run-scheduler', asyncRoute(runCronTick));
 
 router.get('/api/debug/jobs', asyncRoute(async (req, res) => {
   if (!authorizeCronRequest(req, res, 'debug')) return;
-  const jobs = await storage.getRecentJobs(req.query.limit);
+  const requestedLimit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+  const workspaceId = String(
+    req.get('x-chanter-workspace-id') || req.query.workspaceId || ''
+  ).trim();
+  const queue = await applicationService.listQueue(
+    applicationService.createExecutionContext({
+      userId: resolveUserId(req),
+      actorId: 'cron-debug',
+      source: 'internal_worker',
+      workspaceId
+    }),
+    { limit: requestedLimit }
+  );
+  const jobs = queue.items;
   res.json({
     ok: true,
+    scope: queue.scope,
     jobs: jobs.map((job) => ({
       id: job.id,
       status: job.status,
@@ -372,9 +423,10 @@ router.get('/api/debug/jobs', asyncRoute(async (req, res) => {
 }));
 
 router.post('/private/autoposter/account', requireAdminPage, asyncRoute(async (req, res) => {
+  await resolveWebsiteCommercialContext(req);
   const userId = resolveUserId(req);
   const accountId = String(req.body.accountId || '').trim();
-  const account = await storage.getTikTokAccount(userId, accountId);
+  const account = await storage.getTikTokAccount(userId, accountId, requestWorkspaceScope(req));
   if (!account) {
     redirectWithNotice(res, 'TikTok account not found.');
     return;
@@ -388,14 +440,15 @@ router.post('/private/autoposter/account', requireAdminPage, asyncRoute(async (r
 // string, which would leak into browser history and server access logs).
 // Only the code's hash is ever persisted — see storage.generateClientAccessCode.
 router.post('/private/autoposter/account/:accountId/client-access', requireAdminPage, asyncRoute(async (req, res) => {
+  await resolveWebsiteCommercialContext(req);
   const userId = resolveUserId(req);
   const accountId = String(req.params.accountId || '').trim();
-  const code = await storage.generateClientAccessCode(userId, accountId);
+  const code = await storage.generateClientAccessCode(userId, accountId, requestWorkspaceScope(req));
   if (!code) {
     redirectWithNotice(res, 'TikTok account not found.');
     return;
   }
-  const account = await storage.getTikTokAccount(userId, accountId);
+  const account = await storage.getTikTokAccount(userId, accountId, requestWorkspaceScope(req));
   res.set('Cache-Control', 'no-store');
   res.render('client-access-generated', {
     appName: config.appName,
@@ -406,24 +459,37 @@ router.post('/private/autoposter/account/:accountId/client-access', requireAdmin
 }));
 
 router.post('/private/autoposter/account/:accountId/client-access/revoke', requireAdminPage, asyncRoute(async (req, res) => {
+  await resolveWebsiteCommercialContext(req);
   const userId = resolveUserId(req);
   const accountId = String(req.params.accountId || '').trim();
-  const revoked = await storage.revokeClientAccessCode(userId, accountId);
+  const revoked = await storage.revokeClientAccessCode(userId, accountId, requestWorkspaceScope(req));
   redirectWithNotice(res, revoked ? 'Client access revoked. The old code no longer works.' : 'TikTok account not found.');
 }));
 
-router.get('/connect/tiktok', requireAdminPage, (req, res) => {
+router.get('/connect/tiktok', requireAdminPage, asyncRoute(async (req, res) => {
   if (!config.tiktok.clientKey || !config.tiktok.clientSecret || !config.tiktok.redirectUri) {
     redirectWithNotice(res, 'Add TikTok client key, secret, and redirect URI to .env first.');
     return;
   }
-  const state = randomUUID();
+  const authorization = await applicationService.authorizeAccountConnection(
+    websiteContext(req),
+    { provider: 'tiktok', accountId: '' }
+  );
+  req.commercialContext = authorization.commercialContext;
+  const userId = resolveUserId(req);
+  const state = await oauthStateStore.createOAuthState({
+    userId,
+    provider: 'tiktok',
+    returnTo: '/',
+    mode: 'connect',
+    workspaceId: authorization.commercialContext.workspace.workspaceId
+  });
   // Clear only this browser's selected-account state. Existing account
   // records, tokens, jobs, and history remain untouched in Firestore.
   res.clearCookie(ACTIVE_TIKTOK_ACCOUNT_COOKIE);
   res.cookie('tiktok_oauth_state', state, { httpOnly: true, sameSite: 'lax', maxAge: 10 * 60 * 1000 });
   res.redirect(tiktok.buildTikTokAuthUrl(state));
-});
+}));
 
 // TikTok's redirect_uri is a single fixed URL (config.tiktok.redirectUri),
 // so it's shared by the admin "connect a channel" flow below and the
@@ -444,21 +510,41 @@ router.get('/auth/tiktok/callback', asyncRoute(async (req, res) => {
   }
   const expectedState = parseCookies(req.headers.cookie).tiktok_oauth_state;
   res.clearCookie('tiktok_oauth_state');
+  const userId = resolveUserId(req);
+  const consumed = await oauthStateStore.consumeOAuthState(String(req.query.state || ''), {
+    userId,
+    provider: 'tiktok'
+  });
   if (req.query.error) {
     redirectWithNotice(res, `TikTok connection failed: ${req.query.error_description || req.query.error}`);
     return;
   }
-  if (!req.query.code || !req.query.state || req.query.state !== expectedState) {
+  if (!req.query.code || !req.query.state || req.query.state !== expectedState || !consumed.ok) {
     redirectWithNotice(res, 'TikTok connection failed: invalid OAuth state.');
     return;
   }
   try {
-    const userId = resolveUserId(req);
+    await resolveWebsiteCommercialContext(req, { workspaceId: consumed.record.workspaceId });
     const auth = await tiktok.exchangeCodeForToken(String(req.query.code));
-    let account = await storage.saveTikTokAccount(userId, auth);
+    const activation = await applicationService.authorizeAccountConnection(
+      websiteContext(req),
+      { provider: 'tiktok', accountId: auth.open_id }
+    );
+    let account = await storage.saveTikTokAccount(
+      userId,
+      auth,
+      {},
+      requestWorkspaceScope(req),
+      activation.activationContext
+    );
     try {
-      const profile = await tiktok.queryCreatorInfo(account.accountId, userId);
-      account = await storage.updateTikTokAccountProfile(userId, account.accountId, profile) || account;
+      const profile = await tiktok.queryCreatorInfo(account.accountId, userId, requestWorkspaceScope(req));
+      account = await storage.updateTikTokAccountProfile(
+        userId,
+        account.accountId,
+        profile,
+        requestWorkspaceScope(req)
+      ) || account;
     } catch (profileError) {
       console.warn('[routes] TikTok profile unavailable after OAuth', profileError.message);
     }
@@ -470,13 +556,14 @@ router.get('/auth/tiktok/callback', asyncRoute(async (req, res) => {
 }));
 
 router.get('/disconnect/tiktok', requireAdminPage, asyncRoute(async (req, res) => {
+  await resolveWebsiteCommercialContext(req);
   const userId = resolveUserId(req);
   const { activeAccount } = await resolveTikTokAccountContext(req, res);
   if (!activeAccount) {
     redirectWithNotice(res, 'No TikTok account is selected.');
     return;
   }
-  await storage.disconnectTikTokAccount(userId, activeAccount.accountId);
+  await storage.disconnectTikTokAccount(userId, activeAccount.accountId, requestWorkspaceScope(req));
   res.clearCookie(ACTIVE_TIKTOK_ACCOUNT_COOKIE);
   redirectWithNotice(res, `${accountLabel(activeAccount)} disconnected. Its jobs and history were preserved.`);
 }));
@@ -498,6 +585,7 @@ router.get('/connect/youtube', requireAdminPage, asyncRoute(async (req, res) => 
     redirectWithNotice(res, 'YouTube is not configured on this deployment yet, so connection is disabled.');
     return;
   }
+  await resolveWebsiteCommercialContext(req);
   const userId = resolveUserId(req);
   const reauthorizeId = String(req.query.reauthorize || '').trim();
   let mode = 'connect';
@@ -505,7 +593,7 @@ router.get('/connect/youtube', requireAdminPage, asyncRoute(async (req, res) => 
   // or restored — never on a normal reconnect that already has one.
   let forceConsent = false;
   if (reauthorizeId) {
-    const account = await storage.getYouTubeAccount(userId, reauthorizeId);
+    const account = await storage.getYouTubeAccount(userId, reauthorizeId, requestWorkspaceScope(req));
     if (!account) {
       redirectWithNotice(res, 'YouTube channel not found.');
       return;
@@ -513,9 +601,13 @@ router.get('/connect/youtube', requireAdminPage, asyncRoute(async (req, res) => 
     mode = 'reauthorize';
     forceConsent = !account.refreshTokenPresent || Boolean(account.reauthorizationRequired);
   } else {
-    const accounts = await storage.getYouTubeAccounts(userId);
+    const accounts = await storage.getYouTubeAccounts(userId, requestWorkspaceScope(req));
     forceConsent = !accounts.some((account) => account.refreshTokenPresent);
   }
+  await applicationService.authorizeAccountConnection(
+    websiteContext(req),
+    { provider: 'youtube', accountId: reauthorizeId }
+  );
   const pkce = youtube.createPkcePair();
   const state = await oauthStateStore.createOAuthState({
     userId,
@@ -523,7 +615,8 @@ router.get('/connect/youtube', requireAdminPage, asyncRoute(async (req, res) => 
     returnTo: safeReturnTo(req.query.returnTo),
     codeVerifier: pkce.verifier,
     mode,
-    accountId: reauthorizeId
+    accountId: reauthorizeId,
+    workspaceId: req.commercialContext.workspace.workspaceId
   });
   res.cookie(YOUTUBE_OAUTH_STATE_COOKIE, state, { httpOnly: true, sameSite: 'lax', maxAge: 10 * 60 * 1000 });
   res.redirect(youtube.buildYouTubeAuthUrl(state, { codeChallenge: pkce.challenge, forceConsent }));
@@ -554,6 +647,7 @@ router.get('/auth/youtube/callback', requireAdminOAuth, asyncRoute(async (req, r
     return;
   }
   const record = consumed.record;
+  await resolveWebsiteCommercialContext(req, { workspaceId: record.workspaceId });
   const returnTo = safeReturnTo(record.returnTo);
 
   try {
@@ -571,13 +665,35 @@ router.get('/auth/youtube/callback', requireAdminOAuth, asyncRoute(async (req, r
         redirectWithNotice(res, 'YouTube reauthorization failed: the Google account you authorized does not include the channel being reauthorized. Nothing was changed.');
         return;
       }
-      const finalized = await youtube.finalizeYouTubeConnection({ userId, channel: match, tokens: exchanged.tokens, meta: exchanged.meta });
+      const activation = await applicationService.authorizeAccountConnection(
+        websiteContext(req),
+        { provider: 'youtube', accountId: match.channelId }
+      );
+      const finalized = await youtube.finalizeYouTubeConnection({
+        userId,
+        channel: match,
+        tokens: exchanged.tokens,
+        meta: exchanged.meta,
+        workspaceScope: requestWorkspaceScope(req),
+        activationContext: activation.activationContext
+      });
       redirectWithYouTubeConnectNotice(res, returnTo, finalized);
       return;
     }
 
     if (channels.length === 1) {
-      const finalized = await youtube.finalizeYouTubeConnection({ userId, channel: channels[0], tokens: exchanged.tokens, meta: exchanged.meta });
+      const activation = await applicationService.authorizeAccountConnection(
+        websiteContext(req),
+        { provider: 'youtube', accountId: channels[0].channelId }
+      );
+      const finalized = await youtube.finalizeYouTubeConnection({
+        userId,
+        channel: channels[0],
+        tokens: exchanged.tokens,
+        meta: exchanged.meta,
+        workspaceScope: requestWorkspaceScope(req),
+        activationContext: activation.activationContext
+      });
       redirectWithYouTubeConnectNotice(res, returnTo, finalized);
       return;
     }
@@ -592,6 +708,7 @@ router.get('/auth/youtube/callback', requireAdminOAuth, asyncRoute(async (req, r
       returnTo,
       mode: record.mode,
       accountId: record.accountId,
+      workspaceId: record.workspaceId,
       channels,
       credentialEnvelope: youtube.encryptTokens(exchanged.tokens),
       tokenMeta: exchanged.meta
@@ -619,6 +736,7 @@ router.post('/connect/youtube/select', requireAdminPage, asyncRoute(async (req, 
     return;
   }
   const record = consumed.record;
+  await resolveWebsiteCommercialContext(req, { workspaceId: record.workspaceId });
   const channel = (Array.isArray(record.channels) ? record.channels : [])
     .find((entry) => entry && entry.channelId === channelId);
   if (!channel) {
@@ -637,7 +755,18 @@ router.post('/connect/youtube/select', requireAdminPage, asyncRoute(async (req, 
     return;
   }
   try {
-    const finalized = await youtube.finalizeYouTubeConnection({ userId, channel, tokens, meta: record.tokenMeta || {} });
+    const activation = await applicationService.authorizeAccountConnection(
+      websiteContext(req),
+      { provider: 'youtube', accountId: channel.channelId }
+    );
+    const finalized = await youtube.finalizeYouTubeConnection({
+      userId,
+      channel,
+      tokens,
+      meta: record.tokenMeta || {},
+      workspaceScope: requestWorkspaceScope(req),
+      activationContext: activation.activationContext
+    });
     redirectWithYouTubeConnectNotice(res, safeReturnTo(record.returnTo), finalized);
   } catch (error) {
     redirectWithNotice(res, `YouTube connection failed: ${error.message}`);
@@ -649,16 +778,17 @@ router.post('/connect/youtube/select', requireAdminPage, asyncRoute(async (req, 
 // credentials are removed regardless of the revocation outcome, so a
 // failed revocation can never leave a usable stored token behind.
 router.post('/disconnect/youtube', requireAdminPage, asyncRoute(async (req, res) => {
+  await resolveWebsiteCommercialContext(req);
   const userId = resolveUserId(req);
   const accountId = String(req.body.accountId || '').trim();
-  const account = await storage.getYouTubeAccount(userId, accountId);
+  const account = await storage.getYouTubeAccount(userId, accountId, requestWorkspaceScope(req));
   if (!account) {
     redirectWithNotice(res, 'YouTube channel not found.');
     return;
   }
 
   let revocation = { revoked: false, reason: 'No stored credentials.' };
-  const envelope = await storage.getYouTubeAccountCredential(userId, accountId);
+  const envelope = await storage.getYouTubeAccountCredential(userId, accountId, requestWorkspaceScope(req));
   if (envelope) {
     try {
       const tokens = youtube.decryptTokens(envelope);
@@ -667,7 +797,7 @@ router.post('/disconnect/youtube', requireAdminPage, asyncRoute(async (req, res)
       revocation = { revoked: false, reason: 'Stored credentials could not be decrypted for revocation.' };
     }
   }
-  await storage.disconnectYouTubeAccount(userId, accountId);
+  await storage.disconnectYouTubeAccount(userId, accountId, requestWorkspaceScope(req));
   const label = youtubeChannelLabel(account);
   redirectWithNotice(res, revocation.revoked
     ? `YouTube channel ${label} disconnected and its Google access was revoked. Jobs and history were preserved.`
@@ -696,7 +826,8 @@ router.get('/api/youtube/posts/:postId/status', requireAdminApi, asyncRoute(asyn
   const status = await youtube.getUploadedVideoStatus({
     userId: resolveUserId(req),
     accountId: post.accountId,
-    videoId: post.publishId
+    videoId: post.publishId,
+    workspaceScope: requestWorkspaceScope(req)
   });
   res.status(status.ok ? 200 : 400).json(status);
 }));
@@ -754,11 +885,13 @@ router.get('/api/instagram/status', requireAdminApi, asyncRoute(async (req, res)
 }));
 
 router.post('/api/instagram/publish', requireAdminApi, express.json({ limit: '1mb' }), asyncRoute(async (req, res) => {
+  await resolveWebsiteCommercialContext(req);
   const userId = resolveUserId(req);
   const payload = { ...(req.body || {}), postId: String((req.body && req.body.postId) || '').trim(), userId };
   try {
     const result = await instagram.publishInstagramMedia(payload);
-    await saveInstagramAttempt(userId, payload.postId, result);
+    const safeResult = sanitizePostResult(result) || { ok: Boolean(result && result.ok), mode: 'api' };
+    await saveInstagramAttempt(userId, payload.postId, safeResult, requestWorkspaceScope(req));
     if (result.code === 'INSTAGRAM_NOT_CONFIGURED' && wantsJson(req)) {
       res.status(503).json({
         success: false,
@@ -769,7 +902,7 @@ router.post('/api/instagram/publish', requireAdminApi, express.json({ limit: '1m
       });
       return;
     }
-    if (wantsJson(req)) { res.status(result.ok ? 200 : 400).json({ ok: result.ok, result }); return; }
+    if (wantsJson(req)) { res.status(result.ok ? 200 : 400).json({ ok: result.ok, result: safeResult }); return; }
     redirectWithNotice(res, instagramNotice(result));
   } catch (error) {
     if (error.code === 'INSTAGRAM_NOT_CONFIGURED' && wantsJson(req)) {
@@ -782,8 +915,14 @@ router.post('/api/instagram/publish', requireAdminApi, express.json({ limit: '1m
       });
       return;
     }
-    const result = { ok: false, mode: 'api', published: false, reason: error.message, response: error.response || null };
-    await saveInstagramAttempt(userId, payload.postId, result);
+    const result = sanitizePostResult({
+      ok: false,
+      mode: 'api',
+      published: false,
+      reason: error.message,
+      response: error.response || null
+    });
+    await saveInstagramAttempt(userId, payload.postId, result, requestWorkspaceScope(req));
     if (wantsJson(req)) { res.status(400).json({ ok: false, result }); return; }
     redirectWithNotice(res, `Instagram attempt failed: ${error.message}`);
   }
@@ -912,6 +1051,7 @@ router.post(
 // keeps its existing connected-account requirement and message; YouTube
 // targets one connected channel chosen in the form.
 router.post('/upload', requireAdminPage, uploadCampaignMedia, asyncRoute(async (req, res) => {
+  await resolveWebsiteCommercialContext(req);
   const userId = resolveUserId(req);
   const files = req.files || [];
   const provider = String(req.body.provider || '').trim().toLowerCase() || 'tiktok';
@@ -979,6 +1119,10 @@ router.post('/upload', requireAdminPage, uploadCampaignMedia, asyncRoute(async (
     );
   } catch (error) {
     if (error instanceof applicationService.AutoPosterApplicationError) {
+      for (const file of files) await removeTemporaryUpload(file.path);
+      if (preparedMedia && preparedMedia.file && preparedMedia.file.path) {
+        await removeTemporaryUpload(preparedMedia.file.path);
+      }
       const details = error.details && typeof error.details === 'object' ? error.details : {};
       const createdPostIds = Array.isArray(details.createdPostIds)
         ? details.createdPostIds.map((id) => String(id || '').trim()).filter(Boolean)
@@ -989,7 +1133,13 @@ router.post('/upload', requireAdminPage, uploadCampaignMedia, asyncRoute(async (
         code: error.code,
         resultUnknown: error.status >= 500 && Boolean(createdPostId || createdPostIds.length),
         createdPostId,
-        createdPostIds
+        createdPostIds,
+        reasonCode: details.reasonCode,
+        limit: details.limit,
+        current: details.current,
+        remaining: details.remaining,
+        planId: details.planId,
+        workspaceId: details.workspaceId
       });
       return;
     }
@@ -1039,7 +1189,8 @@ router.post('/schedule', requireConnectedTikTokAccount, asyncRoute(async (req, r
 }));
 
 // ── Updated post save — now captures interaction settings & content disclosure ──
-router.post('/posts/:id', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+router.post('/posts/:id', requireCommercialWorkspacePage, asyncRoute(async (req, res) => {
+  const scopeAccountId = String(req.body.accountId || '').trim() || undefined;
   const publicMediaUrl = String(req.body.publicMediaUrl || req.body.publicImageUrl || '').trim();
   if (publicMediaUrl && !isPublicHttpsUrl(publicMediaUrl)) {
     redirectWithNotice(res, 'Public Media URL must be a valid HTTPS URL.');
@@ -1078,10 +1229,10 @@ router.post('/posts/:id', requireConnectedTikTokAccount, asyncRoute(async (req, 
 
   try {
     await applicationService.updatePost(
-      websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
+      websiteContext(req, { accountId: scopeAccountId }),
       {
         postId: req.params.id,
-        accountId: req.activeTikTokAccount.accountId,
+        accountId: scopeAccountId,
         patch: postPatch,
         scheduleInput: {
           value: req.body.scheduledAt,
@@ -1100,9 +1251,20 @@ router.post('/posts/:id', requireConnectedTikTokAccount, asyncRoute(async (req, 
   }
 }));
 
-router.post('/posts/:id/move', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+router.post('/posts/:id/move', requireCommercialWorkspacePage, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  const moved = await storage.movePost(userId, req.params.id, req.body.direction, req.activeTikTokAccount.accountId);
+  const scopeAccountId = String(req.body.accountId || '').trim() || undefined;
+  const { post } = await applicationService.getPostStatus(
+    websiteContext(req, { accountId: scopeAccountId }),
+    { postId: req.params.id, accountId: scopeAccountId }
+  );
+  const moved = await storage.movePost(
+    userId,
+    req.params.id,
+    req.body.direction,
+    post.accountId,
+    requestWorkspaceScope(req)
+  );
   redirectWithNotice(res, moved ? 'Moved.' : 'Could not move item.');
 }));
 
@@ -1110,12 +1272,9 @@ router.post('/posts/:id/move', requireConnectedTikTokAccount, asyncRoute(async (
 // Approving is the only way a job becomes publishable; scheduler.claimPost
 // refuses unapproved jobs on every worker path, so these two routes are
 // the entire surface area a human uses to open or close the gate.
-router.post('/posts/:id/approve', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+router.post('/posts/:id/approve', requireCommercialWorkspacePage, asyncRoute(async (req, res) => {
   const userId = resolveUserId(req);
-  // YouTube queue cards submit their own channel id (the active-TikTok
-  // scope would never match a YouTube job). Ownership is still enforced by
-  // the shared operation; this only widens the account-scope filter.
-  const scopeAccountId = String(req.body.accountId || '').trim() || req.activeTikTokAccount.accountId;
+  const scopeAccountId = String(req.body.accountId || '').trim() || undefined;
   const result = await applicationService.approvePost(
     websiteContext(req, { accountId: scopeAccountId, approval: { approvedBy: `admin:${userId}` } }),
     { postId: req.params.id, accountId: scopeAccountId }
@@ -1130,8 +1289,8 @@ router.post('/posts/:id/approve', requireConnectedTikTokAccount, asyncRoute(asyn
     : 'Approved. Set a posting time or use Publish Now to release it.');
 }));
 
-router.post('/posts/:id/unapprove', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const scopeAccountId = String(req.body.accountId || '').trim() || req.activeTikTokAccount.accountId;
+router.post('/posts/:id/unapprove', requireCommercialWorkspacePage, asyncRoute(async (req, res) => {
+  const scopeAccountId = String(req.body.accountId || '').trim() || undefined;
   const result = await applicationService.revokeApproval(
     websiteContext(req, { accountId: scopeAccountId }),
     { postId: req.params.id, accountId: scopeAccountId }
@@ -1141,8 +1300,8 @@ router.post('/posts/:id/unapprove', requireConnectedTikTokAccount, asyncRoute(as
     : 'Could not change approval. The post may be posting, already posted, or not in this channel.');
 }));
 
-router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const scopeAccountId = String(req.body.accountId || '').trim() || req.activeTikTokAccount.accountId;
+router.post('/posts/:id/prepare', requireCommercialWorkspacePage, asyncRoute(async (req, res) => {
+  const scopeAccountId = String(req.body.accountId || '').trim() || undefined;
   let post;
   try {
     ({ post } = await applicationService.getPostStatus(
@@ -1184,11 +1343,12 @@ router.post('/posts/:id/prepare', requireConnectedTikTokAccount, asyncRoute(asyn
   redirectWithNotice(res, `Needs attention: ${result.reason || 'The provider could not post this.'}`);
 }));
 
-router.post('/posts/:id/posted', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+router.post('/posts/:id/posted', requireCommercialWorkspacePage, asyncRoute(async (req, res) => {
+  const scopeAccountId = String(req.body.accountId || '').trim() || undefined;
   try {
     await applicationService.markPostManually(
-      websiteContext(req, { accountId: req.activeTikTokAccount.accountId }),
-      { postId: req.params.id, accountId: req.activeTikTokAccount.accountId }
+      websiteContext(req, { accountId: scopeAccountId }),
+      { postId: req.params.id, accountId: scopeAccountId }
     );
     redirectWithNotice(res, 'Marked posted.');
   } catch (error) {
@@ -1200,8 +1360,8 @@ router.post('/posts/:id/posted', requireConnectedTikTokAccount, asyncRoute(async
   }
 }));
 
-router.post('/posts/:id/pending', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
-  const scopeAccountId = String(req.body.accountId || '').trim() || req.activeTikTokAccount.accountId;
+router.post('/posts/:id/pending', requireCommercialWorkspacePage, asyncRoute(async (req, res) => {
+  const scopeAccountId = String(req.body.accountId || '').trim() || undefined;
   try {
     const result = await applicationService.retryPost(
       websiteContext(req, { accountId: scopeAccountId }),
@@ -1222,7 +1382,7 @@ router.post('/posts/:id/pending', requireConnectedTikTokAccount, asyncRoute(asyn
 // posts on every channel this admin owns (including legacy jobs with no
 // channel assignment), and all of them must be deletable from where they
 // are shown. Ownership is still enforced by the shared delete operation.
-router.post('/posts/:id/delete', requireConnectedTikTokAccount, asyncRoute(async (req, res) => {
+router.post('/posts/:id/delete', requireCommercialWorkspacePage, asyncRoute(async (req, res) => {
   const result = await applicationService.deletePost(websiteContext(req), { postId: req.params.id });
   redirectWithNotice(res, result.deleted
     ? 'Deleted.'
@@ -1296,8 +1456,9 @@ function recordFailedLogin(ip, now = Date.now()) {
 }
 
 async function resolveTikTokAccountContext(req, res) {
+  await resolveWebsiteCommercialContext(req);
   const userId = resolveUserId(req);
-  const accounts = await storage.getTikTokAccounts(userId);
+  const accounts = await storage.getTikTokAccounts(userId, requestWorkspaceScope(req));
   const selectedId = parseCookies(req.headers.cookie)[ACTIVE_TIKTOK_ACCOUNT_COOKIE] || '';
   const activeAccount = accounts.find((account) => account.accountId === selectedId)
     || accounts.find((account) => account.connected)
@@ -1395,8 +1556,8 @@ function redirectWithYouTubeConnectNotice(res, returnTo, finalized) {
 // The safe connected-account view (plus display labels) for every owned
 // YouTube channel. Never raw account records — the view shape excludes
 // credentials by construction.
-async function resolveYouTubeChannelViews(userId) {
-  const accounts = await storage.getYouTubeAccounts(userId);
+async function resolveYouTubeChannelViews(userId, workspaceScope) {
+  const accounts = await storage.getYouTubeAccounts(userId, workspaceScope);
   const views = [];
   for (const account of accounts) {
     try {
@@ -1437,6 +1598,12 @@ function respondWithNotice(req, res, notice, ok = true, options = {}) {
       : (ok ? 200 : 400);
     const payload = { ok, notice };
     if (options.code) payload.code = String(options.code);
+    if (options.reasonCode) payload.reasonCode = String(options.reasonCode);
+    for (const field of ['limit', 'current', 'remaining']) {
+      if (options[field] === null || Number.isFinite(options[field])) payload[field] = options[field];
+    }
+    if (options.planId) payload.planId = String(options.planId);
+    if (options.workspaceId) payload.workspaceId = String(options.workspaceId);
     if (options.resultUnknown) payload.resultUnknown = true;
     if (options.createdPostId) payload.createdPostId = String(options.createdPostId);
     if (Array.isArray(options.createdPostIds) && options.createdPostIds.length > 0) {
@@ -1499,8 +1666,8 @@ function firstNonEmptyLine(value) {
   return String(value || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
 }
 
-async function getCreatorInfoSafe(accountId, userId) {
-  try { return await tiktok.queryCreatorInfo(accountId, userId); }
+async function getCreatorInfoSafe(accountId, userId, workspaceScope) {
+  try { return await tiktok.queryCreatorInfo(accountId, userId, workspaceScope); }
   catch (error) { console.warn('[routes] TikTok creator info unavailable', error.message); return null; }
 }
 
@@ -1746,8 +1913,14 @@ function isHttpUrl(value) {
   catch { return false; }
 }
 
-function getDebugJson(post) { return post && post.lastResult ? JSON.stringify(post.lastResult, null, 2) : ''; }
-function getInstagramDebugJson(post) { return post && post.lastInstagramResult ? JSON.stringify(post.lastInstagramResult, null, 2) : ''; }
+function getDebugJson(post) {
+  const result = sanitizePostResult(post && post.lastResult);
+  return result ? JSON.stringify(result, null, 2) : '';
+}
+function getInstagramDebugJson(post) {
+  const result = sanitizePostResult(post && post.lastInstagramResult);
+  return result ? JSON.stringify(result, null, 2) : '';
+}
 
 function statusLabel(status) {
   const labels = { pending: 'Unscheduled', scheduled: 'Scheduled', processing: 'Publishing', ready: 'Needs manual verification', posted: 'Posted', failed: 'Failed', outcome_unknown: 'Outcome unknown — reconcile' };
@@ -1755,11 +1928,30 @@ function statusLabel(status) {
   return labels[v] || `${v.charAt(0).toUpperCase()}${v.slice(1)}`;
 }
 
-async function saveInstagramAttempt(userId, postId, result) {
+async function saveInstagramAttempt(userId, postId, result, workspaceScope) {
   if (!postId) return;
-  const post = await storage.getPost(userId, postId);
+  const post = await storage.getPost(userId, postId, undefined, workspaceScope);
   if (!post) return;
-  await storage.updatePost(userId, postId, { lastInstagramResult: { ...result, completedAt: new Date().toISOString() } });
+  await storage.updatePost(
+    userId,
+    postId,
+    { lastInstagramResult: sanitizePostResult({ ...result, completedAt: new Date().toISOString() }) },
+    undefined,
+    undefined,
+    workspaceScope
+  );
+}
+
+// Queue-item management is provider-neutral. Resolve the authenticated
+// workspace first, then let the shared application service verify the post
+// and optional submitted account scope. A valid YouTube-only workspace must
+// never need a TikTok connection just to manage its own queue.
+function requireCommercialWorkspacePage(req, res, next) {
+  if (!req.isAdmin) {
+    requireAdminPage(req, res, next);
+    return;
+  }
+  resolveWebsiteCommercialContext(req).then(() => next()).catch(next);
 }
 
 function instagramNotice(result) {

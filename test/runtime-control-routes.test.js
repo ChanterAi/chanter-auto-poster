@@ -14,6 +14,7 @@ const express = require('express');
 
 const config = require('../src/config');
 const storage = require('../src/storage');
+const applicationService = require('../src/autoposterApplicationService');
 
 const TOKEN = 'test-runtime-token-1234567890';
 
@@ -126,6 +127,8 @@ for (const key of Object.keys(tiktok)) {
   }
 }
 
+const { installCommercialFixture } = require('./helpers/commercial-fixture');
+installCommercialFixture(require('../src/commercialService'), storage);
 const runtimeControlRoutes = require('../src/runtimeControlRoutes');
 
 function futureIso(minutesAhead = 90) {
@@ -331,4 +334,110 @@ test('runtime control routes: no responses ever contain the service token', asyn
     assert.equal(source.includes(`require('./${forbidden}')`), false, `must not require ${forbidden}`);
   }
   assert.equal(/\bfetch\s*\(/.test(source), false, 'must not call fetch()');
+});
+
+test('runtime routes propagate verified workspace context and preserve structured commercial denial', async (t) => {
+  const originals = {
+    listQueue: applicationService.listQueue,
+    getPostStatus: applicationService.getPostStatus,
+    schedulePost: applicationService.schedulePost
+  };
+  t.after(() => Object.assign(applicationService, originals));
+
+  const calls = [];
+  applicationService.listQueue = async (context) => {
+    calls.push({ operation: 'list', context });
+    if (context.workspaceId === 'workspace-b-00000001') {
+      throw new applicationService.AutoPosterApplicationError(
+        'Workspace not found.',
+        { status: 404, code: 'not_found' }
+      );
+    }
+    return {
+      items: [],
+      totalInScope: 0,
+      scope: { workspaceId: context.workspaceId, accountId: 'all' }
+    };
+  };
+  applicationService.getPostStatus = async (context) => {
+    calls.push({ operation: 'status', context });
+    throw new applicationService.AutoPosterApplicationError(
+      'Post not found for this tenant/account scope.',
+      { status: 404, code: 'not_found' }
+    );
+  };
+  applicationService.schedulePost = async (context, input) => {
+    calls.push({ operation: 'schedule', context, input });
+    throw new applicationService.AutoPosterApplicationError(
+      'Runtime scheduling is not available on Starter.',
+      {
+        status: 403,
+        code: 'runtime_scheduling_not_allowed',
+        details: {
+          reasonCode: 'runtime_scheduling_not_allowed',
+          current: 0,
+          limit: 0,
+          remaining: 0,
+          planId: 'starter',
+          workspaceId: context.workspaceId
+        }
+      }
+    );
+  };
+
+  const app = express();
+  app.use('/api/runtime', runtimeControlRoutes);
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const headers = { 'x-chanter-runtime-token': TOKEN, Accept: 'application/json' };
+
+  const deniedWorkspace = await fetch(
+    `${baseUrl}/api/runtime/queue?workspaceId=workspace-b-00000001`,
+    { headers }
+  );
+  assert.equal(deniedWorkspace.status, 404);
+  assert.equal((await deniedWorkspace.json()).code, 'not_found');
+
+  const status = await fetch(
+    `${baseUrl}/api/runtime/posts/post-b/status?workspaceId=workspace-a-00000001`,
+    { headers }
+  );
+  assert.equal(status.status, 404);
+
+  const schedule = await fetch(`${baseUrl}/api/runtime/schedule`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workspaceId: 'workspace-a-00000001',
+      accountId: 'account-a',
+      mediaUrl: 'https://cdn.example.com/runtime.mp4',
+      scheduledAt: futureIso(),
+      idempotencyKey: 'workspace-denial-1',
+      planId: 'studio',
+      entitlementOverrides: { runtimeScheduling: true },
+      scheduledPostsPerCycle: 999999
+    })
+  });
+  assert.equal(schedule.status, 403);
+  assert.deepEqual(await schedule.json(), {
+    ok: false,
+    code: 'runtime_scheduling_not_allowed',
+    reason: 'Runtime scheduling is not available on Starter.',
+    reasonCode: 'runtime_scheduling_not_allowed',
+    current: 0,
+    limit: 0,
+    remaining: 0,
+    planId: 'starter',
+    workspaceId: 'workspace-a-00000001'
+  });
+
+  const scheduleCall = calls.find((call) => call.operation === 'schedule');
+  assert.equal(scheduleCall.context.workspaceId, 'workspace-a-00000001');
+  assert.equal('planId' in scheduleCall.input, false);
+  assert.equal('entitlementOverrides' in scheduleCall.input, false);
+  assert.equal('scheduledPostsPerCycle' in scheduleCall.input, false);
+  assert.equal(state.addUploadedPostsCalls.length, 1, 'structured denial creates no additional queue item');
 });

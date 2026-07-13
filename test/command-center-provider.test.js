@@ -94,9 +94,17 @@ const posts = [
     postedAt: new Date().toISOString(),
     lastResult: {
       ok: true, mode: 'api',
-      response: { video_id: 'yt-video-777', privacy_status: 'private', upload_status: 'uploaded' },
+      response: {
+        video_id: 'yt-video-777',
+        privacy_status: 'private',
+        upload_status: 'uploaded',
+        access_token: 'CANARY-RESULT-ACCESS-TOKEN',
+        client_secret: 'CANARY-RESULT-CLIENT-SECRET',
+        externalCustomerId: 'CANARY-RESULT-CUSTOMER-ID'
+      },
       completedAt: new Date().toISOString()
-    }
+    },
+    logs: [{ credential: 'CANARY-RAW-LOG-CREDENTIAL' }]
   }
 ];
 
@@ -111,6 +119,8 @@ storage.getPosts = async (userId, accountId) =>
 storage.getSettings = async () => ({ dailyPostTime: '09:00' });
 storage.getDashboardJobs = async () => posts;
 
+const { installCommercialFixture } = require('./helpers/commercial-fixture');
+installCommercialFixture(require('../src/commercialService'), storage);
 const routes = require('../src/routes');
 const app = express();
 app.set('view engine', 'ejs');

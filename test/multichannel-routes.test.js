@@ -133,6 +133,8 @@ scheduler.processPost = async (id, options) => {
   return { ok: true, mode: 'api', postId: id };
 };
 
+const { installCommercialFixture } = require('./helpers/commercial-fixture');
+installCommercialFixture(require('../src/commercialService'), storage);
 const routes = require('../src/routes');
 
 test('multi-channel scheduling end-to-end at the route layer', async (t) => {
@@ -308,7 +310,9 @@ test('multi-channel scheduling end-to-end at the route layer', async (t) => {
   // active UI channel cannot leak into the publish path.
   assert.equal('accountId' in (processPostCalls[0].options || {}), false);
 
-  // Another channel's job is not reachable through the active channel's session.
+  // Provider-neutral admin queue management is workspace-scoped, not tied
+  // to the active TikTok picker. The shared service verifies the owned job,
+  // and the worker still resolves credentials from that job's account.
   const publishForeign = await fetch(`${baseUrl}/posts/job-cdwarrior-1/prepare`, {
     method: 'POST',
     redirect: 'manual',
@@ -316,8 +320,10 @@ test('multi-channel scheduling end-to-end at the route layer', async (t) => {
     body: new URLSearchParams({ force: '1' })
   });
   assert.equal(publishForeign.status, 302);
-  assert.match(String(publishForeign.headers.get('location')), /not\+found|not%20found/);
-  assert.equal(processPostCalls.length, 1, 'foreign-channel job was not published');
+  assert.match(decodeURIComponent(String(publishForeign.headers.get('location'))), /Posted\. Check the status/);
+  assert.equal(processPostCalls.length, 2);
+  assert.equal(processPostCalls[1].id, 'job-cdwarrior-1');
+  assert.equal('accountId' in (processPostCalls[1].options || {}), false);
 
   // ── Changing the active channel does not mutate queued jobs ─────────────
   const beforeSwitch = JSON.stringify(queueJobs);

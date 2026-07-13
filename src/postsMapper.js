@@ -9,6 +9,117 @@ const DEFAULT_USER_ID = config.defaultUserId;
 // SCHEDULER_MAX_CLAIM_ATTEMPTS, so this is a belt-and-braces limit that
 // keeps a single document from growing without bound no matter what.
 const POST_HISTORY_LIMIT = 50;
+const SAFE_RESULT_STRING_FIELDS = Object.freeze([
+  'mode',
+  'reason',
+  'code',
+  'completedAt',
+  'providerStatus',
+  'providerErrorCategory'
+]);
+const SAFE_RESULT_BOOLEAN_FIELDS = Object.freeze([
+  'ok',
+  'outcomeUnknown',
+  'willRetry',
+  'published',
+  'sessionCreated',
+  'definitiveFailure'
+]);
+const SAFE_RESULT_NUMBER_FIELDS = Object.freeze(['attempts']);
+const SAFE_RESPONSE_FIELDS = new Set([
+  'publish_id', 'publishid', 'post_id', 'postid', 'item_id', 'itemid',
+  'video_id', 'videoid', 'share_url', 'shareurl', 'post_url', 'posturl',
+  'permalink', 'public_url', 'publicurl', 'status', 'publish_status',
+  'publishstatus', 'log_id', 'logid', 'privacy_status', 'upload_status',
+  'channel_id', 'uploaded', 'size', 'chunks'
+]);
+const SAFE_RESPONSE_CONTAINERS = new Set(['data', 'result', 'video']);
+
+function scrubEvidenceText(value, maxLength = 500) {
+  return String(value || '')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[redacted]')
+    .replace(/\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_-]{12,})\b/g, '[redacted]')
+    .replace(
+      /\b(access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|authorization|credential|externalCustomerId|externalSubscriptionId|entitlementOverrides)\b\s*[:=]\s*["']?[^\s,"'}]+/gi,
+      '$1=[redacted]'
+    )
+    .replace(/\b(?:ya29\.[A-Za-z0-9._-]+|sk_(?:live|test)_[A-Za-z0-9_-]+|cus_[A-Za-z0-9_-]+|sub_[A-Za-z0-9_-]+)\b/g, '[redacted]')
+    .slice(0, maxLength);
+}
+
+function safeResponseScalar(key, value) {
+  if (!['string', 'number', 'boolean'].includes(typeof value)) return undefined;
+  if (/url|permalink/i.test(key)) {
+    try {
+      const parsed = new URL(String(value));
+      if (!['http:', 'https:'].includes(parsed.protocol)) return undefined;
+      parsed.username = '';
+      parsed.password = '';
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed.toString().slice(0, 500);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof value === 'string') return scrubEvidenceText(value, 500);
+  return value;
+}
+
+function sanitizeProviderResponse(value, depth = 0) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 3) return null;
+  const safe = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const normalizedKey = String(key).toLowerCase();
+    if (SAFE_RESPONSE_FIELDS.has(normalizedKey)) {
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const nested = sanitizeProviderResponse(raw, depth + 1);
+        if (nested && Object.keys(nested).length > 0) safe[key] = nested;
+      } else {
+        const scalar = safeResponseScalar(key, raw);
+        if (scalar !== undefined) safe[key] = scalar;
+      }
+      continue;
+    }
+    if (SAFE_RESPONSE_CONTAINERS.has(normalizedKey)) {
+      const nested = sanitizeProviderResponse(raw, depth + 1);
+      if (nested && Object.keys(nested).length > 0) safe[key] = nested;
+    }
+  }
+  return Object.keys(safe).length > 0 ? safe : null;
+}
+
+function sanitizePostResult(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const safe = {};
+  for (const key of SAFE_RESULT_BOOLEAN_FIELDS) {
+    if (typeof value[key] === 'boolean') safe[key] = value[key];
+  }
+  for (const key of SAFE_RESULT_NUMBER_FIELDS) {
+    if (Number.isSafeInteger(value[key]) && value[key] >= 0) safe[key] = value[key];
+  }
+  for (const key of SAFE_RESULT_STRING_FIELDS) {
+    if (typeof value[key] === 'string' && value[key].trim()) {
+      safe[key] = scrubEvidenceText(value[key], key === 'reason' ? 500 : 120);
+    }
+  }
+  const response = sanitizeProviderResponse(value.response);
+  if (response) safe.response = response;
+  return Object.keys(safe).length > 0 ? safe : null;
+}
+
+function sanitizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history.slice(-POST_HISTORY_LIMIT).flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const event = scrubEvidenceText(entry.event || 'event', 64).trim() || 'event';
+    const safe = { event };
+    if (entry.at) safe.at = scrubEvidenceText(entry.at, 80);
+    if (entry.detail) safe.detail = scrubEvidenceText(entry.detail, 300);
+    return [safe];
+  });
+}
 
 /**
  * Append one evidence entry to a post's history array, returning a new
@@ -18,10 +129,10 @@ const POST_HISTORY_LIMIT = 50;
  * into errorMessage/lastResult — never raw API responses or tokens.
  */
 function appendHistoryEntry(history, event, detail) {
-  const entry = { at: new Date().toISOString(), event: String(event || 'event').slice(0, 64) };
-  const cleanDetail = String(detail || '').trim();
+  const entry = { at: new Date().toISOString(), event: scrubEvidenceText(event || 'event', 64) };
+  const cleanDetail = scrubEvidenceText(detail, 300).trim();
   if (cleanDetail) entry.detail = cleanDetail.slice(0, 300);
-  const base = Array.isArray(history) ? history : [];
+  const base = sanitizeHistory(history);
   return [...base, entry].slice(-POST_HISTORY_LIMIT);
 }
 
@@ -71,10 +182,16 @@ function postFromDoc(doc) {
   const tiktokOpenId = provider === 'tiktok'
     ? (data.tiktokOpenId || data.open_id || (accountId !== 'legacy' ? accountId : ''))
     : '';
+  const lastResult = sanitizePostResult(data.lastResult);
+  const history = sanitizeHistory(data.history);
 
   return {
     id,
     userId: data.userId || DEFAULT_USER_ID,
+    // Part 4 workspace identity. Legacy records deliberately remain empty
+    // here; the verified active-workspace resolver decides whether a
+    // user-owned legacy record may be normalized for a given read.
+    workspaceId: String(data.workspaceId || '').trim(),
     platform: data.platform || data.provider || 'tiktok',
     provider,
     providerSource: explicitProvider ? 'explicit' : 'legacy_default',
@@ -134,7 +251,7 @@ function postFromDoc(doc) {
     approved: Boolean(toIsoOrNull(data.approvedAt)),
     approvalState: toIsoOrNull(data.approvedAt) ? 'approved' : 'unapproved',
     // Redacted evidence log: [{ at, event, detail? }, ...]
-    history: Array.isArray(data.history) ? data.history : [],
+    history,
     fileSize: Number(data.fileSize || 0),
     duplicateWarning: data.duplicateWarning || '',
     order: Number(data.order || 0),
@@ -160,10 +277,12 @@ function postFromDoc(doc) {
           }
         }
       : null,
-    lastResult: data.lastResult || null,
-    lastError: data.lastError || data.error || (data.lastResult && (data.lastResult.reason || data.lastResult.error || data.lastResult.message)) || '',
-    logs: data.logs || data.events || data.history || [],
-    lastInstagramResult: data.lastInstagramResult || null,
+    lastResult,
+    lastError: (lastResult && lastResult.reason) || '',
+    // Only canonical, scrubbed history is exposed as operational evidence.
+    // Legacy arbitrary logs/events may contain raw provider payloads.
+    logs: history,
+    lastInstagramResult: sanitizePostResult(data.lastInstagramResult),
     disableComment: Boolean(data.disableComment),
     disableDuet: Boolean(data.disableDuet),
     disableStitch: Boolean(data.disableStitch),
@@ -175,6 +294,12 @@ function postFromDoc(doc) {
     idempotencyKey: data.idempotencyKey || data.runtimeIdempotencyKey || '',
     runtimeIdempotencyKey: data.runtimeIdempotencyKey || data.idempotencyKey || '',
     runtimeScheduledBy: data.runtimeScheduledBy || '',
+    // Usage linkage contains identifiers and lifecycle state only. Counter
+    // documents, subscription overrides, and billing identifiers never ride
+    // on queue/API projections.
+    usageReservationId: String(data.usageReservationId || '').trim(),
+    usageCycleId: String(data.usageCycleId || '').trim(),
+    usageState: String(data.usageState || '').trim(),
     // Scheduler-only bookkeeping. Harmless to expose; nothing in routes.js
     // or the view currently reads these, but scheduler.js does.
     lockedAt: toIsoOrNull(data.lockedAt),
@@ -190,6 +315,10 @@ function postFromDoc(doc) {
  */
 function mapPatchToFirestore(patch) {
   const result = { ...patch };
+
+  if ('lastResult' in result) result.lastResult = sanitizePostResult(result.lastResult);
+  if ('lastInstagramResult' in result) result.lastInstagramResult = sanitizePostResult(result.lastInstagramResult);
+  if ('history' in result) result.history = sanitizeHistory(result.history);
 
   if ('scheduledAt' in result) {
     result.scheduledAt = toTimestampOrNull(result.scheduledAt);
@@ -214,6 +343,10 @@ module.exports = {
   toTimestampOrNull,
   toIsoOrNull,
   normalizeQueueStatus,
+  scrubEvidenceText,
+  sanitizeProviderResponse,
+  sanitizePostResult,
+  sanitizeHistory,
   postFromDoc,
   mapPatchToFirestore
 };

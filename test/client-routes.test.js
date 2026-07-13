@@ -6,6 +6,7 @@ process.env.OPENAI_API_KEY = 'test-openai-key';
 process.env.ENABLE_INSTAGRAM = 'false';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
 const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
@@ -13,6 +14,7 @@ const express = require('express');
 const storage = require('../src/storage');
 const tiktok = require('../src/tiktok');
 const scheduler = require('../src/scheduler');
+const applicationService = require('../src/autoposterApplicationService');
 const { attachUser } = require('../src/auth');
 const { attachClientSession } = require('../src/clientAuth');
 
@@ -83,6 +85,8 @@ storage.deletePost = async (userId, id, accountId) => {
 
 tiktok.getTikTokAuthStatus = async () => ({ connected: true });
 
+const { installCommercialFixture } = require('./helpers/commercial-fixture');
+installCommercialFixture(require('../src/commercialService'), storage);
 const clientRoutes = require('../src/clientRoutes');
 const routes = require('../src/routes');
 
@@ -230,4 +234,52 @@ test('client portal shows empty/disconnected states without exposing other data'
   assert.doesNotMatch(html, /account-b-queue\.jpg/);
 
   accounts['account-a'].connected = true;
+});
+
+test('commercial denial removes the uploaded client media before redirecting', async (t) => {
+  accounts['account-a'].connected = true;
+  const server = await buildApp();
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  const login = await fetch(`${baseUrl}/client/autoposter/login`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ accessCode: 'login-a.secret-a' })
+  });
+  const cookie = String(login.headers.get('set-cookie') || '').split(';')[0];
+
+  const originalSchedulePost = applicationService.schedulePost;
+  applicationService.schedulePost = async () => {
+    throw new applicationService.AutoPosterApplicationError(
+      'Starter scheduled post limit reached (30/30).',
+      {
+        status: 409,
+        code: 'monthly_post_limit_reached',
+        details: { current: 30, limit: 30, remaining: 0 }
+      }
+    );
+  };
+  t.after(() => { applicationService.schedulePost = originalSchedulePost; });
+
+  const form = new FormData();
+  form.set('caption', 'Denied upload cleanup');
+  form.set('media', new Blob(['safe-test-video'], { type: 'video/mp4' }), 'denied.mp4');
+  const uploadsDir = require('../src/config').uploadsDir;
+  const beforeFiles = new Set(await fs.readdir(uploadsDir));
+  const response = await fetch(`${baseUrl}/client/autoposter/upload`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { Cookie: cookie },
+    body: form
+  });
+
+  assert.equal(response.status, 302);
+  assert.match(decodeURIComponent(response.headers.get('location')), /Starter scheduled post limit reached/);
+  // Multer succeeded, then the application-service denial cleanup removed
+  // the only matching temporary file. No provider or queue operation ran.
+  const leftovers = (await fs.readdir(uploadsDir))
+    .filter((name) => !beforeFiles.has(name) && name.startsWith('client-'));
+  assert.deepEqual(leftovers, []);
 });

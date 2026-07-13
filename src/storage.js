@@ -7,6 +7,7 @@ const {
   postsCollection,
   tiktokAccountsCollection,
   youtubeAccountsCollection,
+  connectedAccountCapacityCollection,
   configDoc,
   getFirestore,
   Timestamp,
@@ -20,8 +21,335 @@ const {
   isVideoMediaUrl
 } = require('./mediaPolicy');
 const providers = require('./providers');
-const { DEFAULT_USER_ID, postFromDoc, mapPatchToFirestore, appendHistoryEntry, toTimestampOrNull } = require('./postsMapper');
+const {
+  DEFAULT_USER_ID,
+  postFromDoc,
+  mapPatchToFirestore,
+  appendHistoryEntry,
+  toTimestampOrNull,
+  normalizeQueueStatus
+} = require('./postsMapper');
 const { generateAccessCode, parseAccessCode, verifyAccessSecret } = require('./clientAuth');
+const {
+  USAGE_METRIC_SCHEDULED_POSTS,
+  createUsageService
+} = require('./usageService');
+
+let defaultUsageService = null;
+function getUsageService() {
+  defaultUsageService ||= createUsageService({ db: getFirestore() });
+  return defaultUsageService;
+}
+
+function normalizeWorkspaceScope(scope) {
+  if (!scope) return { workspaceId: '', allowLegacyOwnerRecords: false };
+  if (typeof scope === 'string') {
+    return { workspaceId: String(scope).trim(), allowLegacyOwnerRecords: false };
+  }
+  return {
+    workspaceId: String(scope.workspaceId || '').trim(),
+    allowLegacyOwnerRecords: Boolean(scope.allowLegacyOwnerRecords)
+  };
+}
+
+function recordMatchesWorkspace(data, ownerId, scope) {
+  const normalized = normalizeWorkspaceScope(scope);
+  if (!normalized.workspaceId) return true;
+  const storedWorkspaceId = String((data && data.workspaceId) || '').trim();
+  if (storedWorkspaceId) return storedWorkspaceId === normalized.workspaceId;
+  return normalized.allowLegacyOwnerRecords
+    && String((data && data.userId) || DEFAULT_USER_ID) === ownerId;
+}
+
+function workspaceIdForWrite(previous, scope) {
+  const normalized = normalizeWorkspaceScope(scope);
+  const storedWorkspaceId = String((previous && previous.workspaceId) || '').trim();
+  if (
+    normalized.workspaceId
+    && storedWorkspaceId
+    && storedWorkspaceId !== normalized.workspaceId
+  ) {
+    const error = new Error('Publishing account is assigned to another workspace');
+    error.status = 404;
+    error.code = 'not_found';
+    throw error;
+  }
+  return normalized.workspaceId || storedWorkspaceId || '';
+}
+
+class ConnectedAccountActivationError extends Error {
+  constructor(message, { code = 'account_activation_denied', details = {} } = {}) {
+    super(message);
+    this.name = 'ConnectedAccountActivationError';
+    this.status = 409;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function connectedAccountKey(provider, accountId) {
+  return `${provider}:${String(accountId || '').trim()}`;
+}
+
+function capacityDocId(workspaceId) {
+  return encodeURIComponent(String(workspaceId || '').trim());
+}
+
+function normalizeActivationLimit(value, name) {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ConnectedAccountActivationError('Connected-account entitlement truth is invalid.', {
+      code: 'commercial_truth_unverified',
+      details: { entitlement: name }
+    });
+  }
+  return value;
+}
+
+function normalizeAccountActivationContext(input, { ownerId, provider, workspaceScope }) {
+  const scope = normalizeWorkspaceScope(workspaceScope);
+  const workspaceId = String((input && input.workspaceId) || '').trim();
+  const resolvedOwnerId = String((input && input.ownerUserId) || '').trim();
+  const resolvedProvider = String((input && input.provider) || '').trim().toLowerCase();
+  if (
+    !workspaceId
+    || workspaceId !== scope.workspaceId
+    || resolvedOwnerId !== ownerId
+    || resolvedProvider !== provider
+  ) {
+    throw new ConnectedAccountActivationError('Connected-account commercial truth could not be verified.', {
+      code: 'commercial_truth_unverified'
+    });
+  }
+  return {
+    workspaceId,
+    connectedAccountLimit: normalizeActivationLimit(
+      input.connectedAccountLimit,
+      'connectedAccountLimit'
+    ),
+    providerLimit: normalizeActivationLimit(input.providerLimit, 'providerLimit')
+  };
+}
+
+function connectedTikTokData(data) {
+  return Boolean(data && data.connected && data.access_token);
+}
+
+function connectedYouTubeData(data) {
+  return Boolean(data && data.connected && data.tokenPresent);
+}
+
+function activeAccountEntry(provider, data) {
+  const accountId = String((data && (data.accountId || data.open_id || data.channelId)) || '').trim();
+  return accountId ? { key: connectedAccountKey(provider, accountId), provider, accountId } : null;
+}
+
+function activeAccountsFromSnapshots({ ownerId, workspaceScope, tiktokSnapshot, youtubeSnapshot }) {
+  const active = new Map();
+  for (const doc of (tiktokSnapshot && tiktokSnapshot.docs) || []) {
+    const data = doc.data() || {};
+    if (!connectedTikTokData(data) || !recordMatchesWorkspace(data, ownerId, workspaceScope)) continue;
+    const entry = activeAccountEntry('tiktok', data);
+    if (entry) active.set(entry.key, entry);
+  }
+  for (const doc of (youtubeSnapshot && youtubeSnapshot.docs) || []) {
+    const data = doc.data() || {};
+    if (!connectedYouTubeData(data) || !recordMatchesWorkspace(data, ownerId, workspaceScope)) continue;
+    const entry = activeAccountEntry('youtube', data);
+    if (entry) active.set(entry.key, entry);
+  }
+  return active;
+}
+
+function capacityDocument({ workspaceId, ownerId, activeAccounts, now }) {
+  const entries = [...activeAccounts.values()]
+    .sort((left, right) => left.key.localeCompare(right.key));
+  return {
+    workspaceId,
+    ownerUserId: ownerId,
+    connectedAccountCount: entries.length,
+    activeProviderIds: [...new Set(entries.map((entry) => entry.provider))].sort(),
+    activeAccounts: entries,
+    updatedAt: now
+  };
+}
+
+function assertCapacityAllowsActivation(activeAccounts, accountEntry, activation) {
+  if (activeAccounts.has(accountEntry.key)) return;
+  const prospective = new Map(activeAccounts);
+  prospective.set(accountEntry.key, accountEntry);
+  if (
+    activation.connectedAccountLimit !== null
+    && prospective.size > activation.connectedAccountLimit
+  ) {
+    throw new ConnectedAccountActivationError(
+      `The current plan has reached its connected account limit. Current: ${activeAccounts.size}. Limit: ${activation.connectedAccountLimit}.`,
+      {
+        code: 'connected_account_limit_reached',
+        details: {
+          workspaceId: activation.workspaceId,
+          current: activeAccounts.size,
+          limit: activation.connectedAccountLimit,
+          remaining: 0
+        }
+      }
+    );
+  }
+  const providers = new Set([...prospective.values()].map((entry) => entry.provider));
+  if (activation.providerLimit !== null && providers.size > activation.providerLimit) {
+    throw new ConnectedAccountActivationError(
+      `The current plan has reached its active provider limit. Current: ${new Set([...activeAccounts.values()].map((entry) => entry.provider)).size}. Limit: ${activation.providerLimit}.`,
+      {
+        code: 'provider_limit_reached',
+        details: {
+          workspaceId: activation.workspaceId,
+          current: new Set([...activeAccounts.values()].map((entry) => entry.provider)).size,
+          limit: activation.providerLimit,
+          remaining: 0
+        }
+      }
+    );
+  }
+}
+
+async function transactConnectedAccountActivation({
+  ownerId,
+  provider,
+  accountId,
+  workspaceScope,
+  activationContext,
+  accountRef,
+  buildAccountData
+}) {
+  const activation = normalizeAccountActivationContext(activationContext, {
+    ownerId,
+    provider,
+    workspaceScope
+  });
+  const scope = normalizeWorkspaceScope(workspaceScope);
+  const db = getFirestore();
+  const capacityRef = connectedAccountCapacityCollection().doc(capacityDocId(activation.workspaceId));
+  return db.runTransaction(async (transaction) => {
+    // Every read intentionally precedes every write (required by Firestore).
+    // Reading the shared workspace capacity document serializes otherwise
+    // distinct account activations; reading the globally keyed account doc
+    // serializes cross-owner attempts for the same provider identity.
+    const accountSnapshot = await transaction.get(accountRef);
+    const capacitySnapshot = await transaction.get(capacityRef);
+    const tiktokSnapshot = await transaction.get(
+      tiktokAccountsCollection().where('userId', '==', ownerId)
+    );
+    const youtubeSnapshot = await transaction.get(
+      youtubeAccountsCollection().where('userId', '==', ownerId)
+    );
+    const previous = accountSnapshot.exists ? accountSnapshot.data() || {} : {};
+    if (accountSnapshot.exists && (previous.userId || DEFAULT_USER_ID) !== ownerId) {
+      throw new ConnectedAccountActivationError(
+        `${provider === 'youtube' ? 'YouTube channel' : 'TikTok account'} is already assigned to another app user`,
+        { code: 'account_already_assigned' }
+      );
+    }
+    const storedWorkspaceId = String(previous.workspaceId || '').trim();
+    if (storedWorkspaceId && storedWorkspaceId !== activation.workspaceId) {
+      throw new ConnectedAccountActivationError(
+        `${provider === 'youtube' ? 'YouTube channel' : 'TikTok account'} is already assigned to another workspace`,
+        { code: 'account_already_assigned' }
+      );
+    }
+    if (accountSnapshot.exists && !storedWorkspaceId && !scope.allowLegacyOwnerRecords) {
+      throw new ConnectedAccountActivationError(
+        'Legacy publishing-account ownership is not verified for this workspace.',
+        { code: 'account_workspace_unverified' }
+      );
+    }
+    if (
+      capacitySnapshot.exists
+      && String((capacitySnapshot.data() || {}).ownerUserId || '').trim()
+      && String((capacitySnapshot.data() || {}).ownerUserId || '').trim() !== ownerId
+    ) {
+      throw new ConnectedAccountActivationError(
+        'Connected-account capacity ownership could not be verified.',
+        { code: 'commercial_truth_unverified' }
+      );
+    }
+
+    const activeAccounts = activeAccountsFromSnapshots({
+      ownerId,
+      workspaceScope,
+      tiktokSnapshot,
+      youtubeSnapshot
+    });
+    const entry = { key: connectedAccountKey(provider, accountId), provider, accountId };
+    const now = Timestamp.now();
+    const data = buildAccountData(previous, now, activation.workspaceId);
+    const willBeConnected = provider === 'youtube'
+      ? connectedYouTubeData(data)
+      : connectedTikTokData(data);
+    if (!willBeConnected) {
+      throw new ConnectedAccountActivationError(
+        `${provider === 'youtube' ? 'YouTube' : 'TikTok'} credentials were not usable, so the account was not connected.`,
+        { code: 'provider_credentials_unverified' }
+      );
+    }
+    assertCapacityAllowsActivation(activeAccounts, entry, activation);
+    activeAccounts.set(entry.key, entry);
+
+    transaction.set(accountRef, data, { merge: true });
+    transaction.set(capacityRef, capacityDocument({
+      workspaceId: activation.workspaceId,
+      ownerId,
+      activeAccounts,
+      now
+    }), { merge: false });
+    return data;
+  });
+}
+
+async function transactConnectedAccountDisconnect({
+  ownerId,
+  provider,
+  accountId,
+  workspaceScope,
+  accountRef,
+  disconnectPatch
+}) {
+  const scope = normalizeWorkspaceScope(workspaceScope);
+  if (!scope.workspaceId) return null;
+  const db = getFirestore();
+  const capacityRef = connectedAccountCapacityCollection().doc(capacityDocId(scope.workspaceId));
+  return db.runTransaction(async (transaction) => {
+    const accountSnapshot = await transaction.get(accountRef);
+    await transaction.get(capacityRef);
+    const tiktokSnapshot = await transaction.get(
+      tiktokAccountsCollection().where('userId', '==', ownerId)
+    );
+    const youtubeSnapshot = await transaction.get(
+      youtubeAccountsCollection().where('userId', '==', ownerId)
+    );
+    if (
+      !accountSnapshot.exists
+      || (accountSnapshot.data().userId || DEFAULT_USER_ID) !== ownerId
+      || !recordMatchesWorkspace(accountSnapshot.data(), ownerId, workspaceScope)
+    ) return false;
+
+    const activeAccounts = activeAccountsFromSnapshots({
+      ownerId,
+      workspaceScope,
+      tiktokSnapshot,
+      youtubeSnapshot
+    });
+    activeAccounts.delete(connectedAccountKey(provider, accountId));
+    const now = Timestamp.now();
+    transaction.set(accountRef, { ...disconnectPatch, updatedAt: now }, { merge: true });
+    transaction.set(capacityRef, capacityDocument({
+      workspaceId: scope.workspaceId,
+      ownerId,
+      activeAccounts,
+      now
+    }), { merge: false });
+    return true;
+  });
+}
 
 const defaultSettings = {
   dailyPostTime: '09:00',
@@ -101,6 +429,7 @@ function tiktokAccountFromDoc(doc) {
     accountId,
     id: accountId,
     userId: data.userId || DEFAULT_USER_ID,
+    workspaceId: String(data.workspaceId || '').trim(),
     platform: 'tiktok',
     open_id: data.open_id || accountId,
     tiktokOpenId: data.open_id || accountId,
@@ -130,21 +459,54 @@ function timestampMillis(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-async function saveTikTokAccount(userId, auth, profile = {}) {
+async function saveTikTokAccount(userId, auth, profile = {}, workspaceScope, activationContext) {
   const ownerId = userId || DEFAULT_USER_ID;
   const accountId = String(auth.open_id || auth.accountId || '').trim();
   if (!accountId) throw new Error('TikTok OAuth did not return an open_id');
 
   const ref = tiktokAccountsCollection().doc(tiktokAccountDocId(accountId));
+  if (activationContext) {
+    const data = await transactConnectedAccountActivation({
+      ownerId,
+      provider: 'tiktok',
+      accountId,
+      workspaceScope,
+      activationContext,
+      accountRef: ref,
+      buildAccountData(previous, now, workspaceId) {
+        return {
+          userId: ownerId,
+          workspaceId,
+          platform: 'tiktok',
+          accountId,
+          open_id: accountId,
+          username: profile.username || profile.creator_username || previous.username || '',
+          displayName: profile.displayName || profile.creator_nickname || previous.displayName || '',
+          avatarUrl: profile.avatarUrl || profile.creator_avatar_url || previous.avatarUrl || '',
+          connected: Boolean(auth.access_token || previous.access_token),
+          access_token: auth.access_token || previous.access_token || '',
+          refresh_token: auth.refresh_token || previous.refresh_token || '',
+          expires_at: auth.expires_at || previous.expires_at || null,
+          scope: auth.scope || previous.scope || '',
+          createdAt: previous.createdAt || now,
+          connectedAt: now,
+          updatedAt: now
+        };
+      }
+    });
+    return tiktokAccountFromDoc({ id: ref.id, data: () => data });
+  }
   const snap = await ref.get();
   if (snap.exists && (snap.data().userId || DEFAULT_USER_ID) !== ownerId) {
     throw new Error('TikTok account is already assigned to another app user');
   }
 
   const previous = snap.exists ? snap.data() : {};
+  const workspaceId = workspaceIdForWrite(previous, workspaceScope);
   const now = Timestamp.now();
   const data = {
     userId: ownerId,
+    workspaceId,
     platform: 'tiktok',
     accountId,
     open_id: accountId,
@@ -164,8 +526,8 @@ async function saveTikTokAccount(userId, auth, profile = {}) {
   return tiktokAccountFromDoc({ id: ref.id, data: () => data });
 }
 
-async function updateTikTokAccountProfile(userId, accountId, profile = {}) {
-  const account = await getTikTokAccount(userId, accountId);
+async function updateTikTokAccountProfile(userId, accountId, profile = {}, workspaceScope) {
+  const account = await getTikTokAccount(userId, accountId, workspaceScope);
   if (!account) return null;
   const patch = {
     username: profile.username || profile.creator_username || account.username || '',
@@ -177,17 +539,22 @@ async function updateTikTokAccountProfile(userId, accountId, profile = {}) {
   return { ...account, ...patch };
 }
 
-async function getTikTokAccounts(userId) {
+async function getTikTokAccounts(userId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const snapshot = await tiktokAccountsCollection().where('userId', '==', ownerId).get();
-  let accounts = snapshot.docs.map(tiktokAccountFromDoc);
+  let accounts = snapshot.docs
+    .filter((doc) => recordMatchesWorkspace(doc.data(), ownerId, workspaceScope))
+    .map(tiktokAccountFromDoc);
 
   const legacy = await getTikTokAuth();
   if (
     legacy.connected && legacy.access_token && legacy.open_id &&
     !accounts.some((account) => account.accountId === legacy.open_id)
   ) {
-    accounts.push(await saveTikTokAccount(ownerId, legacy));
+    const scope = normalizeWorkspaceScope(workspaceScope);
+    if (!scope.workspaceId || scope.allowLegacyOwnerRecords) {
+      accounts.push(await saveTikTokAccount(ownerId, legacy, {}, workspaceScope));
+    }
   }
 
   return accounts.sort((a, b) => {
@@ -196,26 +563,52 @@ async function getTikTokAccounts(userId) {
   });
 }
 
-async function getTikTokAccount(userId, accountId) {
+async function getTikTokAccount(userId, accountId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const normalizedId = String(accountId || '').trim();
   if (!normalizedId || normalizedId === 'legacy') return null;
   const snap = await tiktokAccountsCollection().doc(tiktokAccountDocId(normalizedId)).get();
-  if (snap.exists && (snap.data().userId || DEFAULT_USER_ID) === ownerId) {
+  if (
+    snap.exists
+    && (snap.data().userId || DEFAULT_USER_ID) === ownerId
+    && recordMatchesWorkspace(snap.data(), ownerId, workspaceScope)
+  ) {
     return tiktokAccountFromDoc(snap);
   }
 
   const legacy = await getTikTokAuth();
-  if (legacy.open_id === normalizedId && legacy.connected && legacy.access_token) {
-    return saveTikTokAccount(ownerId, legacy);
+  const scope = normalizeWorkspaceScope(workspaceScope);
+  if (
+    legacy.open_id === normalizedId
+    && legacy.connected
+    && legacy.access_token
+    && (!scope.workspaceId || scope.allowLegacyOwnerRecords)
+  ) {
+    return saveTikTokAccount(ownerId, legacy, {}, workspaceScope);
   }
   return null;
 }
 
-async function disconnectTikTokAccount(userId, accountId) {
-  const account = await getTikTokAccount(userId, accountId);
+async function disconnectTikTokAccount(userId, accountId, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const normalizedId = String(accountId || '').trim();
+  const transactional = await transactConnectedAccountDisconnect({
+    ownerId,
+    provider: 'tiktok',
+    accountId: normalizedId,
+    workspaceScope,
+    accountRef: tiktokAccountsCollection().doc(tiktokAccountDocId(normalizedId)),
+    disconnectPatch: {
+      connected: false,
+      access_token: '',
+      refresh_token: '',
+      expires_at: null
+    }
+  });
+  if (transactional !== null) return transactional;
+  const account = await getTikTokAccount(ownerId, normalizedId, workspaceScope);
   if (!account) return false;
-  await tiktokAccountsCollection().doc(tiktokAccountDocId(accountId)).set({
+  await tiktokAccountsCollection().doc(tiktokAccountDocId(normalizedId)).set({
     connected: false,
     access_token: '',
     refresh_token: '',
@@ -231,8 +624,8 @@ async function disconnectTikTokAccount(userId, accountId) {
 // admin. See src/clientAuth.js for the hashing/signing scheme and
 // src/clientRoutes.js for how it's consumed.
 
-async function generateClientAccessCode(userId, accountId) {
-  const account = await getTikTokAccount(userId, accountId);
+async function generateClientAccessCode(userId, accountId, workspaceScope) {
+  const account = await getTikTokAccount(userId, accountId, workspaceScope);
   if (!account) return null;
   const generated = generateAccessCode();
   const now = Timestamp.now();
@@ -246,8 +639,8 @@ async function generateClientAccessCode(userId, accountId) {
   return generated.code;
 }
 
-async function revokeClientAccessCode(userId, accountId) {
-  const account = await getTikTokAccount(userId, accountId);
+async function revokeClientAccessCode(userId, accountId, workspaceScope) {
+  const account = await getTikTokAccount(userId, accountId, workspaceScope);
   if (!account) return false;
   await tiktokAccountsCollection().doc(tiktokAccountDocId(accountId)).set({
     clientAccessEnabled: false,
@@ -279,8 +672,8 @@ async function verifyClientAccessCode(rawCode) {
 // Re-checked on every client-portal request (not just at login) so
 // disabling access takes effect immediately instead of waiting for the
 // session token to expire.
-async function resolveClientAccount(userId, accountId) {
-  const account = await getTikTokAccount(userId, accountId);
+async function resolveClientAccount(userId, accountId, workspaceScope) {
+  const account = await getTikTokAccount(userId, accountId, workspaceScope);
   if (!account || account.clientAccessEnabled === false) return null;
   return account;
 }
@@ -311,6 +704,7 @@ function youtubeAccountFromDoc(doc) {
     accountId,
     id: accountId,
     userId: data.userId || DEFAULT_USER_ID,
+    workspaceId: String(data.workspaceId || '').trim(),
     platform: 'youtube',
     provider: 'youtube',
     channelId: accountId,
@@ -344,7 +738,12 @@ function youtubeAccountFromDoc(doc) {
  * `credentialEnvelope` must already be an encrypted tokenVault envelope —
  * this function refuses anything that looks like plaintext credentials.
  */
-async function saveYouTubeAccount(userId, { channelId, profile = {}, credentialEnvelope, tokenMeta = {} }) {
+async function saveYouTubeAccount(
+  userId,
+  { channelId, profile = {}, credentialEnvelope, tokenMeta = {} },
+  workspaceScope,
+  activationContext
+) {
   const ownerId = userId || DEFAULT_USER_ID;
   const normalizedId = String(channelId || '').trim();
   if (!normalizedId) throw new Error('YouTube connection did not resolve a channel ID');
@@ -353,15 +752,54 @@ async function saveYouTubeAccount(userId, { channelId, profile = {}, credentialE
   }
 
   const ref = youtubeAccountsCollection().doc(youtubeAccountDocId(normalizedId));
+  if (activationContext) {
+    const data = await transactConnectedAccountActivation({
+      ownerId,
+      provider: 'youtube',
+      accountId: normalizedId,
+      workspaceScope,
+      activationContext,
+      accountRef: ref,
+      buildAccountData(previous, now, workspaceId) {
+        return {
+          userId: ownerId,
+          workspaceId,
+          platform: 'youtube',
+          provider: 'youtube',
+          accountId: normalizedId,
+          channelId: normalizedId,
+          username: String(profile.handle || previous.username || '').replace(/^@/, ''),
+          displayName: profile.title || previous.displayName || '',
+          avatarUrl: profile.thumbnailUrl || previous.avatarUrl || '',
+          connected: Boolean(tokenMeta.tokenPresent),
+          credential: credentialEnvelope,
+          tokenPresent: Boolean(tokenMeta.tokenPresent),
+          refreshTokenPresent: Boolean(tokenMeta.refreshTokenPresent),
+          accessTokenExpiresAt: tokenMeta.accessTokenExpiresAt || null,
+          grantedScopes: tokenMeta.grantedScopes || previous.grantedScopes || '',
+          reauthorizationRequired: false,
+          lastRefreshAt: previous.lastRefreshAt || null,
+          lastRefreshFailureCode: '',
+          credentialVersion: Number(credentialEnvelope.kv || 0) || null,
+          createdAt: previous.createdAt || now,
+          connectedAt: now,
+          updatedAt: now
+        };
+      }
+    });
+    return youtubeAccountFromDoc({ id: ref.id, data: () => data });
+  }
   const snap = await ref.get();
   if (snap.exists && (snap.data().userId || DEFAULT_USER_ID) !== ownerId) {
     throw new Error('YouTube channel is already assigned to another app user');
   }
 
   const previous = snap.exists ? snap.data() : {};
+  const workspaceId = workspaceIdForWrite(previous, workspaceScope);
   const now = Timestamp.now();
   const data = {
     userId: ownerId,
+    workspaceId,
     platform: 'youtube',
     provider: 'youtube',
     accountId: normalizedId,
@@ -389,21 +827,27 @@ async function saveYouTubeAccount(userId, { channelId, profile = {}, credentialE
   return youtubeAccountFromDoc({ id: ref.id, data: () => data });
 }
 
-async function getYouTubeAccounts(userId) {
+async function getYouTubeAccounts(userId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const snapshot = await youtubeAccountsCollection().where('userId', '==', ownerId).get();
-  return snapshot.docs.map(youtubeAccountFromDoc).sort((a, b) => {
+  return snapshot.docs
+    .filter((doc) => recordMatchesWorkspace(doc.data(), ownerId, workspaceScope))
+    .map(youtubeAccountFromDoc).sort((a, b) => {
     if (a.connected !== b.connected) return a.connected ? -1 : 1;
     return timestampMillis(b.updatedAt) - timestampMillis(a.updatedAt);
   });
 }
 
-async function getYouTubeAccount(userId, channelId) {
+async function getYouTubeAccount(userId, channelId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const normalizedId = String(channelId || '').trim();
   if (!normalizedId || normalizedId === 'legacy') return null;
   const snap = await youtubeAccountsCollection().doc(youtubeAccountDocId(normalizedId)).get();
-  if (snap.exists && (snap.data().userId || DEFAULT_USER_ID) === ownerId) {
+  if (
+    snap.exists
+    && (snap.data().userId || DEFAULT_USER_ID) === ownerId
+    && recordMatchesWorkspace(snap.data(), ownerId, workspaceScope)
+  ) {
     return youtubeAccountFromDoc(snap);
   }
   return null;
@@ -413,12 +857,16 @@ async function getYouTubeAccount(userId, channelId) {
  * The ONLY read path for the encrypted credential envelope. Ownership
  * enforced; returns the envelope (still encrypted) or null.
  */
-async function getYouTubeAccountCredential(userId, channelId) {
+async function getYouTubeAccountCredential(userId, channelId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const normalizedId = String(channelId || '').trim();
   if (!normalizedId) return null;
   const snap = await youtubeAccountsCollection().doc(youtubeAccountDocId(normalizedId)).get();
-  if (!snap.exists || (snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  if (
+    !snap.exists
+    || (snap.data().userId || DEFAULT_USER_ID) !== ownerId
+    || !recordMatchesWorkspace(snap.data(), ownerId, workspaceScope)
+  ) return null;
   return snap.data().credential || null;
 }
 
@@ -427,8 +875,13 @@ async function getYouTubeAccountCredential(userId, channelId) {
  * safe metadata land in one write, so a crash can never leave metadata
  * describing tokens that were not stored.
  */
-async function updateYouTubeAccountTokenState(userId, channelId, { credentialEnvelope, tokenMeta = {} }) {
-  const account = await getYouTubeAccount(userId, channelId);
+async function updateYouTubeAccountTokenState(
+  userId,
+  channelId,
+  { credentialEnvelope, tokenMeta = {} },
+  workspaceScope
+) {
+  const account = await getYouTubeAccount(userId, channelId, workspaceScope);
   if (!account) return null;
   const patch = {
     updatedAt: Timestamp.now()
@@ -452,8 +905,8 @@ async function updateYouTubeAccountTokenState(userId, channelId, { credentialEnv
  * Testing-mode refresh token). The account stays visibly connected-but-
  * blocked; the worker refuses it until a human reconnects.
  */
-async function markYouTubeAccountReauthorizationRequired(userId, channelId, failureCode) {
-  const account = await getYouTubeAccount(userId, channelId);
+async function markYouTubeAccountReauthorizationRequired(userId, channelId, failureCode, workspaceScope) {
+  const account = await getYouTubeAccount(userId, channelId, workspaceScope);
   if (!account) return null;
   await youtubeAccountsCollection().doc(youtubeAccountDocId(channelId)).set({
     reauthorizationRequired: true,
@@ -468,10 +921,28 @@ async function markYouTubeAccountReauthorizationRequired(userId, channelId, fail
  * channel disconnected. Publishing fails closed immediately (worker gates
  * on connected + credential presence). Never touches TikTok records.
  */
-async function disconnectYouTubeAccount(userId, channelId) {
-  const account = await getYouTubeAccount(userId, channelId);
+async function disconnectYouTubeAccount(userId, channelId, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const normalizedId = String(channelId || '').trim();
+  const transactional = await transactConnectedAccountDisconnect({
+    ownerId,
+    provider: 'youtube',
+    accountId: normalizedId,
+    workspaceScope,
+    accountRef: youtubeAccountsCollection().doc(youtubeAccountDocId(normalizedId)),
+    disconnectPatch: {
+      connected: false,
+      credential: null,
+      tokenPresent: false,
+      refreshTokenPresent: false,
+      accessTokenExpiresAt: null,
+      reauthorizationRequired: false
+    }
+  });
+  if (transactional !== null) return transactional;
+  const account = await getYouTubeAccount(ownerId, normalizedId, workspaceScope);
   if (!account) return false;
-  await youtubeAccountsCollection().doc(youtubeAccountDocId(channelId)).set({
+  await youtubeAccountsCollection().doc(youtubeAccountDocId(normalizedId)).set({
     connected: false,
     credential: null,
     tokenPresent: false,
@@ -491,24 +962,25 @@ function comparePosts(a, b) {
   return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
 }
 
-async function getPosts(userId, accountId) {
+async function getPosts(userId, accountId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const snapshot = await postsCollection().where('userId', '==', ownerId).get();
-  const posts = snapshot.docs.map(postFromDoc);
+  const posts = snapshot.docs
+    .filter((doc) => recordMatchesWorkspace(doc.data(), ownerId, workspaceScope))
+    .map(postFromDoc);
   const normalizedAccountId = String(accountId || '').trim();
   return posts
     .filter((post) => !normalizedAccountId || post.accountId === normalizedAccountId)
     .sort(comparePosts);
 }
 
-async function getDashboardJobs(userId) {
+async function getDashboardJobs(userId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const snapshot = await postsCollection().where('userId', '==', ownerId).get();
 
-  return snapshot.docs.map((doc) => {
+  return snapshot.docs.filter((doc) => recordMatchesWorkspace(doc.data(), ownerId, workspaceScope)).map((doc) => {
     const data = doc.data() || {};
     const post = postFromDoc(doc);
-    const lastResult = data.lastResult || null;
 
     return {
       ...post,
@@ -523,22 +995,21 @@ async function getDashboardJobs(userId) {
         data.imagePath ||
         data.publicImageUrl ||
         '',
-      lastError:
-        data.lastError ||
-        data.error ||
-        (lastResult && (lastResult.reason || lastResult.error || lastResult.message)) ||
-        '',
-      logs: data.logs || data.events || data.history || []
+      // Keep the canonical mapper's scrubbed evidence. Raw legacy
+      // lastError/logs/events may contain provider payloads or credentials.
+      lastError: post.lastError,
+      logs: post.logs
     };
   }).sort(comparePosts);
 }
 
-async function getPost(userId, id, accountId) {
+async function getPost(userId, id, accountId, workspaceScope) {
   if (!id) return null;
   const ownerId = userId || DEFAULT_USER_ID;
   const snap = await postsCollection().doc(id).get();
   if (!snap.exists) return null;
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  if (!recordMatchesWorkspace(snap.data(), ownerId, workspaceScope)) return null;
   const post = postFromDoc(snap);
   if (accountId && post.accountId !== accountId) return null;
   return post;
@@ -691,6 +1162,18 @@ function normalizeTargetAccounts(defaults, providerId = 'tiktok') {
 
 async function addUploadedPosts(userId, files, defaults = {}) {
   const ownerId = userId || DEFAULT_USER_ID;
+  const workspaceScope = normalizeWorkspaceScope(
+    defaults.workspaceScope || {
+      workspaceId: defaults.workspaceId,
+      allowLegacyOwnerRecords: defaults.allowLegacyOwnerRecords
+    }
+  );
+  if (defaults.commercialEnforcement && !workspaceScope.workspaceId) {
+    const error = new Error('A verified workspace is required before queue creation');
+    error.status = 403;
+    error.code = 'workspace_unverified';
+    throw error;
+  }
   // Provider fail-closed chokepoint (defense in depth behind the
   // application service): a missing provider keeps the documented TikTok
   // compatibility default, but an explicit unknown provider is refused —
@@ -778,7 +1261,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   const orderByAccount = new Map();
   const duplicateKeysByAccount = new Map();
   for (const target of targetAccounts) {
-    const existingPosts = await getPosts(ownerId, target.accountId);
+    const existingPosts = await getPosts(ownerId, target.accountId, workspaceScope);
     const maxOrder = existingPosts.reduce((max, post) => Math.max(max, Number(post.order || 0)), 0);
     orderByAccount.set(target.accountId, maxOrder + 1);
     const keys = new Set();
@@ -885,6 +1368,7 @@ async function addUploadedPosts(userId, files, defaults = {}) {
 
       const data = {
         userId: ownerId,
+        workspaceId: workspaceScope.workspaceId,
         platform: providerId,
         // Backward-compatible provider/source metadata for the canonical
         // application contract. Older documents omit these and postsMapper
@@ -955,10 +1439,54 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         claimAttempts: 0
       };
 
-      if (requestedDocumentId && defaults.createOnly) batch.create(ref, data);
-      else batch.set(ref, data);
+      if (!defaults.usageReservation) {
+        if (requestedDocumentId && defaults.createOnly) batch.create(ref, data);
+        else batch.set(ref, data);
+      }
       created.push({ ref, data });
     }
+    }
+
+    if (defaults.usageReservation) {
+      const reservation = defaults.usageReservation;
+      const metered = await getUsageService().reserveAndCreateQueueItems({
+        workspaceId: workspaceScope.workspaceId,
+        metric: USAGE_METRIC_SCHEDULED_POSTS,
+        usageCycle: reservation.usageCycle,
+        source: String(defaults.creationSource || 'website'),
+        limits: {
+          scheduledPostsPerCycle: reservation.scheduledPostsPerCycle,
+          activeQueueLimit: reservation.activeQueueLimit
+        },
+        activeQueueBaseline: reservation.activeQueueBaseline,
+        items: created.map(({ ref, data }) => ({
+          idempotencyKey: String(data.idempotencyKey || `queue:${ref.id}`),
+          queue: { documentId: ref.id, data: { ...data, usageState: 'reserved' } }
+        }))
+      });
+      if (!metered || !metered.allowed) {
+        const error = new Error((metered && metered.reason) || 'Usage reservation was denied.');
+        error.status = 409;
+        error.code = (metered && metered.code) || 'commercial_truth_unverified';
+        error.details = metered || {};
+        throw error;
+      }
+
+      // The usage transaction has already committed every fresh reservation
+      // and queue item. From this point on, a confirmation-read failure must
+      // not destroy media that those durable queue records reference.
+      committed = Number(metered.reservedCount || 0) > 0;
+
+      // A duplicate idempotency key points at the already-created queue
+      // record. Read back the stored truth instead of returning this retry's
+      // transient media/copy payload.
+      const persisted = await Promise.all(created.map(async ({ ref, data }) => {
+        const snapshot = await ref.get();
+        return snapshot.exists
+          ? postFromDoc(snapshot)
+          : postFromDoc({ id: ref.id, data: () => data });
+      }));
+      return persisted;
     }
 
     await batch.commit();
@@ -977,12 +1505,13 @@ async function addUploadedPosts(userId, files, defaults = {}) {
   }
 }
 
-async function updatePost(userId, id, patch, accountId, historyEvent) {
+async function updatePost(userId, id, patch, accountId, historyEvent, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const ref = postsCollection().doc(id);
   const snap = await ref.get();
   if (!snap.exists) return null;
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  if (!recordMatchesWorkspace(snap.data(), ownerId, workspaceScope)) return null;
   if (accountId && postFromDoc(snap).accountId !== accountId) return null;
 
   const firestorePatch = mapPatchToFirestore(patch);
@@ -1004,12 +1533,13 @@ async function updatePost(userId, id, patch, accountId, historyEvent) {
 
 const APPROVABLE_STATUSES = ['pending', 'scheduled', 'failed', 'ready'];
 
-async function approvePost(userId, id, { approvedBy } = {}, accountId) {
+async function approvePost(userId, id, { approvedBy } = {}, accountId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const ref = postsCollection().doc(id);
   const snap = await ref.get();
   if (!snap.exists) return null;
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  if (!recordMatchesWorkspace(snap.data(), ownerId, workspaceScope)) return null;
   const post = postFromDoc(snap);
   if (accountId && post.accountId !== accountId) return null;
   // Only reviewable states can change approval; a job that is mid-publish
@@ -1027,12 +1557,13 @@ async function approvePost(userId, id, { approvedBy } = {}, accountId) {
   return postFromDoc(updated);
 }
 
-async function revokePostApproval(userId, id, accountId) {
+async function revokePostApproval(userId, id, accountId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const ref = postsCollection().doc(id);
   const snap = await ref.get();
   if (!snap.exists) return null;
   if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return null;
+  if (!recordMatchesWorkspace(snap.data(), ownerId, workspaceScope)) return null;
   const post = postFromDoc(snap);
   if (accountId && post.accountId !== accountId) return null;
   if (!APPROVABLE_STATUSES.includes(post.status)) return null;
@@ -1047,20 +1578,148 @@ async function revokePostApproval(userId, id, accountId) {
   return postFromDoc(updated);
 }
 
-async function deletePost(userId, id, accountId) {
+async function markPostManuallyWithUsage(userId, id, accountId, workspaceScope, completedAt) {
   const ownerId = userId || DEFAULT_USER_ID;
   const ref = postsCollection().doc(id);
-  const snap = await ref.get();
-  if (!snap.exists) return false;
-  if ((snap.data().userId || DEFAULT_USER_ID) !== ownerId) return false;
-  if (accountId && postFromDoc(snap).accountId !== accountId) return false;
+  let applied = false;
+  await getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return;
+    const data = snap.data() || {};
+    if ((data.userId || DEFAULT_USER_ID) !== ownerId) return;
+    if (!recordMatchesWorkspace(data, ownerId, workspaceScope)) return;
+    if (accountId && postFromDoc(snap).accountId !== accountId) return;
 
-  const data = snap.data();
-  const fileName = data.fileName;
-  const cloudinaryPublicId = data.cloudinaryPublicId;
-  const cloudinaryResourceType = data.cloudinaryResourceType;
-  await ref.delete();
-  await destroyMediaAsset(cloudinaryPublicId, cloudinaryResourceType);
+    let usageState = data.usageState || '';
+    let usageReconciliationRequired = false;
+    if (data.usageLedgerId && data.workspaceId && data.usageCycleId) {
+      try {
+        const transition = await getUsageService().transaction.consumeReservation(tx, {
+          workspaceId: data.workspaceId,
+          usageCycleId: data.usageCycleId,
+          metric: data.usageMetric || USAGE_METRIC_SCHEDULED_POSTS,
+          ledgerId: data.usageLedgerId,
+          relatedResourceId: id
+        });
+        usageState = transition.state;
+      } catch (error) {
+        // Keep quota reserved and surface reconciliation instead of claiming
+        // that metering completed when the operator records a real post.
+        usageReconciliationRequired = true;
+      }
+    }
+
+    tx.update(ref, {
+      status: 'posted',
+      postedAt: Timestamp.fromDate(new Date(completedAt)),
+      readyAt: null,
+      lastResult: {
+        ok: true,
+        mode: 'manual',
+        reason: 'Marked posted manually',
+        completedAt
+      },
+      usageState,
+      usageReconciliationRequired,
+      history: appendHistoryEntry(
+        data.history,
+        'marked_posted',
+        'Marked posted manually by the operator; no API publish occurred.'
+      ),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    applied = true;
+  });
+  if (!applied) return null;
+  return getPost(ownerId, id, accountId, workspaceScope);
+}
+
+async function deletePost(userId, id, accountId, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const ref = postsCollection().doc(id);
+  let deletedData = null;
+
+  await getFirestore().runTransaction(async (tx) => {
+    const current = await tx.get(ref);
+    if (!current.exists) return;
+    const currentData = current.data() || {};
+    if ((currentData.userId || DEFAULT_USER_ID) !== ownerId) return;
+    if (!recordMatchesWorkspace(currentData, ownerId, workspaceScope)) return;
+    if (accountId && postFromDoc(current).accountId !== accountId) return;
+
+    const status = normalizeQueueStatus(currentData.status);
+    if (
+      ['processing', 'outcome_unknown'].includes(status)
+      || currentData.outcomeUnknown
+      || currentData.usageReconciliationRequired
+    ) {
+      const error = new Error(
+        status === 'outcome_unknown' || currentData.outcomeUnknown
+          ? 'This provider outcome is unknown. Reconcile it before deleting the queue item.'
+          : 'This queue item is processing or requires reconciliation and cannot be deleted.'
+      );
+      error.status = 409;
+      error.code = 'queue_transition_blocked';
+      throw error;
+    }
+
+    const releasable = ['pending', 'scheduled', 'ready', 'failed'].includes(status);
+    if (!releasable && status !== 'posted') {
+      const error = new Error('This queue state cannot be deleted safely.');
+      error.status = 409;
+      error.code = 'queue_transition_blocked';
+      throw error;
+    }
+
+    const usageFields = [
+      currentData.workspaceId,
+      currentData.usageCycleId,
+      currentData.usageLedgerId
+    ];
+    const hasAnyUsageBinding = usageFields.some((value) => String(value || '').trim());
+    const hasCompleteUsageBinding = usageFields.every((value) => String(value || '').trim());
+    if (hasAnyUsageBinding && !hasCompleteUsageBinding) {
+      const error = new Error('Usage truth is incomplete; deletion was blocked for reconciliation.');
+      error.status = 409;
+      error.code = 'queue_transition_blocked';
+      throw error;
+    }
+
+    if (releasable && hasCompleteUsageBinding) {
+      if (currentData.publishId) {
+        const error = new Error('Provider evidence exists; deletion was blocked for reconciliation.');
+        error.status = 409;
+        error.code = 'queue_transition_blocked';
+        throw error;
+      }
+      await getUsageService().transaction.releaseReservation(tx, {
+        workspaceId: currentData.workspaceId,
+        usageCycleId: currentData.usageCycleId,
+        metric: currentData.usageMetric || USAGE_METRIC_SCHEDULED_POSTS,
+        ledgerId: currentData.usageLedgerId,
+        relatedResourceId: current.id,
+        reason: 'queue_item_deleted_before_provider_side_effect'
+      });
+    }
+
+    if (
+      status === 'posted'
+      && hasCompleteUsageBinding
+      && currentData.usageState !== 'consumed'
+    ) {
+      const error = new Error('Posted usage is not reconciled; deletion was blocked.');
+      error.status = 409;
+      error.code = 'queue_transition_blocked';
+      throw error;
+    }
+
+    tx.delete(ref);
+    deletedData = currentData;
+  });
+
+  if (!deletedData) return false;
+  const fileName = deletedData.fileName;
+  await destroyMediaAsset(deletedData.cloudinaryPublicId, deletedData.cloudinaryResourceType);
 
   if (fileName) {
     const uploadPath = path.resolve(config.uploadsDir, fileName);
@@ -1077,9 +1736,9 @@ async function deletePost(userId, id, accountId) {
   return true;
 }
 
-async function movePost(userId, id, direction, accountId) {
+async function movePost(userId, id, direction, accountId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
-  const posts = await getPosts(ownerId, accountId);
+  const posts = await getPosts(ownerId, accountId, workspaceScope);
   const index = posts.findIndex((post) => post.id === id);
   const targetIndex = direction === 'up' ? index - 1 : index + 1;
 
@@ -1096,10 +1755,10 @@ async function movePost(userId, id, direction, accountId) {
   return true;
 }
 
-async function autoSchedulePosts(userId, postIds, accountId) {
+async function autoSchedulePosts(userId, postIds, accountId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const idSet = new Set(postIds);
-  const posts = await getPosts(ownerId, accountId);
+  const posts = await getPosts(ownerId, accountId, workspaceScope);
   const settings = await getSettings();
   let nextDate = getNextAvailableDate(posts, settings.dailyPostTime, idSet);
 
@@ -1130,7 +1789,7 @@ async function autoSchedulePosts(userId, postIds, accountId) {
  * Posts whose accountId has no matching plan channel are left untouched
  * (defensive — the caller already validates targets against the plan).
  */
-async function applyExplicitSchedule(userId, posts, plan) {
+async function applyExplicitSchedule(userId, posts, plan, workspaceScope) {
   const planByAccount = new Map((plan && plan.channels ? plan.channels : []).map((channel) => [channel.accountId, channel]));
   const db = getFirestore();
   const batch = db.batch();
@@ -1154,9 +1813,9 @@ async function applyExplicitSchedule(userId, posts, plan) {
   return count;
 }
 
-async function reschedulePendingQueue(userId, accountId) {
+async function reschedulePendingQueue(userId, accountId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
-  const posts = await getPosts(ownerId, accountId);
+  const posts = await getPosts(ownerId, accountId, workspaceScope);
   const settings = await getSettings();
   let nextDate = tomorrowAtTime(settings.dailyPostTime);
 
@@ -1229,8 +1888,8 @@ function getScheduleTimeZone() {
   return DateTime.now().setZone(zone).isValid ? zone : 'UTC';
 }
 
-async function getCounts(userId, accountId) {
-  const posts = await getPosts(userId, accountId);
+async function getCounts(userId, accountId, workspaceScope) {
+  const posts = await getPosts(userId, accountId, workspaceScope);
   return posts.reduce(
     (counts, post) => {
       counts.total += 1;
@@ -1306,6 +1965,7 @@ async function clearInstagramAuth() {
 }
 
 module.exports = {
+  ConnectedAccountActivationError,
   ensureStorage,
   checkMediaStorageHealth,
   getPosts,
@@ -1340,6 +2000,7 @@ module.exports = {
   updatePost,
   approvePost,
   revokePostApproval,
+  markPostManuallyWithUsage,
   deletePost,
   movePost,
   autoSchedulePosts,

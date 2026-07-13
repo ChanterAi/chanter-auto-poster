@@ -9,6 +9,7 @@ process.env.YOUTUBE_ENABLED = 'false';
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { createCommercialFixture } = require('./helpers/commercial-fixture');
 const { postFromDoc } = require('../src/postsMapper');
 const {
   AutoPosterApplicationError,
@@ -96,7 +97,11 @@ function makeHarness() {
     }
   };
 
-  const service = createAutoPosterApplicationService({ storage, now: () => NOW_MS });
+  const service = createAutoPosterApplicationService({
+    storage,
+    commercialService: createCommercialFixture(storage),
+    now: () => NOW_MS
+  });
   return { service, calls, posts };
 }
 

@@ -1,6 +1,8 @@
 # CHANTER AutoPoster
 
-Protected Node.js + Express product surface for the CHANTER content workflow. Upload images or videos, prepare captions/hashtags, optionally generate Auto Caption and Auto Music output, schedule releases for one or more connected TikTok channels, review the Release Queue, and submit due items through TikTok's approved Content Posting API path.
+The canonical workspace, plan, entitlement, usage, and future billing boundary is documented in [docs/AUTOPOSTER_SAAS_FOUNDATION.md](docs/AUTOPOSTER_SAAS_FOUNDATION.md). Billing and checkout are intentionally not implemented.
+
+Protected Node.js + Express product surface for the CHANTER content workflow. Upload videos, prepare captions/hashtags, optionally generate Auto Caption and Auto Music output, schedule releases for connected TikTok or YouTube channels, review the Release Queue, and submit due items through the implemented provider path. YouTube uploads are private-only with subscriber notifications disabled.
 
 AutoPoster is the first CHANTER commercial/public product candidate, but the operating language is intentionally conservative: TikTok API acceptance is not the same as a verified live public post unless TikTok returns a public post URL or an operator verifies it manually.
 
@@ -11,6 +13,7 @@ This app does not scrape TikTok, bypass TikTok security, automate unofficial acc
 - Image and video upload through a protected admin surface.
 - Cloudinary-backed durable media URLs with HTTPS public URL fallback.
 - Multi-account TikTok connection and active-channel selection.
+- Encrypted YouTube OAuth custody and private-only video uploads.
 - Multi-channel campaign scheduling when multiple target channels are selected.
 - Max Scheduler start-time plus per-channel release offset.
 - Release Queue views for active channel and all channels.

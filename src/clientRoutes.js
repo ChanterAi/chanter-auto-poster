@@ -17,6 +17,7 @@
 
 const express = require('express');
 const multer = require('multer');
+const fs = require('fs/promises');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const config = require('./config');
@@ -82,6 +83,18 @@ function asyncRoute(handler) {
   };
 }
 
+async function removeRejectedClientUpload(file) {
+  const filePath = String((file && file.path) || '').trim();
+  if (!filePath) return;
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    if (error && error.code !== 'ENOENT') {
+      console.warn('[client-routes] rejected upload cleanup failed', error.code || 'unlink_failed');
+    }
+  }
+}
+
 function clientApplicationContext(req, options = {}) {
   const account = req.clientAccount || {};
   const actorId = `client:@${account.username || req.clientAccountId || 'unknown'}`;
@@ -90,6 +103,8 @@ function clientApplicationContext(req, options = {}) {
     actorId,
     accountId: req.clientAccountId,
     source: 'website',
+    workspaceId: String(account.workspaceId || '').trim(),
+    commercialContext: req.commercialContext || null,
     correlationId: req.get('x-request-id') || req.get('x-correlation-id') || '',
     approval: options.selfApprove ? { approvedBy: actorId } : null
   });
@@ -223,15 +238,39 @@ async function handleTikTokReconnectCallback(req, res) {
   }
 
   try {
+    req.clientAccountId = account.accountId;
+    req.clientUserId = account.userId;
+    req.clientAccount = account;
+    const commercial = await applicationService.getPlanUsage(clientApplicationContext(req));
+    req.commercialContext = commercial.commercialContext;
     const auth = await tiktok.exchangeCodeForToken(String(req.query.code));
     if (String(auth.open_id || '') !== account.accountId) {
       redirectClientNotice(res, 'Reconnect must use the same TikTok account you originally connected. Contact CHANTER support to link a different account.');
       return;
     }
-    let updated = await storage.saveTikTokAccount(account.userId, auth);
+    const activation = await applicationService.authorizeAccountConnection(
+      clientApplicationContext(req),
+      { provider: 'tiktok', accountId: account.accountId }
+    );
+    let updated = await storage.saveTikTokAccount(
+      account.userId,
+      auth,
+      {},
+      commercial.commercialContext.workspaceScope,
+      activation.activationContext
+    );
     try {
-      const profile = await tiktok.queryCreatorInfo(updated.accountId, account.userId);
-      updated = await storage.updateTikTokAccountProfile(account.userId, updated.accountId, profile) || updated;
+      const profile = await tiktok.queryCreatorInfo(
+        updated.accountId,
+        account.userId,
+        commercial.commercialContext.workspaceScope
+      );
+      updated = await storage.updateTikTokAccountProfile(
+        account.userId,
+        updated.accountId,
+        profile,
+        commercial.commercialContext.workspaceScope
+      ) || updated;
     } catch (profileError) {
       console.warn('[client-routes] TikTok profile unavailable after reconnect', profileError.message);
     }
@@ -246,6 +285,7 @@ async function handleTikTokReconnectCallback(req, res) {
 router.post('/client/autoposter/upload', requireClientSession, clientUploadMedia, asyncRoute(async (req, res) => {
   const account = req.clientAccount;
   if (!account.connected) {
+    await removeRejectedClientUpload(req.file);
     redirectClientNotice(res, 'Reconnect your TikTok account before scheduling a post.');
     return;
   }
@@ -255,10 +295,12 @@ router.post('/client/autoposter/upload', requireClientSession, clientUploadMedia
   const publicMediaUrl = String(req.body.publicMediaUrl || '').trim();
 
   if (!caption) {
+    await removeRejectedClientUpload(req.file);
     redirectClientNotice(res, 'Add a caption before scheduling.');
     return;
   }
   if (caption.length > 2200) {
+    await removeRejectedClientUpload(req.file);
     redirectClientNotice(res, 'Caption is too long (max 2200 characters).');
     return;
   }
@@ -282,6 +324,13 @@ router.post('/client/autoposter/upload', requireClientSession, clientUploadMedia
       }
     );
   } catch (error) {
+    const createdIds = error && error.details && (
+      error.details.createdPostIds
+      || (error.details.createdPostId ? [error.details.createdPostId] : [])
+    );
+    if (!Array.isArray(createdIds) || createdIds.length === 0) {
+      await removeRejectedClientUpload(req.file);
+    }
     if (error instanceof applicationService.AutoPosterApplicationError) {
       redirectClientNotice(res, error.message);
       return;
@@ -448,3 +497,4 @@ const clientViewHelpers = {
 module.exports = router;
 module.exports.handleTikTokReconnectCallback = handleTikTokReconnectCallback;
 module.exports.CLIENT_OAUTH_STATE_COOKIE = CLIENT_OAUTH_STATE_COOKIE;
+module.exports._private = Object.freeze({ removeRejectedClientUpload });

@@ -41,7 +41,12 @@ const postsByAccount = {
     status: 'posted', originalName: 'account-a-history.jpg', mediaType: 'photo',
     mediaUrl: '/assets/chanter-logo.png', caption: 'Account A history', hashtags: '#a',
     privacyLevel: 'SELF_ONLY', postedAt: new Date().toISOString(),
-    lastInstagramResult: { ok: false, reason: 'Hidden integration error' }
+    lastInstagramResult: {
+      ok: false,
+      reason: 'Hidden integration error',
+      response: { access_token: 'CANARY-POST-RESULT-TOKEN' }
+    },
+    logs: [{ client_secret: 'CANARY-POST-LOG-SECRET' }]
   }],
   'account-b': [{
     id: 'post-b', accountId: 'account-b', tiktokOpenId: 'account-b', username: 'account_b',
@@ -56,6 +61,11 @@ storage.getTikTokAccount = async (userId, accountId) => accounts.find((account) 
 storage.getPosts = async (userId, accountId) => accountId
   ? (postsByAccount[accountId] || [])
   : Object.values(postsByAccount).flat();
+storage.getPost = async (userId, id, accountId) => {
+  const post = Object.values(postsByAccount).flat().find((item) => item.id === id) || null;
+  if (!post || (accountId && post.accountId !== accountId)) return null;
+  return post;
+};
 storage.getSettings = async () => ({ dailyPostTime: '09:00' });
 storage.getCounts = async () => ({
   total: 0,
@@ -141,6 +151,8 @@ autoMusic.prepareAutoMusic = async ({ videoPath, analysis }) => {
   };
 };
 
+const { installCommercialFixture } = require('./helpers/commercial-fixture');
+installCommercialFixture(require('../src/commercialService'), storage);
 const routes = require('../src/routes');
 
 test('serves the AutoPoster page and dashboard at both private routes', async (t) => {
@@ -414,7 +426,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
     savedAccountId = accountId;
     return { id: postId, accountId, ...patch };
   };
-  const saveResponse = await fetch(`${baseUrl}/posts/post-a`, {
+  const saveResponse = await fetch(`${baseUrl}/posts/post-b`, {
     method: 'POST',
     redirect: 'manual',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: adminCookie },
@@ -423,13 +435,14 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
       hashtags: '#updated',
       privacyLevel: 'SELF_ONLY',
       scheduledAt: '',
-      timezoneOffsetMinutes: '0'
+      timezoneOffsetMinutes: '0',
+      accountId: 'account-b'
     })
   });
 
   assert.equal(saveResponse.status, 302);
   assert.ok(savedPatch);
-  assert.equal(savedAccountId, 'account-a');
+  assert.equal(savedAccountId, 'account-b');
   assert.equal(Object.hasOwn(savedPatch, 'instagramMediaUrl'), false);
 
   // ── Approval gate routes ──────────────────────────────────────────────
@@ -448,7 +461,7 @@ test('serves the AutoPoster page and dashboard at both private routes', async (t
   assert.equal(approveCalls.length, 1);
   assert.equal(approveCalls[0].postId, 'post-a');
   assert.equal(approveCalls[0].meta.approvedBy, 'admin:owner');
-  assert.equal(approveCalls[0].accountId, 'account-a');
+  assert.equal(approveCalls[0].accountId, undefined, 'provider-neutral admin action relies on workspace ownership');
 
   const revokeCalls = [];
   storage.revokePostApproval = async (userId, postId, accountId) => {

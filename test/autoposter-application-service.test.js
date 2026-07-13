@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { createCommercialFixture } = require('./helpers/commercial-fixture');
+const { defaultWorkspaceId } = require('../src/workspaceService');
 const mediaPolicy = require('../src/mediaPolicy');
 const { postFromDoc } = require('../src/postsMapper');
 const {
@@ -13,14 +15,23 @@ const {
   deterministicPostId
 } = require('../src/autoposterApplicationService');
 
-function makeHarness() {
+function makeHarness({ planId = 'legacy_full_access' } = {}) {
   const accounts = [
     { accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok', username: 'creator_a', connected: true },
     { accountId: 'account-b', open_id: 'open-b', userId: 'owner', platform: 'tiktok', username: 'creator_b', connected: true },
     { accountId: 'account-cold', open_id: 'open-cold', userId: 'owner', platform: 'tiktok', username: 'creator_cold', connected: false }
   ];
   const posts = [];
-  const calls = { add: [], update: [], auto: [], explicit: [], delete: [], approve: [], revoke: [] };
+  const calls = {
+    add: [],
+    update: [],
+    auto: [],
+    explicit: [],
+    delete: [],
+    approve: [],
+    revoke: [],
+    authorizeSchedule: []
+  };
   let sequence = 0;
   let nowMs = Date.parse('2026-07-10T10:00:00.000Z');
   let failNextGetPost = false;
@@ -143,11 +154,23 @@ function makeHarness() {
     }
   };
 
+  const commercial = createCommercialFixture(storage, { planId });
+  const authorizeSchedule = commercial.authorizeSchedule.bind(commercial);
+  commercial.authorizeSchedule = async (input) => {
+    calls.authorizeSchedule.push(input);
+    return authorizeSchedule(input);
+  };
+
   return {
     accounts,
     calls,
     posts,
-    service: createAutoPosterApplicationService({ storage, mediaPolicy, now: () => nowMs }),
+    service: createAutoPosterApplicationService({
+      storage,
+      mediaPolicy,
+      commercialService: commercial,
+      now: () => nowMs
+    }),
     setNow(value) { nowMs = Date.parse(value); },
     failConfirmationOnce() { failNextGetPost = true; }
   };
@@ -241,7 +264,10 @@ test('runtime idempotency uses one deterministic create-only queue document', as
   assert.equal(first.duplicate, false);
   assert.equal(second.duplicate, true);
   assert.equal(harness.calls.add.length, 1);
-  assert.equal(first.post.id, deterministicPostId('owner', 'account-a', 'same-key'));
+  assert.equal(
+    first.post.id,
+    deterministicPostId('owner', 'account-a', 'same-key', defaultWorkspaceId('owner'))
+  );
   assert.equal(second.post.id, first.post.id);
   first.post.status = 'posted';
   harness.setNow('2026-07-13T09:00:00.000Z');
@@ -291,6 +317,7 @@ test('a concurrent Firestore create race returns the already-created scheduled i
   const service = createAutoPosterApplicationService({
     storage,
     mediaPolicy,
+    commercialService: createCommercialFixture(storage),
     now: () => Date.parse('2026-07-10T10:00:00.000Z')
   });
   const result = await service.schedulePost(context({
@@ -312,7 +339,10 @@ test('a concurrent Firestore create race returns the already-created scheduled i
   assert.equal(addCalls, 1);
   assert.equal(result.duplicate, true);
   assert.equal(result.post.status, 'scheduled');
-  assert.equal(result.post.id, deterministicPostId('owner', 'account-a', 'racing-key'));
+  assert.equal(
+    result.post.id,
+    deterministicPostId('owner', 'account-a', 'racing-key', defaultWorkspaceId('owner'))
+  );
 });
 
 test('an old incomplete idempotent draft fails truthfully instead of claiming scheduled success', async () => {
@@ -493,12 +523,199 @@ test('queue, status, media, approval, retry, and delete operations preserve scop
     (error) => error.code === 'forbidden'
   );
   assert.equal((await harness.service.revokeApproval(context({ accountId: 'account-a' }), { postId })).ok, true);
+  harness.posts.find((post) => post.id === postId).status = 'failed';
   assert.equal((await harness.service.retryPost(context({ accountId: 'account-a' }), { postId })).ok, true);
   const batch = await harness.service.deleteMarkedPosts(context(), { postIds: [postId, 'missing', postId] });
   assert.equal(batch.ok, false);
   assert.deepEqual(batch.deleted, [postId]);
   assert.deepEqual(batch.failed, [{ id: 'missing', reason: 'Post not found in your account.' }]);
   assert.equal(harness.calls.delete.length, 2, 'deduplicated batch reuses individual delete truth');
+});
+
+test('automatic horizon evaluation is account-local instead of compounding across channels', async () => {
+  const harness = makeHarness();
+  for (let index = 3; index <= 20; index += 1) {
+    harness.accounts.push({
+      accountId: `account-${index}`,
+      open_id: `open-${index}`,
+      userId: 'owner',
+      platform: 'tiktok',
+      username: `creator_${index}`,
+      connected: true
+    });
+  }
+  const accountIds = harness.accounts
+    .filter((account) => account.connected)
+    .map((account) => account.accountId);
+  const files = Array.from({ length: 5 }, (_, index) => ({
+    originalname: `clip-${index + 1}.mp4`,
+    mimetype: 'video/mp4'
+  }));
+
+  await harness.service.schedulePost(context(), {
+    accountIds,
+    files,
+    schedule: { mode: 'automatic' }
+  });
+
+  assert.equal(harness.calls.authorizeSchedule.length, 1);
+  const authorization = harness.calls.authorizeSchedule[0];
+  assert.equal(authorization.quantity, 100);
+  assert.ok(
+    Date.parse(authorization.scheduledAt) <= Date.parse('2026-07-17T10:00:00.000Z'),
+    'five daily releases stay within one account-local horizon even across twenty channels'
+  );
+});
+
+test('account activation context uses only server-resolved workspace limits', async () => {
+  const commercialContext = {
+    userId: 'owner',
+    workspace: { workspaceId: 'workspace-server' },
+    workspaceScope: { workspaceId: 'workspace-server', allowLegacyOwnerRecords: false },
+    entitlements: { connectedAccountLimit: 2, providerLimit: 1 }
+  };
+  const service = createAutoPosterApplicationService({
+    storage: {},
+    commercialService: {
+      resolveContext: async () => commercialContext,
+      authorizeAccountConnection: async () => ({
+        context: commercialContext,
+        existing: false,
+        decision: { allowed: true, reasonCode: 'allowed' }
+      })
+    }
+  });
+
+  const result = await service.authorizeAccountConnection(
+    context({ workspaceId: 'workspace-server' }),
+    {
+      provider: 'tiktok',
+      accountId: 'account-new',
+      // Browser-like commercial claims are deliberately ignored.
+      workspaceId: 'workspace-browser',
+      connectedAccountLimit: 999,
+      providerLimit: 999
+    }
+  );
+
+  assert.deepEqual(result.activationContext, {
+    ownerUserId: 'owner',
+    workspaceId: 'workspace-server',
+    provider: 'tiktok',
+    connectedAccountLimit: 2,
+    providerLimit: 1
+  });
+});
+
+test('retry and edit fail closed for ambiguous or unsafe queue states while failed retry remains supported', async () => {
+  const harness = makeHarness();
+  const created = await harness.service.schedulePost(context({ accountId: 'account-a' }), {
+    accountId: 'account-a',
+    mediaUrl: 'https://cdn.example.com/unknown.mp4',
+    schedule: { mode: 'automatic' },
+    requireSingle: true
+  });
+  const post = harness.posts.find((item) => item.id === created.post.id);
+  post.status = 'outcome_unknown';
+  const updateCount = harness.calls.update.length;
+
+  await assert.rejects(
+    harness.service.retryPost(context({ accountId: 'account-a' }), { postId: post.id }),
+    (error) => error.code === 'queue_transition_blocked' && error.status === 409
+  );
+  await assert.rejects(
+    harness.service.updatePost(context({ accountId: 'account-a' }), {
+      postId: post.id,
+      accountId: 'account-a',
+      patch: { caption: 'must not change' }
+    }),
+    (error) => error.code === 'queue_transition_blocked' && error.status === 409
+  );
+  assert.equal(harness.calls.update.length, updateCount);
+
+  for (const status of ['processing', 'posted']) {
+    post.status = status;
+    await assert.rejects(
+      harness.service.updatePost(context({ accountId: 'account-a' }), {
+        postId: post.id,
+        accountId: 'account-a',
+        patch: { caption: 'must still not change' }
+      }),
+      (error) => error.code === 'queue_transition_blocked'
+    );
+  }
+
+  post.status = 'failed';
+  assert.equal((await harness.service.retryPost(
+    context({ accountId: 'account-a' }),
+    { postId: post.id, accountId: 'account-a' }
+  )).ok, true);
+});
+
+test('queue and status views sanitize raw legacy evidence returned by storage adapters', async () => {
+  const harness = makeHarness();
+  const created = await harness.service.schedulePost(context({ accountId: 'account-a' }), {
+    accountId: 'account-a',
+    mediaUrl: 'https://cdn.example.com/evidence.mp4',
+    schedule: { mode: 'automatic' },
+    requireSingle: true
+  });
+  const post = harness.posts.find((item) => item.id === created.post.id);
+  post.lastResult = {
+    ok: false,
+    reason: 'access_token=queue-result-canary',
+    response: { video_id: 'video-safe', access_token: 'response-token-canary' }
+  };
+  post.lastInstagramResult = { ok: false, reason: 'client_secret=instagram-canary' };
+  post.lastError = 'refresh_token=last-error-canary';
+  post.history = [{ event: 'failed', detail: 'authorization=history-canary' }];
+  post.logs = [{ event: 'raw', detail: 'credential=logs-canary' }];
+
+  const queue = await harness.service.listQueue(context(), { accountId: 'account-a', limit: 10 });
+  const status = await harness.service.getPostStatus(context(), {
+    postId: post.id,
+    accountId: 'account-a'
+  });
+  const json = JSON.stringify({ queue, status });
+  for (const canary of [
+    'queue-result-canary',
+    'response-token-canary',
+    'instagram-canary',
+    'last-error-canary',
+    'history-canary',
+    'logs-canary'
+  ]) assert.equal(json.includes(canary), false);
+  assert.equal(status.post.lastResult.response.video_id, 'video-safe');
+  assert.deepEqual(status.post.logs, status.post.history);
+});
+
+test('Starter keeps core outcome truth while withholding advanced provider evidence', async () => {
+  const harness = makeHarness({ planId: 'starter' });
+  const created = await harness.service.schedulePost(context({ accountId: 'account-a' }), {
+    accountId: 'account-a',
+    mediaUrl: 'https://cdn.example.com/starter-evidence.mp4',
+    schedule: { mode: 'automatic' },
+    requireSingle: true
+  });
+  const post = harness.posts.find((item) => item.id === created.post.id);
+  post.lastResult = {
+    ok: false,
+    reason: 'Provider declined the request.',
+    response: { video_id: 'advanced-video-id' }
+  };
+  post.history = [{ event: 'provider_response', detail: 'Advanced diagnostic evidence.' }];
+
+  const queue = await harness.service.listQueue(context(), { accountId: 'account-a', limit: 10 });
+  const status = await harness.service.getPostStatus(context(), {
+    postId: post.id,
+    accountId: 'account-a'
+  });
+  for (const view of [queue.items[0], status.post]) {
+    assert.equal(view.lastResult.reason, 'Provider declined the request.');
+    assert.equal(Object.hasOwn(view.lastResult, 'response'), false);
+    assert.deepEqual(view.history, []);
+    assert.deepEqual(view.logs, []);
+  }
 });
 
 test('controllers delegate queue creation to the application service', () => {

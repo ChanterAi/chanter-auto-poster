@@ -103,15 +103,22 @@ youtube.revokeToken = async (token) => {
 // ── Storage fakes (account persistence only; envelope rules stay real) ─────
 const savedAccounts = new Map();
 const reauthorizationMarks = [];
+const accountActivationContexts = [];
 storage.getYouTubeAccounts = async () => [...savedAccounts.values()];
 storage.getYouTubeAccount = async (userId, accountId) => {
   const account = savedAccounts.get(accountId);
   return account && account.userId === userId ? account : null;
 };
-storage.saveYouTubeAccount = async (userId, { channelId, profile, credentialEnvelope, tokenMeta }) => {
+storage.saveYouTubeAccount = async (
+  userId,
+  { channelId, profile, credentialEnvelope, tokenMeta },
+  workspaceScope,
+  activationContext
+) => {
   if (!credentialEnvelope || !credentialEnvelope.ct) {
     throw new Error('YouTube credentials must be an encrypted envelope; refusing to persist');
   }
+  if (activationContext) accountActivationContexts.push({ workspaceScope, activationContext });
   const account = {
     accountId: channelId,
     id: channelId,
@@ -155,6 +162,8 @@ storage.disconnectYouTubeAccount = async (userId, channelId) => {
   return true;
 };
 
+const { installCommercialFixture } = require('./helpers/commercial-fixture');
+installCommercialFixture(require('../src/commercialService'), storage);
 const routes = require('../src/routes');
 
 const app = express();
@@ -184,6 +193,7 @@ function resetScenario() {
   savedAccounts.clear();
   stateRecords.clear();
   reauthorizationMarks.length = 0;
+  accountActivationContexts.length = 0;
 }
 
 async function get(pathname, { cookies = [adminCookie], redirect = 'manual' } = {}) {
@@ -278,6 +288,14 @@ test('valid callback connects the single channel with encrypted custody and retu
     access_token: CANARY_ACCESS,
     refresh_token: CANARY_REFRESH
   });
+  assert.equal(accountActivationContexts.length, 1);
+  assert.equal(accountActivationContexts[0].activationContext.provider, 'youtube');
+  assert.equal(
+    accountActivationContexts[0].activationContext.workspaceId,
+    accountActivationContexts[0].workspaceScope.workspaceId
+  );
+  assert.equal(JSON.stringify(accountActivationContexts[0]).includes(CANARY_ACCESS), false);
+  assert.equal(JSON.stringify(accountActivationContexts[0]).includes(CANARY_REFRESH), false);
 
   // The state is single-use: replaying the exact same callback fails.
   const replay = await get(`/auth/youtube/callback?code=${AUTH_CODE}&state=${state}`, {
@@ -412,6 +430,7 @@ test('multiple channels require explicit selection bound to the same transaction
   assert.match(noticeOf(select), /YouTube channel @chanterCy connected\./);
   assert.ok(savedAccounts.get('UC-chanter'));
   assert.equal(savedAccounts.has('UC-brand'), false, 'only the selected channel is connected');
+  assert.equal(accountActivationContexts.length, 1, 'selection finalization receives one safe activation context');
 });
 
 test('reauthorize preserves the channel identity and rejects a different Google account', async () => {

@@ -9,7 +9,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-function installStorageMocks({ seededDocs = [], failDeleteIds = [] } = {}) {
+function installStorageMocks({ seededDocs = [], seededCollections = {}, failDeleteIds = [] } = {}) {
   const firestorePath = require.resolve('../src/firestore');
   const cloudinaryPath = require.resolve('../src/cloudinary');
   const storagePath = require.resolve('../src/storage');
@@ -18,6 +18,14 @@ function installStorageMocks({ seededDocs = [], failDeleteIds = [] } = {}) {
   delete require.cache[mapperPath];
 
   const docs = new Map(seededDocs.map((docData) => [docData.id, { ...docData }]));
+  const stores = new Map([['posts', docs]]);
+  for (const [collectionName, entries] of Object.entries(seededCollections)) {
+    stores.set(collectionName, new Map(Object.entries(entries).map(([id, data]) => [id, { ...data }])));
+  }
+  const store = (name) => {
+    if (!stores.has(name)) stores.set(name, new Map());
+    return stores.get(name);
+  };
   const deletions = [];
   const destroyed = [];
   const failSet = new Set(failDeleteIds);
@@ -39,21 +47,68 @@ function installStorageMocks({ seededDocs = [], failDeleteIds = [] } = {}) {
     }
   };
 
+  function snapshot(collectionName, id) {
+    const records = store(collectionName);
+    return { id, exists: records.has(id), data: () => records.get(id) };
+  }
+
+  function documentReference(collectionName, id) {
+    return {
+      id,
+      collectionName,
+      path: `${collectionName}/${id}`,
+      get: async () => snapshot(collectionName, id),
+      update: async (patch) => store(collectionName).set(id, { ...(store(collectionName).get(id) || {}), ...patch }),
+      delete: async () => {
+        if (collectionName === 'posts') deletions.push(id);
+        if (collectionName === 'posts' && failSet.has(id)) throw new Error('Firestore delete unavailable');
+        store(collectionName).delete(id);
+      }
+    };
+  }
+
   const postsCollection = {
     where: () => ({
       get: async () => ({ docs: [...docs.entries()].map(([id, data]) => ({ id, data: () => data })) }),
       select: () => ({ get: async () => ({ docs: [] }) })
     }),
-    doc: (id) => ({
-      id,
-      get: async () => ({ id, exists: docs.has(id), data: () => docs.get(id) }),
-      update: async () => {},
-      delete: async () => {
-        deletions.push(id);
-        if (failSet.has(id)) throw new Error('Firestore delete unavailable');
-        docs.delete(id);
+    doc: (id) => documentReference('posts', id)
+  };
+
+  const db = {
+    collection: (name) => ({ doc: (id) => documentReference(name, id) }),
+    batch: () => ({ set: () => {}, update: () => {}, commit: async () => {} }),
+    async runTransaction(callback) {
+      const pending = [];
+      const result = await callback({
+        get: async (ref) => snapshot(ref.collectionName, ref.id),
+        create(ref, data) { pending.push({ type: 'create', ref, data }); },
+        update(ref, data) { pending.push({ type: 'update', ref, data }); },
+        delete(ref) { pending.push({ type: 'delete', ref }); }
+      });
+      for (const operation of pending) {
+        const records = store(operation.ref.collectionName);
+        if (operation.type === 'create' && records.has(operation.ref.id)) throw new Error('already exists');
+        if (operation.type === 'update' && !records.has(operation.ref.id)) throw new Error('missing update target');
+        if (
+          operation.type === 'delete'
+          && operation.ref.collectionName === 'posts'
+          && failSet.has(operation.ref.id)
+        ) throw new Error('Firestore delete unavailable');
       }
-    })
+      for (const operation of pending) {
+        const records = store(operation.ref.collectionName);
+        if (operation.type === 'delete') {
+          if (operation.ref.collectionName === 'posts') deletions.push(operation.ref.id);
+          records.delete(operation.ref.id);
+        } else if (operation.type === 'update') {
+          records.set(operation.ref.id, { ...records.get(operation.ref.id), ...operation.data });
+        } else {
+          records.set(operation.ref.id, { ...operation.data });
+        }
+      }
+      return result;
+    }
   };
 
   require.cache[firestorePath] = {
@@ -63,7 +118,7 @@ function installStorageMocks({ seededDocs = [], failDeleteIds = [] } = {}) {
     exports: {
       postsCollection: () => postsCollection,
       configDoc: () => ({ get: async () => ({ exists: true, data: () => ({ dailyPostTime: '09:00' }) }) }),
-      getFirestore: () => ({ batch: () => ({ set: () => {}, update: () => {}, commit: async () => {} }) }),
+      getFirestore: () => db,
       Timestamp: { now: () => timestamp(), fromDate: () => timestamp() },
       FieldValue: { serverTimestamp: () => timestamp(), increment: () => 1 }
     }
@@ -75,7 +130,14 @@ function installStorageMocks({ seededDocs = [], failDeleteIds = [] } = {}) {
     }
   };
 
-  return { storage: require('../src/storage'), docs, deletions, destroyed, cleanup };
+  return {
+    storage: require('../src/storage'),
+    docs,
+    stores,
+    deletions,
+    destroyed,
+    cleanup
+  };
 }
 
 test('deletePost removes an owned post on any channel and destroys its own media', async (t) => {

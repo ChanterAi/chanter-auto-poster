@@ -279,10 +279,21 @@ function decryptTokens(envelope) {
  * the account is saved but immediately marked reauthorization_required so
  * it can never be presented as ready without offline access.
  */
-async function finalizeYouTubeConnection({ userId, channel, tokens, meta }) {
+async function finalizeYouTubeConnection({
+  userId,
+  channel,
+  tokens,
+  meta,
+  workspaceScope,
+  activationContext
+}) {
   let finalTokens = { ...tokens };
   if (!finalTokens.refresh_token) {
-    const existingEnvelope = await storage.getYouTubeAccountCredential(userId, channel.channelId);
+    const existingEnvelope = await storage.getYouTubeAccountCredential(
+      userId,
+      channel.channelId,
+      workspaceScope
+    );
     if (existingEnvelope) {
       try {
         const previous = tokenVault.decryptCredentials(existingEnvelope);
@@ -303,9 +314,14 @@ async function finalizeYouTubeConnection({ userId, channel, tokens, meta }) {
       tokenPresent: Boolean(finalTokens.access_token),
       refreshTokenPresent
     }
-  });
+  }, workspaceScope, activationContext);
   if (!refreshTokenPresent) {
-    await storage.markYouTubeAccountReauthorizationRequired(userId, channel.channelId, 'no_refresh_token');
+    await storage.markYouTubeAccountReauthorizationRequired(
+      userId,
+      channel.channelId,
+      'no_refresh_token',
+      workspaceScope
+    );
     return { account: { ...account, reauthorizationRequired: true }, refreshTokenPresent: false };
   }
   return { account, refreshTokenPresent: true };
@@ -321,15 +337,15 @@ async function finalizeYouTubeConnection({ userId, channel, tokens, meta }) {
  * account reauthorization_required. Returns { ok, accessToken } or
  * { ok: false, code, reason }.
  */
-async function getActiveYouTubeCredentials(userId, accountId) {
-  const account = await storage.getYouTubeAccount(userId, accountId);
+async function getActiveYouTubeCredentials(userId, accountId, workspaceScope) {
+  const account = await storage.getYouTubeAccount(userId, accountId, workspaceScope);
   if (!account || !account.connected) {
     return { ok: false, code: 'account_disconnected', reason: `YouTube channel ${accountId} is not connected.` };
   }
   if (account.reauthorizationRequired) {
     return { ok: false, code: 'reauthorization_required', reason: 'YouTube channel requires reauthorization. Reconnect it from the AutoPoster site.' };
   }
-  const envelope = await storage.getYouTubeAccountCredential(userId, accountId);
+  const envelope = await storage.getYouTubeAccountCredential(userId, accountId, workspaceScope);
   if (!envelope) {
     return { ok: false, code: 'credentials_unavailable', reason: 'No stored YouTube credentials for this channel.' };
   }
@@ -346,7 +362,12 @@ async function getActiveYouTubeCredentials(userId, accountId) {
   if (!needsRefresh) return { ok: true, accessToken: tokens.access_token };
 
   if (!tokens.refresh_token) {
-    await storage.markYouTubeAccountReauthorizationRequired(userId, accountId, 'no_refresh_token');
+    await storage.markYouTubeAccountReauthorizationRequired(
+      userId,
+      accountId,
+      'no_refresh_token',
+      workspaceScope
+    );
     return { ok: false, code: 'reauthorization_required', reason: 'The YouTube access token expired and no refresh token is stored. Reconnect the channel.' };
   }
   try {
@@ -354,11 +375,16 @@ async function getActiveYouTubeCredentials(userId, accountId) {
     await storage.updateYouTubeAccountTokenState(userId, accountId, {
       credentialEnvelope: encryptTokens(refreshed.tokens),
       tokenMeta: { ...refreshed.meta, lastRefreshAt: new Date().toISOString(), lastRefreshFailureCode: '' }
-    });
+    }, workspaceScope);
     return { ok: true, accessToken: refreshed.tokens.access_token };
   } catch (error) {
     if (error.code === 'reauthorization_required') {
-      await storage.markYouTubeAccountReauthorizationRequired(userId, accountId, 'invalid_grant');
+      await storage.markYouTubeAccountReauthorizationRequired(
+        userId,
+        accountId,
+        'invalid_grant',
+        workspaceScope
+      );
       return { ok: false, code: 'reauthorization_required', reason: 'Google rejected the stored refresh token (invalid_grant). Reconnect the channel.' };
     }
     safeWarn('[youtube] token refresh failed', { accountId, error: error.message });
@@ -600,10 +626,10 @@ async function uploadVideo({ accessToken, media, metadata }) {
 
 // ── Status lookup (youtube.readonly) ───────────────────────────────────────
 
-async function getUploadedVideoStatus({ userId, accountId, videoId }) {
+async function getUploadedVideoStatus({ userId, accountId, videoId, workspaceScope }) {
   const cleanVideoId = String(videoId || '').trim();
   if (!cleanVideoId) return { ok: false, reason: 'A YouTube video ID is required.' };
-  const credentials = await getActiveYouTubeCredentials(userId, accountId);
+  const credentials = await getActiveYouTubeCredentials(userId, accountId, workspaceScope);
   if (!credentials.ok) return { ok: false, code: credentials.code, reason: credentials.reason };
 
   const url = new URL(`${config.youtube.apiBaseUrl}/videos`);
@@ -668,7 +694,8 @@ async function publishScheduledYouTubePost(post) {
     return { ok: false, mode: 'api', reason: 'This job already has a YouTube video ID; publishing again was blocked.' };
   }
 
-  const account = await storage.getYouTubeAccount(post.userId, accountId);
+  const workspaceScope = post.workspaceId ? { workspaceId: post.workspaceId } : undefined;
+  const account = await storage.getYouTubeAccount(post.userId, accountId, workspaceScope);
   if (!account) {
     return { ok: false, mode: 'api', reason: `YouTube channel ${accountId} is not connected for this owner; publishing was blocked.` };
   }
@@ -691,7 +718,7 @@ async function publishScheduledYouTubePost(post) {
     return { ok: false, mode: 'api', reason: 'YouTube publishing is video-only; this job has no video media.' };
   }
 
-  const credentials = await getActiveYouTubeCredentials(post.userId, accountId);
+  const credentials = await getActiveYouTubeCredentials(post.userId, accountId, workspaceScope);
   if (!credentials.ok) {
     return { ok: false, mode: 'api', code: credentials.code, reason: credentials.reason };
   }

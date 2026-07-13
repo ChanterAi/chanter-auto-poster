@@ -184,6 +184,59 @@ function accountLabel(account) {
   return account.displayName || account.id || `${providerDisplayName(account.provider)} account`;
 }
 
+function commercialCount(value, { unlimited = false } = {}) {
+  if (unlimited && (value === null || value === undefined)) return 'Unlimited';
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? String(number) : '0';
+}
+
+function commercialMetric(commercial, key) {
+  const value = commercial?.usage?.[key];
+  return value && typeof value === 'object' ? value : {};
+}
+
+function commercialDate(value) {
+  return /^\d{4}-\d{2}-\d{2}/.test(String(value || '')) ? String(value).slice(0, 10) : 'Not available';
+}
+
+function PlanUsageHeader({ commercial }) {
+  if (!commercial || commercial.available !== true) return null;
+  const workspace = commercial.workspace && typeof commercial.workspace === 'object' ? commercial.workspace : {};
+  const plan = commercial.plan && typeof commercial.plan === 'object' ? commercial.plan : {};
+  const scheduled = commercialMetric(commercial, 'scheduledPosts');
+  const connected = commercialMetric(commercial, 'connectedAccounts');
+  const providers = commercialMetric(commercial, 'activeProviders');
+  const queue = commercialMetric(commercial, 'activeQueue');
+  const planLabel = plan.id === 'legacy_full_access'
+    ? 'Legacy Full Access'
+    : (asText(plan.displayName) || 'Plan unavailable');
+  const subscriptionStatus = asText(commercial.subscriptionStatus || 'none').replace(/_/g, ' ');
+  const horizon = commercial.schedulingHorizonDays === null
+    ? 'Unlimited'
+    : `${commercialCount(commercial.schedulingHorizonDays)} days`;
+
+  return (
+    <aside className="plan-usage-summary" aria-label="Plan and usage" data-plan-usage-summary>
+      <div className="plan-summary-identity">
+        <span>Plan &amp; Usage</span>
+        <strong>{asText(workspace.displayName) || 'Workspace unavailable'}</strong>
+        <small>{planLabel} · {subscriptionStatus}</small>
+      </div>
+      <dl className="plan-summary-metrics">
+        <div><dt>Scheduled</dt><dd>{commercialCount(scheduled.used)} / {commercialCount(scheduled.limit, { unlimited: true })}</dd></div>
+        <div><dt>Accounts</dt><dd>{commercialCount(connected.used)} / {commercialCount(connected.limit, { unlimited: true })}</dd></div>
+        <div><dt>Providers</dt><dd>{commercialCount(providers.used)} / {commercialCount(providers.limit, { unlimited: true })}</dd></div>
+        <div><dt>Queue</dt><dd>{commercialCount(queue.used)} / {commercialCount(queue.limit, { unlimited: true })}</dd></div>
+      </dl>
+      <p>
+        {commercialDate(commercial.cycle?.start)} – {commercialDate(commercial.cycle?.end)}
+        {' · '}Horizon {horizon}
+        {' · '}Runtime {commercial.runtimeScheduling ? 'available' : 'not available'}
+      </p>
+    </aside>
+  );
+}
+
 function connectionStateLabel(account) {
   if (account.connected) return 'Connected';
   if (account.connectionStatus === 'reauthorization_required') return 'Reauthorization required';
@@ -322,7 +375,7 @@ function CopyEvidenceButton({ payload }) {
   );
 }
 
-function JobCard({ job, account }) {
+function JobCard({ job, account, advancedEvidence }) {
   // Campaign evidence payload — operational fields only, never tokens or auth data.
   const evidencePayload = {
     jobId: job.id,
@@ -399,11 +452,13 @@ function JobCard({ job, account }) {
         )}
 
         <div className="job-footer">
-          <details className="job-details">
-            <summary>Publishing evidence</summary>
-            <CopyEvidenceButton payload={evidencePayload} />
-            <pre>{JSON.stringify(evidencePayload, null, 2)}</pre>
-          </details>
+          {advancedEvidence && (
+            <details className="job-details">
+              <summary>Publishing evidence</summary>
+              <CopyEvidenceButton payload={evidencePayload} />
+              <pre>{JSON.stringify(evidencePayload, null, 2)}</pre>
+            </details>
+          )}
           <div className="job-actions" aria-label={`Actions for ${job.title}`}>
             {['Retry', 'Cancel', 'Delete', 'Publish Now'].map((label) => (
               <button
@@ -424,7 +479,7 @@ function JobCard({ job, account }) {
 }
 
 export default function AutoPosterDashboard() {
-  const [data, setData] = useState({ accounts: [], jobs: [], appTimeZone: '', selectedAccountId: '' });
+  const [data, setData] = useState({ accounts: [], jobs: [], appTimeZone: '', selectedAccountId: '', commercial: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -450,7 +505,8 @@ export default function AutoPosterDashboard() {
         accounts: Array.isArray(payload.accounts) ? payload.accounts : [],
         jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
         appTimeZone: payload.appTimeZone || '',
-        selectedAccountId: payload.selectedAccountId || ''
+        selectedAccountId: payload.selectedAccountId || '',
+        commercial: payload.commercial && typeof payload.commercial === 'object' ? payload.commercial : null
       }))
       .catch((requestError) => {
         if (requestError.name !== 'AbortError') setError(requestError.message);
@@ -537,11 +593,14 @@ export default function AutoPosterDashboard() {
           <h1>Command Center</h1>
           <p>Monitor campaigns, release windows, publishing progress, and evidence from one read-only view.</p>
         </div>
-        <div className="header-actions">
-          <span className="timezone-label">Times shown in {Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
-          <button type="button" onClick={() => setReloadKey((key) => key + 1)} disabled={loading}>
-            {loading ? 'Refreshing...' : 'Refresh data'}
-          </button>
+        <div className="header-side">
+          <PlanUsageHeader commercial={data.commercial} />
+          <div className="header-actions">
+            <span className="timezone-label">Times shown in {Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
+            <button type="button" onClick={() => setReloadKey((key) => key + 1)} disabled={loading}>
+              {loading ? 'Refreshing...' : 'Refresh data'}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -696,6 +755,7 @@ export default function AutoPosterDashboard() {
                         <JobCard
                           job={job}
                           account={group.account}
+                          advancedEvidence={data.commercial?.advancedEvidence === true}
                           key={job.id || `${groupId}-${index}`}
                         />
                       ))}
@@ -710,6 +770,7 @@ export default function AutoPosterDashboard() {
                 <JobCard
                   job={job}
                   account={accountMap.get(job.accountId) || null}
+                  advancedEvidence={data.commercial?.advancedEvidence === true}
                   key={job.id || `${job.accountId}-${index}`}
                 />
               ))}

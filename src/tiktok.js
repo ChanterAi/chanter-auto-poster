@@ -85,8 +85,8 @@ async function exchangeCodeForToken(code) {
   return normalizeTokenResponse(body);
 }
 
-async function getTikTokAuthStatus(accountId, userId) {
-  const auth = await storage.getTikTokAccount(userId, accountId);
+async function getTikTokAuthStatus(accountId, userId, workspaceScope) {
+  const auth = await storage.getTikTokAccount(userId, accountId, workspaceScope);
   return {
     connected: Boolean(auth && auth.connected && auth.access_token),
     accountId: auth ? auth.accountId : String(accountId || ''),
@@ -99,8 +99,8 @@ async function getTikTokAuthStatus(accountId, userId) {
   };
 }
 
-async function refreshTikTokToken(accountId, userId) {
-  const auth = await storage.getTikTokAccount(userId, accountId);
+async function refreshTikTokToken(accountId, userId, workspaceScope) {
+  const auth = await storage.getTikTokAccount(userId, accountId, workspaceScope);
   if (!auth || !auth.connected || !auth.refresh_token) {
     return null;
   }
@@ -112,7 +112,7 @@ async function refreshTikTokToken(accountId, userId) {
     refresh_token: auth.refresh_token
   });
 
-  return storage.saveTikTokAccount(userId, normalizeTokenResponse(body, auth));
+  return storage.saveTikTokAccount(userId, normalizeTokenResponse(body, auth), {}, workspaceScope);
 }
 
 async function publishPhotoPost(post) {
@@ -128,7 +128,11 @@ async function publishPhotoPost(post) {
   let auth;
 
   try {
-    auth = await getActiveTikTokAuth(accountId, post.userId);
+    auth = await getActiveTikTokAuth(
+      accountId,
+      post.userId,
+      post.workspaceId ? { workspaceId: post.workspaceId } : undefined
+    );
   } catch (error) {
     return {
       ok: false,
@@ -297,8 +301,8 @@ async function getVideoSource(post) {
   }
 }
 
-async function queryCreatorInfo(accountId, userId) {
-  const auth = await getActiveTikTokAuth(accountId, userId);
+async function queryCreatorInfo(accountId, userId, workspaceScope) {
+  const auth = await getActiveTikTokAuth(accountId, userId, workspaceScope);
   if (!auth || !auth.access_token) {
     throw new Error('TikTok not connected');
   }
@@ -699,8 +703,8 @@ function buildCaption(post) {
     .join('\n\n');
 }
 
-async function getActiveTikTokAuth(accountId, userId) {
-  const auth = await storage.getTikTokAccount(userId, accountId);
+async function getActiveTikTokAuth(accountId, userId, workspaceScope) {
+  const auth = await storage.getTikTokAccount(userId, accountId, workspaceScope);
   if (!auth) return null;
   if (!auth.connected || !auth.access_token) return null;
   if (!shouldRefresh(auth)) return auth;
@@ -710,7 +714,7 @@ async function getActiveTikTokAuth(accountId, userId) {
   // produces a clear "reconnect required" message instead of silently
   // using a stale token.
   try {
-    const refreshed = await refreshTikTokToken(accountId, userId);
+    const refreshed = await refreshTikTokToken(accountId, userId, workspaceScope);
     if (!refreshed || !refreshed.access_token) {
       console.warn('[tiktok] token refresh returned no valid token for account', redactSensitive({ accountId }));
       return null;

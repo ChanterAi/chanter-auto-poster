@@ -48,12 +48,20 @@ test('state ids are cryptographically random and non-static', async () => {
   assert.ok(a.length >= 40, 'state must encode at least 32 random bytes');
 });
 
-test('a valid state is consumed exactly once; replay fails closed', async () => {
-  const state = await store.createOAuthState({ userId: 'owner', provider: 'youtube', returnTo: '/private/autoposter', codeVerifier: 'pkce-verifier', mode: 'connect' });
+test('a valid state preserves workspace binding and is consumed exactly once', async () => {
+  const state = await store.createOAuthState({
+    userId: 'owner',
+    provider: 'youtube',
+    returnTo: '/private/autoposter',
+    codeVerifier: 'pkce-verifier',
+    mode: 'connect',
+    workspaceId: 'workspace-verified-00000001'
+  });
   const first = await store.consumeOAuthState(state, { userId: 'owner', provider: 'youtube' });
   assert.equal(first.ok, true);
   assert.equal(first.record.codeVerifier, 'pkce-verifier');
   assert.equal(first.record.returnTo, '/private/autoposter');
+  assert.equal(first.record.workspaceId, 'workspace-verified-00000001');
   const replay = await store.consumeOAuthState(state, { userId: 'owner', provider: 'youtube' });
   assert.equal(replay.ok, false);
   assert.equal(replay.code, store.CONSUME_FAILURES.MISSING);

@@ -9,6 +9,8 @@ const storage = require('./storage');
 const mediaPolicy = require('./mediaPolicy');
 const providers = require('./providers');
 const connectedAccounts = require('./connectedAccounts');
+const commercialService = require('./commercialService');
+const { sanitizePostResult, sanitizeHistory } = require('./postsMapper');
 const { parseDateTimeLocal } = require('./timeUtil');
 const { computeMaxSchedulePlan } = require('./maxScheduler');
 const { validateYouTubeMetadata } = require('./youtube');
@@ -20,6 +22,8 @@ const DEFAULT_QUEUE_LIMIT = 100;
 const MAX_QUEUE_LIMIT = 1000;
 const INTERNAL_PLAN_DUE_GRACE_MS = 60_000;
 const ISO_WITH_ZONE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+const RETRYABLE_QUEUE_STATUSES = new Set(['failed']);
+const EDIT_BLOCKED_QUEUE_STATUSES = new Set(['processing', 'posted', 'outcome_unknown']);
 
 class AutoPosterApplicationError extends Error {
   constructor(message, { status = 400, code = 'validation_failed', details = {} } = {}) {
@@ -67,9 +71,10 @@ function createExecutionContext(input = {}) {
     userId,
     actorId: String(input.actorId || userId).trim() || userId,
     accountId: String(input.accountId || '').trim(),
-    // The current product has no workspace model. Keep the slot explicit and
-    // empty instead of pretending userId is a workspace identifier.
+    // Requested workspace identity is never authoritative by itself. Every
+    // operation resolves and verifies membership server-side before storage.
     workspaceId: String(input.workspaceId || '').trim() || null,
+    commercialContext: input.commercialContext || null,
     source,
     correlationId: String(input.correlationId || '').trim(),
     approval: approvedBy ? Object.freeze({ approvedBy }) : null,
@@ -84,6 +89,35 @@ function countQueueItems(posts) {
     counts[status] = (counts[status] || 0) + 1;
     return counts;
   }, { total: 0, pending: 0, scheduled: 0, processing: 0, ready: 0, posted: 0, failed: 0 });
+}
+
+function coreResultView(result) {
+  if (!result || typeof result !== 'object') return result;
+  const { response, ...core } = result;
+  return core;
+}
+
+function sanitizePostView(post, { advancedEvidence = true } = {}) {
+  if (!post || typeof post !== 'object' || Array.isArray(post)) return post;
+  const safeLastResult = sanitizePostResult(post.lastResult);
+  const safeLastInstagramResult = sanitizePostResult(post.lastInstagramResult);
+  const lastResult = advancedEvidence ? safeLastResult : coreResultView(safeLastResult);
+  const lastInstagramResult = advancedEvidence
+    ? safeLastInstagramResult
+    : coreResultView(safeLastInstagramResult);
+  const historySource = Array.isArray(post.history) && post.history.length > 0
+    ? post.history
+    : post.logs;
+  const history = advancedEvidence ? sanitizeHistory(historySource) : [];
+  const fallbackError = sanitizePostResult({ reason: post.lastError });
+  return {
+    ...post,
+    lastResult,
+    lastInstagramResult,
+    lastError: (lastResult && lastResult.reason) || (fallbackError && fallbackError.reason) || '',
+    history,
+    logs: history
+  };
 }
 
 function isHttpsUrl(value) {
@@ -127,9 +161,9 @@ function normalizeExplicitSchedule(value, { requireExplicitTimezone = false, req
   return new Date(scheduledMs).toISOString();
 }
 
-function deterministicPostId(userId, accountId, idempotencyKey) {
+function deterministicPostId(userId, accountId, idempotencyKey, workspaceId = '') {
   const digest = createHash('sha256')
-    .update(`${userId}\n${accountId}\n${idempotencyKey}`)
+    .update(`${workspaceId}\n${userId}\n${accountId}\n${idempotencyKey}`)
     .digest('hex')
     .slice(0, 40);
   return `runtime-${digest}`;
@@ -145,6 +179,57 @@ function createAutoPosterApplicationService(dependencies = {}) {
   const policy = dependencies.mediaPolicy || mediaPolicy;
   const now = dependencies.now || (() => Date.now());
   const maxSchedulePlanner = dependencies.computeMaxSchedulePlan || computeMaxSchedulePlan;
+  const commercialAdapter = dependencies.commercialService || commercialService;
+
+  async function resolveCommercialContext(context) {
+    if (
+      context.commercialContext
+      && context.commercialContext.workspace
+      && context.commercialContext.userId === context.userId
+      && (!context.workspaceId || context.commercialContext.workspace.workspaceId === context.workspaceId)
+    ) {
+      return context.commercialContext;
+    }
+    try {
+      return await commercialAdapter.resolveContext({
+        userId: context.userId,
+        workspaceId: context.workspaceId
+      });
+    } catch (error) {
+      throw new AutoPosterApplicationError(
+        error && error.status === 404
+          ? 'Workspace not found for this authenticated owner.'
+          : 'Workspace, subscription, or usage truth could not be verified.',
+        {
+          status: Number(error && error.status) || 503,
+          code: String((error && error.code) || 'commercial_truth_unverified'),
+          details: {}
+        }
+      );
+    }
+  }
+
+  function denialError(decision) {
+    const hasValues = Number.isFinite(decision.current) && Number.isFinite(decision.limit);
+    const current = hasValues ? Math.round(decision.current * 100) / 100 : null;
+    const message = hasValues
+      ? `${decision.reason} Current: ${current}. Limit: ${decision.limit}.`
+      : decision.reason;
+    return new AutoPosterApplicationError(message, {
+      status: decision.reasonCode === 'runtime_scheduling_not_allowed' ? 403 : 409,
+      code: decision.reasonCode,
+      details: {
+        allowed: false,
+        reasonCode: decision.reasonCode,
+        limit: decision.limit,
+        current: decision.current,
+        remaining: decision.remaining,
+        planId: decision.planId,
+        workspaceId: decision.workspaceId,
+        evaluationTimestamp: decision.evaluationTimestamp
+      }
+    });
+  }
 
   function toConnectedAccountView(account) {
     try {
@@ -156,12 +241,13 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   // One account lookup per provider — the sole account-resolution dispatch
   // point in the service. Unknown providers fail closed.
-  async function getProviderAccount(context, providerId, accountId) {
+  async function getProviderAccount(context, providerId, accountId, commercialContext) {
+    const workspaceScope = commercialContext && commercialContext.workspaceScope;
     if (providerId === PROVIDER_YOUTUBE) {
-      return storageAdapter.getYouTubeAccount(context.userId, accountId);
+      return storageAdapter.getYouTubeAccount(context.userId, accountId, workspaceScope);
     }
     if (providerId === PROVIDER_TIKTOK) {
-      return storageAdapter.getTikTokAccount(context.userId, accountId);
+      return storageAdapter.getTikTokAccount(context.userId, accountId, workspaceScope);
     }
     throw new AutoPosterApplicationError(`Unsupported publishing provider: ${providerId || '(empty)'}.`, {
       status: 400,
@@ -169,14 +255,18 @@ function createAutoPosterApplicationService(dependencies = {}) {
     });
   }
 
-  async function resolveOwnedAccounts(context, accountIds, { requireConnected = true, provider = PROVIDER_TIKTOK } = {}) {
+  async function resolveOwnedAccounts(
+    context,
+    accountIds,
+    { requireConnected = true, provider = PROVIDER_TIKTOK, commercialContext } = {}
+  ) {
     if (accountIds.length === 0) {
       throw new AutoPosterApplicationError('Select a connected publishing channel before creating scheduled posts.');
     }
 
     const accounts = [];
     for (const accountId of accountIds) {
-      const account = await getProviderAccount(context, provider, accountId);
+      const account = await getProviderAccount(context, provider, accountId, commercialContext);
       if (!account) {
         throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
           status: 404,
@@ -232,11 +322,12 @@ function createAutoPosterApplicationService(dependencies = {}) {
   // Ownership check for scope filters (queue listing, status lookup): the
   // accountId may belong to either provider; the caller only needs proof
   // the channel exists and is owned by this tenant.
-  async function findOwnedAccountAnyProvider(context, accountId) {
-    const tiktok = await storageAdapter.getTikTokAccount(context.userId, accountId);
+  async function findOwnedAccountAnyProvider(context, accountId, commercialContext) {
+    const workspaceScope = commercialContext && commercialContext.workspaceScope;
+    const tiktok = await storageAdapter.getTikTokAccount(context.userId, accountId, workspaceScope);
     if (tiktok) return tiktok;
     const youtube = typeof storageAdapter.getYouTubeAccount === 'function'
-      ? await storageAdapter.getYouTubeAccount(context.userId, accountId)
+      ? await storageAdapter.getYouTubeAccount(context.userId, accountId, workspaceScope)
       : null;
     if (youtube) return youtube;
     throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
@@ -294,37 +385,57 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   async function listQueue(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     const accountId = String(input.accountId || context.accountId || '').trim();
     const rawLimit = input.limit === undefined ? DEFAULT_QUEUE_LIMIT : Number(input.limit);
     if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > MAX_QUEUE_LIMIT) {
       throw new AutoPosterApplicationError(`limit must be an integer between 1 and ${MAX_QUEUE_LIMIT}.`);
     }
-    if (accountId) await findOwnedAccountAnyProvider(context, accountId);
+    if (accountId) await findOwnedAccountAnyProvider(context, accountId, commercialContext);
 
-    const posts = await storageAdapter.getPosts(context.userId, accountId || undefined);
-    const items = posts.slice(0, rawLimit);
+    const posts = await storageAdapter.getPosts(
+      context.userId,
+      accountId || undefined,
+      commercialContext.workspaceScope
+    );
+    const items = posts.slice(0, rawLimit).map((post) => sanitizePostView(post, {
+      advancedEvidence: commercialContext.entitlements.advancedEvidence === true
+    }));
     return {
       items,
       count: items.length,
       totalInScope: posts.length,
       counts: countQueueItems(posts),
-      scope: { accountId: accountId || 'all' }
+      scope: {
+        workspaceId: commercialContext.workspace.workspaceId,
+        accountId: accountId || 'all'
+      }
     };
   }
 
   async function getPostStatus(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     const postId = String(input.postId || input.id || '').trim();
     const accountId = String(input.accountId || context.accountId || '').trim() || undefined;
     if (!postId) throw new AutoPosterApplicationError('postId is required.');
-    const post = await storageAdapter.getPost(context.userId, postId, accountId);
+    const post = await storageAdapter.getPost(
+      context.userId,
+      postId,
+      accountId,
+      commercialContext.workspaceScope
+    );
     if (!post) {
       throw new AutoPosterApplicationError('Post not found for this tenant/account scope.', {
         status: 404,
         code: 'not_found'
       });
     }
-    return { post };
+    return {
+      post: sanitizePostView(post, {
+        advancedEvidence: commercialContext.entitlements.advancedEvidence === true
+      })
+    };
   }
 
   function resolveSchedule(context, input, accounts) {
@@ -433,6 +544,36 @@ function createAutoPosterApplicationService(dependencies = {}) {
     });
   }
 
+  function entitlementScheduleTimestamp(schedule, commercialContext, accounts, sourceCount) {
+    if (schedule.mode === 'explicit') return schedule.scheduledAt;
+    if (schedule.mode === 'max') {
+      const values = (schedule.plan && Array.isArray(schedule.plan.channels))
+        ? schedule.plan.channels.map((channel) => channel.scheduledAt).filter(Boolean)
+        : [];
+      return values.sort().at(-1) || null;
+    }
+
+    // Automatic scheduling is one item per account/day. Use the latest
+    // already-scheduled item in each selected account plus the number of new
+    // sources as the conservative horizon checkpoint; storage remains the
+    // exact timezone-aware schedule writer.
+    const currentMs = now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const firstAvailableCheckpoint = currentMs + dayMs;
+    // Each account owns an independent daily schedule. The horizon is the
+    // farthest account-local queue, not the sum of every account's queue.
+    let farthest = firstAvailableCheckpoint + Math.max(1, sourceCount) * dayMs;
+    for (const account of accounts) {
+      const latest = (commercialContext.posts || [])
+        .filter((post) => post.accountId === account.accountId && post.scheduledAt)
+        .map((post) => Date.parse(post.scheduledAt))
+        .filter((value) => Number.isFinite(value) && value > currentMs)
+        .reduce((max, value) => Math.max(max, value), firstAvailableCheckpoint);
+      farthest = Math.max(farthest, latest + Math.max(1, sourceCount) * dayMs);
+    }
+    return new Date(farthest).toISOString();
+  }
+
   async function schedulePost(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
     // Provider gate: a request without a provider targets TikTok (the only
@@ -465,10 +606,15 @@ function createAutoPosterApplicationService(dependencies = {}) {
       youtubeMetadata = { title: checked.title, description: checked.description };
     }
 
+    const commercialContext = await resolveCommercialContext(context);
     const accountIds = normalizeAccountIds(context, input);
-    const accounts = await resolveOwnedAccounts(context, accountIds, { provider });
+    const accounts = await resolveOwnedAccounts(context, accountIds, { provider, commercialContext });
     const schedule = resolveSchedule(context, input, accounts);
     const idempotencyKey = context.idempotency.key;
+    const sourceCount = Array.isArray(input.files) && input.files.filter(Boolean).length > 0
+      ? input.files.filter(Boolean).length
+      : 1;
+    const quantity = accounts.length * sourceCount;
 
     if (context.source === 'runtime' && !idempotencyKey) {
       throw new AutoPosterApplicationError('idempotencyKey is required.');
@@ -494,16 +640,26 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
     let deterministicId = '';
     if (idempotencyKey) {
-      const existingPosts = await storageAdapter.getPosts(context.userId, accounts[0].accountId);
+      const existingPosts = await storageAdapter.getPosts(
+        context.userId,
+        accounts[0].accountId,
+        commercialContext.workspaceScope
+      );
       const existing = existingPosts.find((post) =>
         post.idempotencyKey === idempotencyKey || post.runtimeIdempotencyKey === idempotencyKey
       );
       if (existing) return duplicateResult(existing);
-      deterministicId = deterministicPostId(context.userId, accounts[0].accountId, idempotencyKey);
+      deterministicId = deterministicPostId(
+        context.userId,
+        accounts[0].accountId,
+        idempotencyKey,
+        commercialContext.workspace.workspaceId
+      );
       const deterministicExisting = await storageAdapter.getPost(
         context.userId,
         deterministicId,
-        accounts[0].accountId
+        accounts[0].accountId,
+        commercialContext.workspaceScope
       );
       if (deterministicExisting) {
         return duplicateResult(deterministicExisting);
@@ -517,6 +673,15 @@ function createAutoPosterApplicationService(dependencies = {}) {
     ) {
       throw new AutoPosterApplicationError('scheduledAt must be in the future.');
     }
+
+    const authorization = await commercialAdapter.authorizeSchedule({
+      resolvedContext: commercialContext,
+      providerId: provider,
+      source: context.source,
+      quantity,
+      scheduledAt: entitlementScheduleTimestamp(schedule, commercialContext, accounts, sourceCount)
+    });
+    if (!authorization.decision.allowed) throw denialError(authorization.decision);
 
     const media = validateMedia(context, {
       files: input.files,
@@ -564,7 +729,27 @@ function createAutoPosterApplicationService(dependencies = {}) {
             : { event: 'scheduled', detail: `Posting time set during website intake for ${schedule.scheduledAt}.` })
         : null,
       documentId: deterministicId,
-      createOnly: Boolean(deterministicId)
+      createOnly: Boolean(deterministicId),
+      workspaceId: commercialContext.workspace.workspaceId,
+      workspaceScope: commercialContext.workspaceScope,
+      commercialEnforcement: true,
+      usageReservation: {
+        usageCycle: {
+          usageCycleId: commercialContext.cycle.usageCycleId,
+          startAt: commercialContext.cycle.start,
+          endAt: commercialContext.cycle.end
+        },
+        scheduledPostsPerCycle: commercialContext.entitlements.scheduledPostsPerCycle,
+        activeQueueLimit: commercialContext.entitlements.activeQueueLimit,
+        // The cycle counter is authoritative for current-cycle metered jobs;
+        // this verified baseline covers legacy and prior-cycle active jobs so
+        // the final transaction enforces the workspace-wide queue limit.
+        activeQueueBaseline: Math.max(
+          0,
+          Number(commercialContext.activeQueueCount || 0)
+            - Number((commercialContext.usage && commercialContext.usage.activeQueue) || 0)
+        )
+      }
     };
 
     let created;
@@ -576,8 +761,20 @@ function createAutoPosterApplicationService(dependencies = {}) {
       );
     } catch (error) {
       if (deterministicId && isAlreadyExistsError(error)) {
-        const existing = await storageAdapter.getPost(context.userId, deterministicId, firstAccount.accountId);
+        const existing = await storageAdapter.getPost(
+          context.userId,
+          deterministicId,
+          firstAccount.accountId,
+          commercialContext.workspaceScope
+        );
         if (existing) return duplicateResult(existing);
+      }
+      if (error && error.code && String(error.code).includes('limit')) {
+        throw new AutoPosterApplicationError(error.message, {
+          status: Number(error.status) || 409,
+          code: error.code,
+          details: error.details || {}
+        });
       }
       throw error;
     }
@@ -615,11 +812,21 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
       let scheduledCount = 0;
       if (schedule.mode === 'max') {
-        scheduledCount = await storageAdapter.applyExplicitSchedule(context.userId, created, schedule.plan);
+        scheduledCount = await storageAdapter.applyExplicitSchedule(
+          context.userId,
+          created,
+          schedule.plan,
+          commercialContext.workspaceScope
+        );
       } else {
         for (const account of accounts) {
           const ids = created.filter((post) => post.accountId === account.accountId).map((post) => post.id);
-          scheduledCount += await storageAdapter.autoSchedulePosts(context.userId, ids, account.accountId);
+          scheduledCount += await storageAdapter.autoSchedulePosts(
+            context.userId,
+            ids,
+            account.accountId,
+            commercialContext.workspaceScope
+          );
         }
       }
       if (scheduledCount !== created.length) {
@@ -629,7 +836,12 @@ function createAutoPosterApplicationService(dependencies = {}) {
         );
       }
       const persisted = await Promise.all(created.map((post) =>
-        storageAdapter.getPost(context.userId, post.id, post.accountId)
+        storageAdapter.getPost(
+          context.userId,
+          post.id,
+          post.accountId,
+          commercialContext.workspaceScope
+        )
       ));
       if (persisted.some((post) => !post || post.status !== 'scheduled' || !post.scheduledAt)) {
         throw partialScheduleError(
@@ -656,6 +868,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   async function approvePost(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     if (context.source !== 'website' || !context.approval) {
       throw new AutoPosterApplicationError('Human website approval is required for this operation.', {
         status: 403,
@@ -667,13 +880,15 @@ function createAutoPosterApplicationService(dependencies = {}) {
       context.userId,
       String(input.postId || ''),
       { approvedBy },
-      input.accountId || context.accountId || undefined
+      input.accountId || context.accountId || undefined,
+      commercialContext.workspaceScope
     );
     return { ok: Boolean(post), post };
   }
 
   async function revokeApproval(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     if (context.source !== 'website') {
       throw new AutoPosterApplicationError('Only the human website workflow can revoke approval.', {
         status: 403,
@@ -683,20 +898,35 @@ function createAutoPosterApplicationService(dependencies = {}) {
     const post = await storageAdapter.revokePostApproval(
       context.userId,
       String(input.postId || ''),
-      input.accountId || context.accountId || undefined
+      input.accountId || context.accountId || undefined,
+      commercialContext.workspaceScope
     );
     return { ok: Boolean(post), post };
   }
 
   async function deletePost(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     const postId = String(input.postId || '').trim();
     if (!postId) throw new AutoPosterApplicationError('postId is required.');
-    const deleted = await storageAdapter.deletePost(
-      context.userId,
-      postId,
-      input.accountId || context.accountId || undefined
-    );
+    let deleted;
+    try {
+      deleted = await storageAdapter.deletePost(
+        context.userId,
+        postId,
+        input.accountId || context.accountId || undefined,
+        commercialContext.workspaceScope
+      );
+    } catch (error) {
+      if (error && error.code === 'queue_transition_blocked') {
+        throw new AutoPosterApplicationError(error.message, {
+          status: Number(error.status) || 409,
+          code: error.code,
+          details: {}
+        });
+      }
+      throw error;
+    }
     return { ok: Boolean(deleted), deleted: Boolean(deleted), postId };
   }
 
@@ -723,13 +953,25 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   async function retryPost(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     if (context.source !== 'website') {
       throw new AutoPosterApplicationError('Only the website workflow can reset a post for retry.', {
         status: 403,
         code: 'forbidden'
       });
     }
-    const { post } = await getPostStatus(context, input);
+    const { post } = await getPostStatus(
+      { ...context, commercialContext },
+      input
+    );
+    if (!RETRYABLE_QUEUE_STATUSES.has(String(post.status || '').toLowerCase())) {
+      throw new AutoPosterApplicationError(
+        post.status === 'outcome_unknown'
+          ? 'This provider outcome is unknown. Reconcile it before any retry.'
+          : 'Only a definitively failed queue item can be retried.',
+        { status: 409, code: 'queue_transition_blocked', details: {} }
+      );
+    }
     const updated = await storageAdapter.updatePost(context.userId, post.id, {
       status: post.scheduledAt ? 'scheduled' : 'pending',
       postedAt: null,
@@ -740,12 +982,14 @@ function createAutoPosterApplicationService(dependencies = {}) {
       lockedAt: null,
       lockedBy: null
     }, input.accountId || context.accountId || undefined,
-    { event: 'reset', detail: 'Returned to the queue by the operator; attempt counter cleared.' });
+    { event: 'reset', detail: 'Returned to the queue by the operator; attempt counter cleared.' },
+    commercialContext.workspaceScope);
     return { ok: Boolean(updated), post: updated };
   }
 
   async function updatePost(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     if (context.source !== 'website') {
       throw new AutoPosterApplicationError('Only the website workflow can edit a queue item.', {
         status: 403,
@@ -765,12 +1009,25 @@ function createAutoPosterApplicationService(dependencies = {}) {
       }
       patch.scheduledAt = scheduledAt;
     }
+    const { post: current } = await getPostStatus(
+      { ...context, commercialContext },
+      { postId, accountId: input.accountId }
+    );
+    if (EDIT_BLOCKED_QUEUE_STATUSES.has(String(current.status || '').toLowerCase())) {
+      throw new AutoPosterApplicationError(
+        current.status === 'outcome_unknown'
+          ? 'This provider outcome is unknown. Reconcile it before editing the queue item.'
+          : 'A processing or completed queue item cannot be edited.',
+        { status: 409, code: 'queue_transition_blocked', details: {} }
+      );
+    }
     const post = await storageAdapter.updatePost(
       context.userId,
       postId,
       patch,
       input.accountId || context.accountId || undefined,
-      input.historyEvent
+      input.historyEvent,
+      commercialContext.workspaceScope
     );
     if (!post) {
       throw new AutoPosterApplicationError('Post not found for this tenant/account scope.', {
@@ -790,6 +1047,23 @@ function createAutoPosterApplicationService(dependencies = {}) {
       });
     }
     const nowIso = new Date(now()).toISOString();
+    if (typeof storageAdapter.markPostManuallyWithUsage === 'function') {
+      const commercialContext = await resolveCommercialContext(context);
+      const post = await storageAdapter.markPostManuallyWithUsage(
+        context.userId,
+        input.postId,
+        input.accountId || context.accountId || undefined,
+        commercialContext.workspaceScope,
+        nowIso
+      );
+      if (!post) {
+        throw new AutoPosterApplicationError('Post not found for this tenant/account scope.', {
+          status: 404,
+          code: 'not_found'
+        });
+      }
+      return { ok: true, post };
+    }
     return updatePost(context, {
       postId: input.postId,
       accountId: input.accountId,
@@ -808,9 +1082,14 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   async function rescheduleQueue(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     const accountId = String(input.accountId || context.accountId || '').trim();
-    await resolveOwnedAccounts(context, [accountId]);
-    const count = await storageAdapter.reschedulePendingQueue(context.userId, accountId);
+    await resolveOwnedAccounts(context, [accountId], { commercialContext });
+    const count = await storageAdapter.reschedulePendingQueue(
+      context.userId,
+      accountId,
+      commercialContext.workspaceScope
+    );
     return { ok: true, count, accountId };
   }
 
@@ -820,12 +1099,13 @@ function createAutoPosterApplicationService(dependencies = {}) {
   // connected-account view only — never raw account records with tokens.
   async function getConnectedAccount(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     const accountId = String(input.accountId || context.accountId || '').trim();
     if (!accountId) throw new AutoPosterApplicationError('accountId is required.');
     const requestedProvider = String(input.provider || '').trim().toLowerCase();
     const account = requestedProvider
-      ? await getProviderAccount(context, requestedProvider, accountId)
-      : await findOwnedAccountAnyProvider(context, accountId);
+      ? await getProviderAccount(context, requestedProvider, accountId, commercialContext)
+      : await findOwnedAccountAnyProvider(context, accountId, commercialContext);
     if (!account) {
       throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
         status: 404,
@@ -838,6 +1118,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   async function listConnectedAccounts(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
     const requestedProvider = String((input && input.provider) || '').trim().toLowerCase();
     if (requestedProvider && !providers.isKnownProvider(requestedProvider)) {
       throw new AutoPosterApplicationError(`Unsupported publishing provider: ${requestedProvider}.`, {
@@ -848,17 +1129,59 @@ function createAutoPosterApplicationService(dependencies = {}) {
     const includeTikTok = !requestedProvider || requestedProvider === PROVIDER_TIKTOK;
     const includeYouTube = (!requestedProvider || requestedProvider === PROVIDER_YOUTUBE)
       && typeof storageAdapter.getYouTubeAccounts === 'function';
-    const tiktokAccounts = includeTikTok ? await storageAdapter.getTikTokAccounts(context.userId) : [];
-    const youtubeAccounts = includeYouTube ? await storageAdapter.getYouTubeAccounts(context.userId) : [];
+    const tiktokAccounts = includeTikTok
+      ? await storageAdapter.getTikTokAccounts(context.userId, commercialContext.workspaceScope)
+      : [];
+    const youtubeAccounts = includeYouTube
+      ? await storageAdapter.getYouTubeAccounts(context.userId, commercialContext.workspaceScope)
+      : [];
     const views = [...(Array.isArray(tiktokAccounts) ? tiktokAccounts : []), ...(Array.isArray(youtubeAccounts) ? youtubeAccounts : [])]
       .map((account) => toConnectedAccountView(account))
       .filter(Boolean);
     return {
       accounts: views,
       count: views.length,
+      workspaceId: commercialContext.workspace.workspaceId,
       // Backward-compatible single summary plus the per-provider list.
       provider: providers.getProviderSummary(requestedProvider || PROVIDER_TIKTOK),
       providers: [PROVIDER_TIKTOK, PROVIDER_YOUTUBE].map((id) => providers.getProviderSummary(id))
+    };
+  }
+
+  async function getPlanUsage(contextInput) {
+    const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
+    const result = await commercialAdapter.getPlanUsage({ resolvedContext: commercialContext });
+    return { commercialContext, view: result.view };
+  }
+
+  async function authorizeAccountConnection(contextInput, input = {}) {
+    const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
+    const provider = String(input.provider || '').trim().toLowerCase();
+    const result = await commercialAdapter.authorizeAccountConnection({
+      resolvedContext: commercialContext,
+      providerId: provider,
+      accountId: input.accountId
+    });
+    if (!result.decision.allowed) throw denialError(result.decision);
+    // Internal-only transaction input. Limits and workspace identity come
+    // exclusively from the server-resolved commercial context; controllers
+    // never copy these values from request query/body fields.
+    const activationContext = Object.freeze({
+      ownerUserId: context.userId,
+      workspaceId: commercialContext.workspace.workspaceId,
+      provider,
+      connectedAccountLimit: commercialContext.entitlements.connectedAccountLimit,
+      providerLimit: commercialContext.entitlements.providerLimit
+    });
+    return {
+      allowed: true,
+      existing: result.existing,
+      decision: result.decision,
+      commercialContext,
+      workspaceScope: commercialContext.workspaceScope,
+      activationContext
     };
   }
 
@@ -866,7 +1189,9 @@ function createAutoPosterApplicationService(dependencies = {}) {
     approvePost,
     deleteMarkedPosts,
     deletePost,
+    authorizeAccountConnection,
     getConnectedAccount,
+    getPlanUsage,
     getPostStatus,
     listConnectedAccounts,
     listQueue,

@@ -54,6 +54,11 @@ storage.getYouTubeAccounts = async () => youtubeAccounts;
 storage.getYouTubeAccount = async (userId, accountId) =>
   youtubeAccounts.find((account) => account.accountId === accountId && account.userId === userId) || null;
 storage.getPosts = async () => posts;
+storage.getPost = async (userId, id, accountId) => {
+  const post = posts.find((item) => item.id === id) || null;
+  if (!post || (accountId && post.accountId !== accountId)) return null;
+  return post;
+};
 storage.getSettings = async () => ({ dailyPostTime: '09:00' });
 storage.getDashboardJobs = async () => posts;
 tiktok.getTikTokAuthStatus = async () => ({ connected: true, accountId: TIKTOK_ACCOUNT_ID });
@@ -63,6 +68,8 @@ instagram.getInstagramHealth = async () => ({ configured: false, canPublish: fal
 autoCaption.hasConfiguredCaptionProvider = () => false;
 autoMusic.isAutoMusicConfigured = () => false;
 
+const { installCommercialFixture } = require('./helpers/commercial-fixture');
+installCommercialFixture(require('../src/commercialService'), storage);
 const routes = require('../src/routes');
 const app = express();
 app.set('view engine', 'ejs');
@@ -255,4 +262,83 @@ test('outcome_unknown renders as a reconciliation requirement, never success or 
   assert.match(html, /Outcome unknown/);
   assert.match(html, /reconcile/i);
   assert.match(html, /duplicate upload/i);
+});
+
+test('a YouTube-only workspace can manage its queue without a TikTok connection', async (t) => {
+  tiktokAccounts.splice(0);
+  const post = posts[0];
+  Object.assign(post, {
+    status: 'scheduled',
+    approved: false,
+    approvedAt: null,
+    approvalState: 'unapproved',
+    providerStatus: '',
+    lastResult: null
+  });
+
+  const approvalCalls = [];
+  storage.approvePost = async (userId, postId, meta, accountId) => {
+    approvalCalls.push({ userId, postId, meta, accountId });
+    Object.assign(post, { approved: true, approvedAt: new Date().toISOString(), approvalState: 'approved' });
+    return post;
+  };
+  const approve = await fetch(`${baseUrl}/posts/${post.id}/approve`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: adminCookie, Origin: baseUrl },
+    body: new URLSearchParams({ accountId: post.accountId })
+  });
+  assert.equal(approve.status, 302);
+  assert.equal(approvalCalls.length, 1);
+  assert.equal(approvalCalls[0].accountId, 'UC-chanter');
+
+  const scheduler = require('../src/scheduler');
+  const originalProcessPost = scheduler.processPost;
+  let providerAttempts = 0;
+  scheduler.processPost = async (postId) => {
+    providerAttempts += 1;
+    assert.equal(postId, post.id);
+    return { ok: true, mode: 'api' };
+  };
+  t.after(() => { scheduler.processPost = originalProcessPost; });
+  const publishNow = await fetch(`${baseUrl}/posts/${post.id}/prepare`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: adminCookie, Origin: baseUrl },
+    body: new URLSearchParams({ accountId: post.accountId, force: '1' })
+  });
+  assert.equal(publishNow.status, 302);
+  assert.equal(providerAttempts, 1, 'the mocked shared worker path is reached once');
+
+  post.status = 'failed';
+  const updateCalls = [];
+  storage.updatePost = async (userId, postId, patch, accountId) => {
+    updateCalls.push({ userId, postId, patch, accountId });
+    Object.assign(post, patch);
+    return post;
+  };
+  const retry = await fetch(`${baseUrl}/posts/${post.id}/pending`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: adminCookie, Origin: baseUrl },
+    body: new URLSearchParams({ accountId: post.accountId })
+  });
+  assert.equal(retry.status, 302);
+  assert.equal(updateCalls.length, 1);
+  assert.equal(updateCalls[0].accountId, 'UC-chanter');
+
+  const deleteCalls = [];
+  storage.deletePost = async (userId, postId, accountId, workspaceScope) => {
+    deleteCalls.push({ userId, postId, accountId, workspaceScope });
+    return true;
+  };
+  const remove = await fetch(`${baseUrl}/posts/${post.id}/delete`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { Cookie: adminCookie, Origin: baseUrl }
+  });
+  assert.equal(remove.status, 302);
+  assert.equal(deleteCalls.length, 1);
+  assert.equal(deleteCalls[0].accountId, undefined, 'admin delete remains provider-neutral');
+  assert.equal(deleteCalls[0].workspaceScope.workspaceId.length > 0, true);
 });

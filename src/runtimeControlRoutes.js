@@ -63,11 +63,17 @@ function requireRuntimeControlToken(req, res, next) {
 router.use(requireRuntimeControlToken);
 router.use(express.json({ limit: '64kb' }));
 
-function runtimeContext(req, { accountId = '', actorId = 'agent-runtime', idempotencyKey = '' } = {}) {
+function runtimeContext(req, {
+  accountId = '',
+  actorId = 'agent-runtime',
+  idempotencyKey = '',
+  workspaceId = ''
+} = {}) {
   return applicationService.createExecutionContext({
     userId: req.runtimeUserId,
     actorId,
     accountId,
+    workspaceId: String(workspaceId || req.get('x-chanter-workspace-id') || '').trim(),
     source: 'runtime',
     correlationId: req.get('x-request-id') || req.get('x-correlation-id') || '',
     idempotency: { key: idempotencyKey }
@@ -124,13 +130,17 @@ function postStatusView(post) {
 // service maximum because this is a remote evidence surface.
 router.get('/queue', applicationRoute(async (req, res) => {
   const accountId = String(req.query.accountId || '').trim();
+  const workspaceId = String(req.query.workspaceId || req.get('x-chanter-workspace-id') || '').trim();
   const rawLimit = req.query.limit === undefined ? QUEUE_LIST_DEFAULT_LIMIT : Number(req.query.limit);
   if (!Number.isInteger(rawLimit) || rawLimit < 1) {
     fail(res, 400, 'validation_failed', `limit must be an integer between 1 and ${QUEUE_LIST_MAX_LIMIT}.`);
     return;
   }
   const limit = Math.min(rawLimit, QUEUE_LIST_MAX_LIMIT);
-  const result = await applicationService.listQueue(runtimeContext(req, { accountId }), { accountId, limit });
+  const result = await applicationService.listQueue(
+    runtimeContext(req, { accountId, workspaceId }),
+    { accountId, limit }
+  );
   const items = result.items.map(queueItemView);
   res.json({
     ok: true,
@@ -143,8 +153,9 @@ router.get('/queue', applicationRoute(async (req, res) => {
 
 router.get('/posts/:id/status', applicationRoute(async (req, res) => {
   const accountId = String(req.query.accountId || '').trim() || undefined;
+  const workspaceId = String(req.query.workspaceId || req.get('x-chanter-workspace-id') || '').trim();
   const { post } = await applicationService.getPostStatus(
-    runtimeContext(req, { accountId }),
+    runtimeContext(req, { accountId, workspaceId }),
     { postId: req.params.id, accountId }
   );
   res.json({ ok: true, post: postStatusView(post) });
@@ -163,6 +174,7 @@ router.post('/schedule', applicationRoute(async (req, res) => {
   const mediaUrl = String(body.mediaUrl || '').trim();
   const idempotencyKey = String(body.idempotencyKey || '').trim();
   const requestedBy = String(body.requestedBy || '').trim() || 'agent-runtime';
+  const workspaceId = String(body.workspaceId || req.get('x-chanter-workspace-id') || '').trim();
   // Optional provider selection (defaults to TikTok for full backward
   // compatibility). The application service owns provider validation,
   // account resolution, and the YouTube title requirement.
@@ -172,7 +184,7 @@ router.post('/schedule', applicationRoute(async (req, res) => {
   if (!mediaUrl) { fail(res, 400, 'validation_failed', 'mediaUrl is required.'); return; }
 
   const result = await applicationService.schedulePost(
-    runtimeContext(req, { accountId, actorId: requestedBy, idempotencyKey }),
+    runtimeContext(req, { accountId, actorId: requestedBy, idempotencyKey, workspaceId }),
     {
       provider: provider || undefined,
       accountId,

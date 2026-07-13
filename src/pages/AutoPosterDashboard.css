@@ -111,6 +111,26 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
 }
 
 .header-actions { display: flex; align-items: center; gap: 14px; }
+.header-side { display: grid; justify-items: end; gap: 10px; }
+.plan-usage-summary {
+  display: grid;
+  width: min(620px, 50vw);
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 12px 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+}
+.plan-summary-identity { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 8px; min-width: 0; }
+.plan-summary-identity > span { color: var(--text3); font-size: 9px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+.plan-summary-identity strong { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.plan-summary-identity small { color: var(--text3); font-size: 10px; white-space: nowrap; }
+.plan-summary-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.plan-summary-metrics div { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface2); padding: 7px 8px; }
+.plan-summary-metrics dt { overflow: hidden; color: var(--text3); font-size: 8px; font-weight: 800; letter-spacing: .06em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.plan-summary-metrics dd { margin: 3px 0 0; overflow: hidden; color: var(--text2); font: 700 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.plan-usage-summary > p { margin: 0; color: var(--text3); font-size: 9px; line-height: 1.4; text-align: right; }
 .timezone-label { color: var(--text3); font-size: 12px; white-space: nowrap; }
 .header-actions button,
 .error-state button {
@@ -521,6 +541,9 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
 .error-state { border-style: solid; border-color: rgba(192, 133, 133, 0.3); background: var(--danger-bg); }
 
 @media (max-width: 1080px) {
+  .page-header { align-items: stretch; flex-direction: column; }
+  .header-side { justify-items: stretch; }
+  .plan-usage-summary { width: 100%; }
   .job-metadata { grid-template-columns: repeat(3, minmax(110px, 1fr)); }
   .metric-grid { grid-template-columns: repeat(3, 1fr); }
 }
@@ -532,6 +555,10 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
   .page-header, .toolbar, .job-footer { align-items: stretch; flex-direction: column; }
   .page-header { gap: 18px; }
   .header-actions { justify-content: space-between; }
+  .plan-summary-identity { grid-template-columns: 1fr; gap: 3px; }
+  .plan-summary-identity small { white-space: normal; }
+  .plan-summary-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plan-usage-summary > p { text-align: left; }
   .timezone-label { white-space: normal; }
   .jobs-section, .accounts-section { padding: 16px; }
   .account-job-group { padding: 12px; }
@@ -550,6 +577,7 @@ button, select, summary, a { -webkit-tap-highlight-color: transparent; }
 @media (max-width: 440px) {
   .header-actions { align-items: stretch; flex-direction: column; }
   .header-actions button { width: 100%; }
+  .plan-summary-metrics { grid-template-columns: 1fr 1fr; }
   .status-filters { display: grid; grid-template-columns: repeat(2, 1fr); }
   .status-filters button { justify-content: space-between; }
   .job-heading { gap: 10px; }

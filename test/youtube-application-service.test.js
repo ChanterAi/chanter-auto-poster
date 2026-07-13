@@ -15,6 +15,7 @@ process.env.YOUTUBE_REDIRECT_URI = 'http://localhost:10000/auth/youtube/callback
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { createCommercialFixture } = require('./helpers/commercial-fixture');
 
 const { createAutoPosterApplicationService, AutoPosterApplicationError } = require('../src/autoposterApplicationService');
 
@@ -89,7 +90,13 @@ function buildService({
     autoSchedulePosts: async (userId, ids) => ids.length,
     applyExplicitSchedule: async () => 1
   };
-  return { service: createAutoPosterApplicationService({ storage: storageFake }), calls };
+  return {
+    service: createAutoPosterApplicationService({
+      storage: storageFake,
+      commercialService: createCommercialFixture(storageFake)
+    }),
+    calls
+  };
 }
 
 const websiteContext = { userId: 'owner', source: 'website' };

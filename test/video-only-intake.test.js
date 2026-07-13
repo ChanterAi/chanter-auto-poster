@@ -107,6 +107,8 @@ instagram.getInstagramHealth = async () => ({
   success: true, platform: 'instagram', configured: true, canPublish: false, mode: 'dry-run', missing: [], message: 'ok'
 });
 
+const { installCommercialFixture } = require('./helpers/commercial-fixture');
+installCommercialFixture(require('../src/commercialService'), storage);
 const clientRoutes = require('../src/clientRoutes');
 const routes = require('../src/routes');
 
