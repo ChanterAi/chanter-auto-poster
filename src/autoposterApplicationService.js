@@ -17,6 +17,15 @@ const { validateYouTubeMetadata } = require('./youtube');
 
 const PROVIDER_TIKTOK = providers.PROVIDER_TIKTOK;
 const PROVIDER_YOUTUBE = providers.PROVIDER_YOUTUBE;
+const ACCOUNT_VALIDATION_CODES = Object.freeze({
+  UNKNOWN: 'unknown_account_id',
+  CASE_MISMATCH: 'account_id_case_mismatch',
+  NON_CANONICAL: 'account_id_non_canonical',
+  WORKSPACE_MISMATCH: 'account_workspace_mismatch',
+  PROVIDER_MISMATCH: 'provider_account_mismatch',
+  DISCONNECTED: 'account_disconnected',
+  NOT_PUBLISHING_READY: 'account_not_publishing_ready'
+});
 const REQUEST_SOURCES = new Set(['website', 'runtime', 'internal_worker']);
 const DEFAULT_QUEUE_LIMIT = 100;
 const MAX_QUEUE_LIMIT = 1000;
@@ -70,7 +79,10 @@ function createExecutionContext(input = {}) {
   return Object.freeze({
     userId,
     actorId: String(input.actorId || userId).trim() || userId,
-    accountId: String(input.accountId || '').trim(),
+    // Provider account identifiers are opaque and case-sensitive. Preserve
+    // the caller's exact bytes so validation can reject, rather than repair,
+    // a non-canonical reference.
+    accountId: String(input.accountId || ''),
     // Requested workspace identity is never authoritative by itself. Every
     // operation resolves and verifies membership server-side before storage.
     workspaceId: String(input.workspaceId || '').trim() || null,
@@ -141,7 +153,7 @@ function normalizeAccountIds(context, input = {}) {
   const raw = Array.isArray(input.accountIds)
     ? input.accountIds
     : [input.accountId || context.accountId];
-  return [...new Set(raw.map((value) => String(value || '').trim()).filter(Boolean))];
+  return [...new Set(raw.map((value) => String(value || '')).filter((value) => value.length > 0))];
 }
 
 function normalizeExplicitSchedule(value, { requireExplicitTimezone = false, requireFuture = false, nowMs = Date.now() } = {}) {
@@ -161,9 +173,30 @@ function normalizeExplicitSchedule(value, { requireExplicitTimezone = false, req
   return new Date(scheduledMs).toISOString();
 }
 
-function deterministicPostId(userId, accountId, idempotencyKey, workspaceId = '') {
+function targetScopedIdempotencyKey(provider, accountId, idempotencyKey) {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([provider, accountId, idempotencyKey]))
+    .digest('hex');
+  return `runtime-target-${digest}`;
+}
+
+function legacyDeterministicPostId(userId, accountId, idempotencyKey, workspaceId = '') {
   const digest = createHash('sha256')
     .update(`${workspaceId}\n${userId}\n${accountId}\n${idempotencyKey}`)
+    .digest('hex')
+    .slice(0, 40);
+  return `runtime-${digest}`;
+}
+
+function deterministicPostId(
+  userId,
+  accountId,
+  idempotencyKey,
+  workspaceId = '',
+  provider = PROVIDER_TIKTOK
+) {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([workspaceId, userId, provider, accountId, idempotencyKey]))
     .digest('hex')
     .slice(0, 40);
   return `runtime-${digest}`;
@@ -242,18 +275,213 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   // One account lookup per provider — the sole account-resolution dispatch
   // point in the service. Unknown providers fail closed.
-  async function getProviderAccount(context, providerId, accountId, commercialContext) {
+  async function getProviderAccount(
+    context,
+    providerId,
+    accountId,
+    commercialContext,
+    { canonicalOnly = false } = {}
+  ) {
     const workspaceScope = commercialContext && commercialContext.workspaceScope;
     if (providerId === PROVIDER_YOUTUBE) {
       return storageAdapter.getYouTubeAccount(context.userId, accountId, workspaceScope);
     }
     if (providerId === PROVIDER_TIKTOK) {
+      if (canonicalOnly) {
+        if (typeof storageAdapter.getCanonicalTikTokAccount !== 'function') {
+          throw new AutoPosterApplicationError('Canonical connected-account storage is unavailable.', {
+            status: 503,
+            code: 'canonical_account_registry_unavailable'
+          });
+        }
+        return storageAdapter.getCanonicalTikTokAccount(context.userId, accountId, workspaceScope);
+      }
       return storageAdapter.getTikTokAccount(context.userId, accountId, workspaceScope);
     }
     throw new AutoPosterApplicationError(`Unsupported publishing provider: ${providerId || '(empty)'}.`, {
       status: 400,
       code: 'unknown_provider'
     });
+  }
+
+  function referenceMatchesWorkspace(reference, commercialContext) {
+    const workspaceId = String(
+      commercialContext && commercialContext.workspace && commercialContext.workspace.workspaceId || ''
+    ).trim();
+    const storedWorkspaceId = String((reference && reference.workspaceId) || '').trim();
+    if (storedWorkspaceId) return storedWorkspaceId === workspaceId;
+    return Boolean(
+      commercialContext
+      && commercialContext.workspaceScope
+      && commercialContext.workspaceScope.allowLegacyOwnerRecords
+    );
+  }
+
+  function accountValidationError(code, message, { status = 409, details = {} } = {}) {
+    return new AutoPosterApplicationError(message, { status, code, details });
+  }
+
+  async function ownerAccountReferences(context) {
+    if (typeof storageAdapter.listConnectedAccountReferencesForOwner !== 'function') return [];
+    const references = await storageAdapter.listConnectedAccountReferencesForOwner(context.userId);
+    return Array.isArray(references) ? references : [];
+  }
+
+  async function validateConnectedAccountForContext(
+    context,
+    input,
+    { requireConnected = true, commercialContext, canonicalOnly = false } = {}
+  ) {
+    const accountId = String((input && input.accountId) || context.accountId || '');
+    if (!accountId) {
+      throw accountValidationError(
+        ACCOUNT_VALIDATION_CODES.UNKNOWN,
+        'Publishing account ID was not found for this workspace.',
+        { status: 404 }
+      );
+    }
+    if (accountId !== accountId.trim()) {
+      throw accountValidationError(
+        ACCOUNT_VALIDATION_CODES.NON_CANONICAL,
+        'Publishing account IDs are exact; surrounding whitespace is not allowed.',
+        { status: 400 }
+      );
+    }
+
+    const providerResolution = providers.normalizeStoredProviderId(input && input.provider);
+    const provider = providerResolution.providerId;
+    if (!providerResolution.known || ![PROVIDER_TIKTOK, PROVIDER_YOUTUBE].includes(provider)) {
+      throw new AutoPosterApplicationError(`Unsupported publishing provider: ${provider || '(empty)'}.`, {
+        status: 400,
+        code: 'unknown_provider'
+      });
+    }
+
+    const account = await getProviderAccount(
+      context,
+      provider,
+      accountId,
+      commercialContext,
+      { canonicalOnly }
+    );
+    if (!account) {
+      const references = await ownerAccountReferences(context);
+      const inWorkspace = references.filter((reference) =>
+        referenceMatchesWorkspace(reference, commercialContext)
+      );
+      const otherWorkspace = references.find((reference) =>
+        reference.provider === provider
+        && reference.accountId === accountId
+        && !referenceMatchesWorkspace(reference, commercialContext)
+      );
+      if (otherWorkspace) {
+        throw accountValidationError(
+          ACCOUNT_VALIDATION_CODES.WORKSPACE_MISMATCH,
+          'Publishing account is not owned by the requested workspace.',
+          { status: 403 }
+        );
+      }
+
+      const exactOtherProvider = inWorkspace.find((reference) =>
+        reference.accountId === accountId && reference.provider !== provider
+      );
+      if (exactOtherProvider) {
+        throw accountValidationError(
+          ACCOUNT_VALIDATION_CODES.PROVIDER_MISMATCH,
+          'Selected publishing account does not match the requested provider.',
+          {
+            details: {
+              accountId,
+              requestedProvider: provider,
+              accountProvider: exactOtherProvider.provider
+            }
+          }
+        );
+      }
+
+      const caseMismatch = inWorkspace.find((reference) =>
+        reference.provider === provider
+        && reference.accountId !== accountId
+        && reference.accountId.toLowerCase() === accountId.toLowerCase()
+      );
+      if (caseMismatch) {
+        throw accountValidationError(
+          ACCOUNT_VALIDATION_CODES.CASE_MISMATCH,
+          'Publishing account ID character case does not match the canonical connected account.',
+          { details: { canonicalAccountId: caseMismatch.accountId } }
+        );
+      }
+
+      throw accountValidationError(
+        ACCOUNT_VALIDATION_CODES.UNKNOWN,
+        'Publishing account ID was not found for this workspace.',
+        { status: 404, details: { provider } }
+      );
+    }
+
+    const view = toConnectedAccountView(account);
+    if (view.ownerUserId !== context.userId) {
+      throw accountValidationError(
+        ACCOUNT_VALIDATION_CODES.UNKNOWN,
+        'Publishing account ID was not found for this workspace.',
+        { status: 404, details: { provider } }
+      );
+    }
+    if (!referenceMatchesWorkspace(account, commercialContext)) {
+      throw accountValidationError(
+        ACCOUNT_VALIDATION_CODES.WORKSPACE_MISMATCH,
+        'Publishing account is not owned by the requested workspace.',
+        { status: 403 }
+      );
+    }
+    if (view.accountId !== accountId) {
+      const isCaseMismatch = view.accountId.toLowerCase() === accountId.toLowerCase();
+      throw accountValidationError(
+        isCaseMismatch ? ACCOUNT_VALIDATION_CODES.CASE_MISMATCH : ACCOUNT_VALIDATION_CODES.UNKNOWN,
+        isCaseMismatch
+          ? 'Publishing account ID character case does not match the canonical connected account.'
+          : 'Publishing account ID was not found for this workspace.',
+        {
+          status: isCaseMismatch ? 409 : 404,
+          details: isCaseMismatch
+            ? { canonicalAccountId: view.accountId }
+            : { provider }
+        }
+      );
+    }
+    if (
+      view.provider !== provider
+      || view.connectionId !== connectedAccounts.connectionId(provider, accountId)
+    ) {
+      throw accountValidationError(
+        ACCOUNT_VALIDATION_CODES.PROVIDER_MISMATCH,
+        'Selected publishing account does not match the requested provider.',
+        {
+          details: { accountId, requestedProvider: provider, accountProvider: view.provider }
+        }
+      );
+    }
+    if (requireConnected && view.connectionStatus === connectedAccounts.CONNECTION_STATUS.DISCONNECTED) {
+      throw accountValidationError(
+        ACCOUNT_VALIDATION_CODES.DISCONNECTED,
+        'Publishing account is disconnected and must be reconnected before scheduling.',
+        {
+          details: { accountId, provider, blockers: view.readinessBlockers }
+        }
+      );
+    }
+    if (requireConnected && !view.publishingReady) {
+      const blocker = view.readinessBlockers[0];
+      throw accountValidationError(
+        ACCOUNT_VALIDATION_CODES.NOT_PUBLISHING_READY,
+        `Publishing account is connected but not publishing-ready: ${connectedAccounts.describeReadinessBlocker(blocker)}.`,
+        {
+          details: { accountId, provider, blockers: view.readinessBlockers }
+        }
+      );
+    }
+
+    return { record: account, view, provider };
   }
 
   async function resolveOwnedAccounts(
@@ -267,55 +495,16 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
     const accounts = [];
     for (const accountId of accountIds) {
-      const account = await getProviderAccount(context, provider, accountId, commercialContext);
-      if (!account) {
-        throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
-          status: 404,
-          code: 'not_found'
-        });
-      }
-      const view = toConnectedAccountView(account);
-      if (view.ownerUserId !== context.userId || view.accountId !== accountId) {
-        throw new AutoPosterApplicationError('Publishing channel not found for this tenant.', {
-          status: 404,
-          code: 'not_found'
-        });
-      }
-      if (
-        view.provider !== provider
-        || view.connectionId !== connectedAccounts.connectionId(provider, accountId)
-      ) {
-        throw new AutoPosterApplicationError(
-          'Selected publishing channel does not match the requested provider.',
-          {
-            status: 409,
-            code: 'provider_account_mismatch',
-            details: { accountId, requestedProvider: provider, accountProvider: view.provider }
-          }
-        );
-      }
-      if (requireConnected && view.connectionStatus === connectedAccounts.CONNECTION_STATUS.DISCONNECTED) {
-        throw new AutoPosterApplicationError('Publishing channel needs to be reconnected before it can be scheduled.', {
-          status: 409
-        });
-      }
-      if (requireConnected) {
-        // Connection existence and publishing readiness are different: a
-        // connected channel may still be blocked (token expired without a
-        // refresh token, or a recorded scope that excludes video.publish).
-        if (!view.publishingReady) {
-          const blocker = view.readinessBlockers[0];
-          throw new AutoPosterApplicationError(
-            `Publishing channel is not ready: ${connectedAccounts.describeReadinessBlocker(blocker)}.`,
-            {
-              status: 409,
-              code: 'account_not_ready',
-              details: { accountId: view.accountId, blockers: view.readinessBlockers }
-            }
-          );
+      const validated = await validateConnectedAccountForContext(
+        context,
+        { provider, accountId },
+        {
+          requireConnected,
+          commercialContext,
+          canonicalOnly: context.source === 'runtime'
         }
-      }
-      accounts.push(account);
+      );
+      accounts.push(validated.record);
     }
     return accounts;
   }
@@ -678,14 +867,38 @@ function createAutoPosterApplicationService(dependencies = {}) {
         commercialContext.workspaceScope
       );
       const existing = existingPosts.find((post) =>
-        post.idempotencyKey === idempotencyKey || post.runtimeIdempotencyKey === idempotencyKey
+        providers.normalizeStoredProviderId(post.provider || post.platform).providerId === provider
+        && (post.idempotencyKey === idempotencyKey || post.runtimeIdempotencyKey === idempotencyKey)
       );
       if (existing) return duplicateResult(existing);
-      deterministicId = deterministicPostId(
+      // Preserve replay for pre-provider-scope deterministic documents without
+      // allowing a same-raw-id post from another provider to satisfy it.
+      const legacyId = legacyDeterministicPostId(
         context.userId,
         accounts[0].accountId,
         idempotencyKey,
         commercialContext.workspace.workspaceId
+      );
+      const legacyExisting = await storageAdapter.getPost(
+        context.userId,
+        legacyId,
+        accounts[0].accountId,
+        commercialContext.workspaceScope
+      );
+      if (
+        legacyExisting
+        && providers.normalizeStoredProviderId(
+          legacyExisting.provider || legacyExisting.platform
+        ).providerId === provider
+      ) {
+        return duplicateResult(legacyExisting);
+      }
+      deterministicId = deterministicPostId(
+        context.userId,
+        accounts[0].accountId,
+        idempotencyKey,
+        commercialContext.workspace.workspaceId,
+        provider
       );
       const deterministicExisting = await storageAdapter.getPost(
         context.userId,
@@ -774,6 +987,9 @@ function createAutoPosterApplicationService(dependencies = {}) {
       workspaceScope: commercialContext.workspaceScope,
       commercialEnforcement: true,
       usageReservation: {
+        idempotencyKey: idempotencyKey
+          ? targetScopedIdempotencyKey(provider, firstAccount.accountId, idempotencyKey)
+          : '',
         usageCycle: {
           usageCycleId: commercialContext.cycle.usageCycleId,
           startAt: commercialContext.cycle.start,
@@ -1162,6 +1378,25 @@ function createAutoPosterApplicationService(dependencies = {}) {
     return { account: view, provider: providers.getProviderSummary(view.provider) };
   }
 
+  async function validateConnectedAccount(contextInput, input = {}) {
+    const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
+    const provider = String(input.provider || '').trim().toLowerCase();
+    if (!provider) {
+      throw new AutoPosterApplicationError('provider is required.');
+    }
+    const validated = await validateConnectedAccountForContext(
+      context,
+      { provider, accountId: input.accountId },
+      { requireConnected: true, commercialContext, canonicalOnly: true }
+    );
+    return {
+      workspaceId: commercialContext.workspace.workspaceId,
+      account: validated.view,
+      provider: providers.getProviderSummary(validated.provider)
+    };
+  }
+
   async function listConnectedAccounts(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
     const commercialContext = await resolveCommercialContext(context);
@@ -1175,8 +1410,17 @@ function createAutoPosterApplicationService(dependencies = {}) {
     const includeTikTok = !requestedProvider || requestedProvider === PROVIDER_TIKTOK;
     const includeYouTube = (!requestedProvider || requestedProvider === PROVIDER_YOUTUBE)
       && typeof storageAdapter.getYouTubeAccounts === 'function';
+    if (includeTikTok && typeof storageAdapter.getCanonicalTikTokAccounts !== 'function') {
+      throw new AutoPosterApplicationError('Canonical connected-account storage is unavailable.', {
+        status: 503,
+        code: 'canonical_account_registry_unavailable'
+      });
+    }
     const tiktokAccounts = includeTikTok
-      ? await storageAdapter.getTikTokAccounts(context.userId, commercialContext.workspaceScope)
+      ? await storageAdapter.getCanonicalTikTokAccounts(
+          context.userId,
+          commercialContext.workspaceScope
+        )
       : [];
     const youtubeAccounts = includeYouTube
       ? await storageAdapter.getYouTubeAccounts(context.userId, commercialContext.workspaceScope)
@@ -1237,6 +1481,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
     deletePost,
     authorizeAccountConnection,
     getConnectedAccount,
+    validateConnectedAccount,
     getPlanUsage,
     getPostStatus,
     listConnectedAccounts,
@@ -1255,6 +1500,7 @@ const defaultService = createAutoPosterApplicationService();
 
 module.exports = {
   AutoPosterApplicationError,
+  ACCOUNT_VALIDATION_CODES,
   DEFAULT_QUEUE_LIMIT,
   MAX_QUEUE_LIMIT,
   PROVIDER_TIKTOK,
@@ -1264,6 +1510,7 @@ module.exports = {
   createAutoPosterApplicationService,
   createExecutionContext,
   deterministicPostId,
+  targetScopedIdempotencyKey,
   isHttpsUrl,
   normalizeExplicitSchedule,
   ...defaultService

@@ -126,6 +126,63 @@ function postStatusView(post) {
   };
 }
 
+function connectedAccountView(account) {
+  return {
+    provider: String(account.provider || ''),
+    providerDisplayName: String(account.providerDisplayName || ''),
+    accountId: String(account.accountId || ''),
+    connectedAccountId: String(account.connectionId || ''),
+    username: String(account.username || ''),
+    displayName: String(account.displayName || ''),
+    connectionStatus: String(account.connectionStatus || ''),
+    publishingReady: Boolean(account.publishingReady),
+    readinessBlockers: Array.isArray(account.readinessBlockers)
+      ? account.readinessBlockers.map((value) => String(value))
+      : [],
+    lastVerifiedAt: account.lastVerifiedAt || null
+  };
+}
+
+// Canonical connected-account discovery for Operator/Runtime selectors. The
+// application service resolves the authenticated workspace and returns its
+// allowlisted domain views; this transport applies an even narrower wire
+// allowlist so token metadata and provider/account payloads cannot escape.
+router.get('/connected-accounts', applicationRoute(async (req, res) => {
+  const workspaceId = String(req.query.workspaceId || req.get('x-chanter-workspace-id') || '').trim();
+  const provider = String(req.query.provider || '').trim().toLowerCase();
+  const result = await applicationService.listConnectedAccounts(
+    runtimeContext(req, { workspaceId }),
+    { provider: provider || undefined }
+  );
+  const accounts = result.accounts.map(connectedAccountView);
+  res.json({
+    ok: true,
+    workspaceId: result.workspaceId,
+    count: accounts.length,
+    accounts
+  });
+}));
+
+// Revalidates the exact selected opaque ID immediately before Operator
+// persistence. accountId is deliberately not trimmed or case-normalized.
+router.post('/connected-accounts/validate', applicationRoute(async (req, res) => {
+  const body = req.body || {};
+  const accountId = String(body.accountId || '');
+  const provider = String(body.provider || '').trim().toLowerCase();
+  const workspaceId = String(body.workspaceId || req.get('x-chanter-workspace-id') || '').trim();
+  if (!provider) { fail(res, 400, 'validation_failed', 'provider is required.'); return; }
+
+  const result = await applicationService.validateConnectedAccount(
+    runtimeContext(req, { accountId, workspaceId }),
+    { provider, accountId }
+  );
+  res.json({
+    ok: true,
+    workspaceId: result.workspaceId,
+    account: connectedAccountView(result.account)
+  });
+}));
+
 // Queue listing. The route limit is intentionally narrower than the internal
 // service maximum because this is a remote evidence surface.
 router.get('/queue', applicationRoute(async (req, res) => {
@@ -170,7 +227,9 @@ router.post('/media/validate', applicationRoute(async (req, res) => {
 // permission to invoke this operation, never AutoPoster's human publish gate.
 router.post('/schedule', applicationRoute(async (req, res) => {
   const body = req.body || {};
-  const accountId = String(body.accountId || '').trim();
+  // Preserve the exact opaque ID; the shared account validator rejects case
+  // and whitespace mismatches before queue creation.
+  const accountId = String(body.accountId || '');
   const mediaUrl = String(body.mediaUrl || '').trim();
   const idempotencyKey = String(body.idempotencyKey || '').trim();
   const requestedBy = String(body.requestedBy || '').trim() || 'agent-runtime';

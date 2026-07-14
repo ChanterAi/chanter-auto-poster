@@ -48,6 +48,13 @@ function makeHarness() {
   let sequence = 0;
 
   const storage = {
+    async getCanonicalTikTokAccount(userId, accountId) {
+      if (userId !== 'owner') return null;
+      return accounts.find((account) => account.accountId === accountId) || null;
+    },
+    async getCanonicalTikTokAccounts(userId) {
+      return userId === 'owner' ? accounts : [];
+    },
     async getTikTokAccount(userId, accountId) {
       if (userId !== 'owner') return null;
       return accounts.find((account) => account.accountId === accountId) || null;
@@ -203,18 +210,18 @@ test('connection status and publishing readiness gate scheduling separately', as
   // Disconnected: existing behavior preserved.
   await assert.rejects(
     () => service.schedulePost(websiteContext({ accountId: 'account-cold' }), scheduleInput({ accountId: 'account-cold' })),
-    /needs to be reconnected/
+    (error) => error.code === 'account_disconnected'
   );
   // Connected but expired without a refresh token: blocked as not ready.
   await assert.rejects(
     () => service.schedulePost(websiteContext({ accountId: 'account-expired' }), scheduleInput({ accountId: 'account-expired' })),
-    (error) => error.code === 'account_not_ready'
+    (error) => error.code === 'account_not_publishing_ready'
       && error.details.blockers.includes('reauthorization_required')
   );
   // Connected but recorded scope excludes video.publish: blocked as not ready.
   await assert.rejects(
     () => service.schedulePost(websiteContext({ accountId: 'account-wrong-scope' }), scheduleInput({ accountId: 'account-wrong-scope' })),
-    (error) => error.code === 'account_not_ready'
+    (error) => error.code === 'account_not_publishing_ready'
       && error.details.blockers.includes('missing_video_publish_scope')
   );
   assert.equal(calls.add.length, 0);

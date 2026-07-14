@@ -19,7 +19,14 @@ const applicationService = require('../src/autoposterApplicationService');
 const TOKEN = 'test-runtime-token-1234567890';
 
 const accounts = [
-  { accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok', username: 'creator_a', connected: true },
+  {
+    accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok',
+    username: 'creator_a', displayName: 'Creator A', connected: true,
+    access_token: 'CANARY-RUNTIME-ACCOUNT-ACCESS-TOKEN',
+    refresh_token: 'CANARY-RUNTIME-ACCOUNT-REFRESH-TOKEN',
+    scope: 'video.publish',
+    connectedAt: '2026-07-10T08:00:00.000Z'
+  },
   { accountId: 'account-cold', open_id: 'open-cold', userId: 'owner', platform: 'tiktok', username: 'creator_cold', connected: false }
 ];
 
@@ -55,14 +62,35 @@ const state = {
   addUploadedPostsCalls: [],
   updatePostCalls: [],
   updatePostResult: 'apply', // 'apply' | 'null' | 'throw'
-  tiktokTouched: []
+  tiktokTouched: [],
+  legacyAccountReads: [],
+  canonicalAccountReads: []
 };
 
 storage.getTikTokAccount = async (userId, accountId) => {
+  state.legacyAccountReads.push({ operation: 'get', accountId });
   if (userId !== config.defaultUserId) return null;
   return accounts.find((account) => account.accountId === accountId) || null;
 };
 storage.getYouTubeAccount = async () => null;
+storage.getTikTokAccounts = async (userId) => {
+  state.legacyAccountReads.push({ operation: 'list' });
+  return userId === config.defaultUserId ? accounts : [];
+};
+storage.getCanonicalTikTokAccount = async (userId, accountId) => {
+  state.canonicalAccountReads.push({ operation: 'get', accountId });
+  if (userId !== config.defaultUserId) return null;
+  return accounts.find((account) => account.accountId === accountId) || null;
+};
+storage.getCanonicalTikTokAccounts = async (userId) => {
+  state.canonicalAccountReads.push({ operation: 'list' });
+  return userId === config.defaultUserId ? accounts : [];
+};
+storage.getYouTubeAccounts = async () => [];
+storage.listConnectedAccountReferencesForOwner = async (userId) =>
+  userId === config.defaultUserId
+    ? accounts.map((account) => ({ provider: 'tiktok', accountId: account.accountId, workspaceId: '' }))
+    : [];
 storage.getPosts = async (userId, accountId) => {
   if (state.getPostsError) throw state.getPostsError;
   if (userId !== config.defaultUserId) return [];
@@ -184,6 +212,62 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
   }
   assert.equal(state.addUploadedPostsCalls.length, before, 'unauthorized calls must not create posts');
 
+  const refusedRegistry = await call('GET', '/api/runtime/connected-accounts', { token: null });
+  assert.equal(refusedRegistry.status, 401, 'connected-account discovery is token-guarded');
+
+  const legacyReadsBeforePreflight = state.legacyAccountReads.length;
+  const registry = await call('GET', '/api/runtime/connected-accounts?provider=tiktok');
+  assert.equal(registry.status, 200);
+  const registryBody = await registry.json();
+  assert.equal(registryBody.ok, true);
+  assert.equal(registryBody.count, 2);
+  assert.equal(registryBody.accounts[0].accountId, 'account-a');
+  assert.equal(registryBody.accounts[0].connectedAccountId, 'tiktok:account-a');
+  assert.deepEqual(Object.keys(registryBody.accounts[0]).sort(), [
+    'accountId',
+    'connectedAccountId',
+    'connectionStatus',
+    'displayName',
+    'lastVerifiedAt',
+    'provider',
+    'providerDisplayName',
+    'publishingReady',
+    'readinessBlockers',
+    'username'
+  ]);
+  const registryJson = JSON.stringify(registryBody);
+  assert.equal(registryJson.includes('CANARY-RUNTIME-ACCOUNT-ACCESS-TOKEN'), false);
+  assert.equal(registryJson.includes('CANARY-RUNTIME-ACCOUNT-REFRESH-TOKEN'), false);
+  assert.equal(registryJson.includes('authorization'), false);
+  assert.equal(registryJson.includes('tokenPresent'), false);
+
+  const validAccount = await call('POST', '/api/runtime/connected-accounts/validate', {
+    body: { provider: 'tiktok', accountId: 'account-a' }
+  });
+  assert.equal(validAccount.status, 200);
+  const validAccountBody = await validAccount.json();
+  assert.equal(validAccountBody.account.accountId, 'account-a');
+  assert.equal(validAccountBody.account.publishingReady, true);
+  assert.equal(JSON.stringify(validAccountBody).includes('CANARY-RUNTIME-ACCOUNT'), false);
+
+  const wrongCase = await call('POST', '/api/runtime/connected-accounts/validate', {
+    body: { provider: 'tiktok', accountId: 'ACCOUNT-A' }
+  });
+  assert.equal(wrongCase.status, 409);
+  const wrongCaseBody = await wrongCase.json();
+  assert.equal(wrongCaseBody.code, 'account_id_case_mismatch');
+  assert.equal(wrongCaseBody.canonicalAccountId, 'account-a');
+  assert.equal(
+    state.legacyAccountReads.length,
+    legacyReadsBeforePreflight,
+    'Runtime account discovery and exact preflight never enter legacy read/migration getters'
+  );
+  assert.deepEqual(state.canonicalAccountReads, [
+    { operation: 'list' },
+    { operation: 'get', accountId: 'account-a' },
+    { operation: 'get', accountId: 'ACCOUNT-A' }
+  ]);
+
   // ── Queue list: authorized scope, bounded, truthful empty, failure ──────
   const list = await call('GET', '/api/runtime/queue?accountId=account-a&limit=10');
   assert.equal(list.status, 200);
@@ -261,6 +345,8 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
 
   // ── Scheduling: one queue item, unapproved, truthful metadata ────────────
   const scheduledAt = futureIso();
+  const legacyReadsBeforeSchedule = state.legacyAccountReads.length;
+  const canonicalReadsBeforeSchedule = state.canonicalAccountReads.length;
   const schedule = await call('POST', '/api/runtime/schedule', {
     body: {
       accountId: 'account-a',
@@ -285,6 +371,16 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
   assert.equal(state.addUploadedPostsCalls[0].defaults.scheduledAt, new Date(scheduledAt).toISOString());
   assert.equal(state.addUploadedPostsCalls[0].defaults.createOnly, true);
   assert.match(state.addUploadedPostsCalls[0].defaults.scheduleHistory.detail, /awaits human approval/);
+  assert.equal(
+    state.legacyAccountReads.length,
+    legacyReadsBeforeSchedule,
+    'Runtime scheduling never enters legacy read/migration getters'
+  );
+  assert.equal(
+    state.canonicalAccountReads.length,
+    canonicalReadsBeforeSchedule + 1,
+    'Runtime scheduling revalidates the canonical account immediately before creation'
+  );
 
   // ── Idempotency: the same key returns the existing item, creates nothing ─
   const duplicate = await call('POST', '/api/runtime/schedule', {

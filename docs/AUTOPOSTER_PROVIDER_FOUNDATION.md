@@ -2,13 +2,16 @@
 
 ## Status and scope
 
-Part 2 evolves the Part 1 application-service boundary
+Part 2 evolved the Part 1 application-service boundary
 (`docs/AUTOPOSTER_APPLICATION_SERVICE.md`) into a provider-aware,
-connected-account-ready architecture. It adds **no** new provider API
-integration: TikTok remains the only active provider, and the existing
-TikTok OAuth/publish implementation (`src/tiktok.js`) is reused unchanged.
-Instagram, YouTube, and LinkedIn are **not** integrated. Nothing here
-publishes live, migrates Firestore destructively, or redesigns the UI.
+connected-account-ready architecture. The current repository implements
+TikTok and a private-only YouTube provider. TikTok is active; YouTube becomes
+active only when its OAuth, encrypted token custody, enable flag, and
+private-only configuration are complete, and otherwise fails closed as
+disabled. Instagram remains a non-schedulable partial legacy integration and
+LinkedIn remains unsupported. Nothing in the application-service operations
+publishes live, migrates Firestore destructively, or redesigns the UI; provider
+publishing remains behind the separate approval-gated worker boundary.
 
 ## Provider domain (`src/providers.js`)
 
@@ -18,13 +21,14 @@ provider-API code (enforced by test).
 
 | Provider | Implementation status | Schedulable | Connectable | Notes |
 | --- | --- | --- | --- | --- |
-| `tiktok` | `active` | yes | yes (`/connect/tiktok` OAuth) | Provider #1; the only active provider |
+| `tiktok` | `active` | yes | yes (`/connect/tiktok` OAuth) | Provider #1; existing Direct Post path |
 | `instagram` | `disabled` (or `development` when `ENABLE_INSTAGRAM=true`) | **no** | **no** | Real but partial legacy integration: singleton auth doc, manual admin test route, worker path. Never schedulable through the queue. |
-| `youtube` | `unsupported` | no | no | Reserved identifier only. No adapter, no OAuth, no posting support. |
+| `youtube` | `active` when fully configured; otherwise `disabled` | yes only while active | yes (`/connect/youtube` OAuth) | Provider #2; implemented encrypted credential custody, private-only resumable video upload, and status lookup. Local code/test coverage does not establish live-production proof. |
 | `linkedin` | `unsupported` | no | no | Reserved identifier only. No adapter, no OAuth, no posting support. |
 
 Status vocabulary: `active`, `development`, `disabled`, `unsupported`.
-Only TikTok may be `active`.
+TikTok is active. YouTube may also be active only when the complete
+private-only configuration gate passes; no other provider is schedulable.
 
 ### Capability resolution
 
@@ -46,6 +50,12 @@ TikTok's declared capabilities match actual product behavior: video-only
 intake (MP4/MOV/WebM), Direct Post, scheduling through the one queue,
 privacy controls, human approval required, and **no** remote status
 lookup, remote deletion, or analytics.
+
+YouTube's implemented and tested capabilities are OAuth connection,
+video-only private upload with subscriber notifications disabled, scheduling
+through the same approval-gated queue, and remote status lookup. Public or
+unlisted publishing, native `publishAt` scheduling, deletion, analytics,
+thumbnails, live streaming, and playlists are not implemented and fail closed.
 
 ## Legacy provider normalization rule
 
@@ -70,14 +80,17 @@ EXPLICIT provider value         → preserved as stored (source: explicit);
 
 ## Connected-account domain (`src/connectedAccounts.js`)
 
-The source of truth remains the existing TikTok account records (the
-`tiktokAccounts` collection plus the legacy singleton auth doc that
-`storage.js` already normalizes lazily). `toConnectedAccount(account)`
-maps one record into the single safe view:
+The source of truth is the provider-specific account collections:
+`tiktokAccounts` and `youtubeAccounts`. Existing website compatibility may
+still normalize the legacy TikTok singleton lazily, but Runtime discovery,
+preflight, and scheduling use canonical collection-only reads and never trigger
+that migration path. `toConnectedAccount(account)` maps either record into the
+single safe view:
 
-- Identity: `connectionId` (`provider:accountId`), `provider`,
-  `providerAccountId` (TikTok open id), `accountId`, `ownerUserId`,
-  username/display name/avatar.
+- Identity: `connectionId` (`provider:accountId`), `provider`, exact
+  `providerAccountId` / `accountId`, `ownerUserId`, and provider-native
+  username/display name/avatar. TikTok uses its open id; YouTube uses its
+  channel id.
 - Connection status (exact final states):
   `connected` | `reauthorization_required` | `disconnected`.
   States the product cannot determine (degraded/revoked/unknown) are
@@ -85,8 +98,10 @@ maps one record into the single safe view:
 - Publishing readiness — **distinct from connection status** — with
   blocker codes: `provider_not_active`, `account_disconnected`,
   `reauthorization_required`, `missing_video_publish_scope`.
-  A recorded scope that excludes `video.publish` blocks scheduling; an
-  unrecorded scope does not (legacy records stay usable).
+  When scope data is recorded, TikTok requires `video.publish` and YouTube
+  requires `youtube.upload`; a recorded grant that omits the required scope
+  blocks scheduling. Unrecorded legacy scope data is not treated as proof that
+  a grant is missing.
 - Token metadata as safe booleans/timestamps only: `tokenPresent`,
   `refreshTokenPresent`, `tokenExpiresAt`, `tokenExpired`,
   `reauthorizationRequired`.
@@ -114,21 +129,22 @@ Part 2 adds:
   queue work.
 - Readiness enforcement in owned-account resolution: disconnected
   channels keep the existing 409; connected-but-not-ready channels
-  (expired token without refresh, recorded scope missing
-  `video.publish`) are rejected with `account_not_ready` and blocker
-  details.
+  (expired token without refresh or the provider's required publishing scope
+  missing) are rejected with `account_not_publishing_ready` and blocker details.
 - Shared connected-account operations: `getConnectedAccount(context,
-  { accountId })` and `listConnectedAccounts(context)` return safe views
-  plus the provider summary. The website and the Runtime resolve channel
-  identity through these same operations, so the two surfaces cannot
-  drift into different account models.
+  { accountId })`, `listConnectedAccounts(context)`, and exact
+  `validateConnectedAccount(context, { provider, accountId })` return safe
+  views plus provider truth for TikTok and YouTube. Runtime discovery/preflight
+  uses canonical provider collections; its TikTok reads never use the legacy
+  singleton migration path.
 
 ## Queue compatibility
 
 There is still exactly one queue (the Firestore `posts` collection). New
 writes add, additively:
 
-- `provider` / `platform` — validated provider id (`tiktok`),
+- `provider` / `platform` — validated provider id (`tiktok` or configured
+  `youtube`),
 - `connectedAccountId` — canonical composite `provider:accountId`.
 
 Legacy documents keep working: reads derive the same
@@ -143,8 +159,12 @@ The publish worker dispatches by canonical provider identity:
 - `tiktok` (explicit or legacy-normalized) → the existing TikTok publish
   boundary, unchanged (including the unassigned-account block and the
   fail-closed human-approval gate).
+- `youtube` (explicit, fully configured, and provider-native) → the existing
+  YouTube adapter, which enforces private visibility and disabled subscriber
+  notifications. This documented code path is not a claim of successful live
+  or production publishing.
 - `instagram` → the existing env/health-gated legacy path, unchanged.
-- Any other explicit provider → refused with terminal code
+- Any unsupported explicit provider → refused with terminal code
   `PROVIDER_UNSUPPORTED` (no retry, no TikTok fallback). Before Part 2 an
   explicit unknown provider would have fallen through to the TikTok
   publish path; this is now impossible.
@@ -158,7 +178,7 @@ Agent Runtime (P1B) ────┘        ├→ providers.js          (capabil
 MCP → Runtime → same routes      ├→ connectedAccounts.js  (safe account views)
                                  ├→ mediaPolicy.js / storage.js / postsMapper.js
                                  └→ the one Firestore posts queue
-Scheduler worker → provider dispatch → existing TikTok boundary (tiktok.js)
+Scheduler worker → provider dispatch → TikTok / configured private-only YouTube adapter
 ```
 
 The dashboard page shows a restrained readiness line for the active
@@ -167,17 +187,19 @@ readiness, last verification) built from the safe view. Runtime queue and
 status responses include `provider` and `connectedAccountId` as safe
 metadata. Runtime actions (`autoposter.queue.list`,
 `autoposter.post.get_status`, `autoposter.media.validate`,
-`autoposter.post.schedule`) are unchanged; no Agent Runtime or MCP code
-needed modification.
+`autoposter.post.schedule`) retain provider metadata, and the Runtime control
+surface also uses the safe connected-account list and exact preflight
+operations. This document makes no claim that MCP gained a new provider path.
 
 ## Unsupported future providers
 
-YouTube and LinkedIn exist only as registry metadata. There are no
-connect buttons, no OAuth routes, no adapters, and no "coming soon" UI
-for them. The site renders no control for any provider without a real
-implemented flow.
+LinkedIn exists only as unsupported registry metadata. Instagram remains a
+non-schedulable partial legacy integration. YouTube is the implemented Provider
+#2 with OAuth, canonical account storage, private-only upload, and status
+lookup, but it is unavailable unless its complete configuration gate passes.
+The site renders no control for a provider without an implemented flow.
 
-## Requirements before adding the first additional provider (Part 3 readiness)
+## Requirements before adding another provider
 
 1. A real OAuth flow storing per-account records into the connected-
    account source of truth (per-user scoping like TikTok's, never a
@@ -196,7 +218,7 @@ implemented flow.
 6. Parity tests (website vs Runtime), worker-safety tests, and canary
    secret tests extended to the new provider before activation.
 
-## Validation (executed for Part 2)
+## Historical validation (executed for the Part 2 foundation)
 
 ```powershell
 npm test        # 186/186 passing (164 baseline + 22 new)
@@ -204,5 +226,6 @@ npm run build   # node --check chain + EJS compile + vite build — passing
 git diff --check
 ```
 
-No live provider call, no push, no deploy. Passing these checks proves
-local contract and regression coverage only.
+No live provider call, no push, no deploy. These historical checks proved the
+Part 2 local contract only; current validation results belong in the current
+mission report and do not, by themselves, prove live-production publishing.

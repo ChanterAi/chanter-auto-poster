@@ -539,12 +539,38 @@ async function updateTikTokAccountProfile(userId, accountId, profile = {}, works
   return { ...account, ...patch };
 }
 
-async function getTikTokAccounts(userId, workspaceScope) {
+// Canonical collection-only reads for Runtime discovery/preflight. These never
+// consult, surface, or migrate the legacy singleton credential document.
+async function getCanonicalTikTokAccounts(userId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const snapshot = await tiktokAccountsCollection().where('userId', '==', ownerId).get();
-  let accounts = snapshot.docs
+  return snapshot.docs
     .filter((doc) => recordMatchesWorkspace(doc.data(), ownerId, workspaceScope))
-    .map(tiktokAccountFromDoc);
+    .map(tiktokAccountFromDoc)
+    .sort((a, b) => {
+      if (a.connected !== b.connected) return a.connected ? -1 : 1;
+      return timestampMillis(b.updatedAt) - timestampMillis(a.updatedAt);
+    });
+}
+
+async function getCanonicalTikTokAccount(userId, accountId, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const exactId = String(accountId || '');
+  if (!exactId || exactId !== exactId.trim() || exactId === 'legacy') return null;
+  const snap = await tiktokAccountsCollection().doc(tiktokAccountDocId(exactId)).get();
+  if (
+    snap.exists
+    && (snap.data().userId || DEFAULT_USER_ID) === ownerId
+    && recordMatchesWorkspace(snap.data(), ownerId, workspaceScope)
+  ) {
+    return tiktokAccountFromDoc(snap);
+  }
+  return null;
+}
+
+async function getTikTokAccounts(userId, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const accounts = await getCanonicalTikTokAccounts(ownerId, workspaceScope);
 
   const legacy = await getTikTokAuth();
   if (
@@ -567,14 +593,8 @@ async function getTikTokAccount(userId, accountId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const normalizedId = String(accountId || '').trim();
   if (!normalizedId || normalizedId === 'legacy') return null;
-  const snap = await tiktokAccountsCollection().doc(tiktokAccountDocId(normalizedId)).get();
-  if (
-    snap.exists
-    && (snap.data().userId || DEFAULT_USER_ID) === ownerId
-    && recordMatchesWorkspace(snap.data(), ownerId, workspaceScope)
-  ) {
-    return tiktokAccountFromDoc(snap);
-  }
+  const canonical = await getCanonicalTikTokAccount(ownerId, normalizedId, workspaceScope);
+  if (canonical) return canonical;
 
   const legacy = await getTikTokAuth();
   const scope = normalizeWorkspaceScope(workspaceScope);
@@ -851,6 +871,44 @@ async function getYouTubeAccount(userId, channelId, workspaceScope) {
     return youtubeAccountFromDoc(snap);
   }
   return null;
+}
+
+// Read-only identity index used by the internal Runtime preflight. Unlike
+// getTikTokAccounts(), this never consults or lazily migrates the legacy auth
+// singleton. It returns only the minimum fields needed to classify an exact
+// opaque account reference for the already-authenticated owner; credential,
+// connection, profile, and provider payload fields never leave storage.
+async function listConnectedAccountReferencesForOwner(userId) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const [tiktokSnapshot, youtubeSnapshot] = await Promise.all([
+    tiktokAccountsCollection().where('userId', '==', ownerId).get(),
+    youtubeAccountsCollection().where('userId', '==', ownerId).get()
+  ]);
+
+  const references = [];
+  for (const [provider, snapshot] of [
+    ['tiktok', tiktokSnapshot],
+    ['youtube', youtubeSnapshot]
+  ]) {
+    for (const doc of snapshot.docs) {
+      const data = doc.data() || {};
+      const accountId = String(
+        provider === 'youtube'
+          ? (data.accountId || data.channelId || '')
+          : (data.accountId || data.open_id || '')
+      );
+      if (!accountId) continue;
+      references.push({
+        provider,
+        accountId,
+        workspaceId: String(data.workspaceId || '').trim()
+      });
+    }
+  }
+
+  return references.sort((a, b) =>
+    a.provider.localeCompare(b.provider) || a.accountId.localeCompare(b.accountId)
+  );
 }
 
 /**
@@ -1575,7 +1633,9 @@ async function addUploadedPosts(userId, files, defaults = {}) {
         },
         activeQueueBaseline: reservation.activeQueueBaseline,
         items: created.map(({ ref, data }) => ({
-          idempotencyKey: String(data.idempotencyKey || `queue:${ref.id}`),
+          idempotencyKey: String(
+            reservation.idempotencyKey || data.idempotencyKey || `queue:${ref.id}`
+          ),
           queue: { documentId: ref.id, data: { ...data, usageState: 'reserved' } }
         }))
       });
@@ -2105,6 +2165,8 @@ module.exports = {
   getRecentJobs,
   getSettings,
   saveSettings,
+  getCanonicalTikTokAccounts,
+  getCanonicalTikTokAccount,
   getTikTokAccounts,
   getTikTokAccount,
   saveTikTokAccount,
@@ -2112,6 +2174,7 @@ module.exports = {
   disconnectTikTokAccount,
   getYouTubeAccounts,
   getYouTubeAccount,
+  listConnectedAccountReferencesForOwner,
   saveYouTubeAccount,
   getYouTubeAccountCredential,
   updateYouTubeAccountTokenState,

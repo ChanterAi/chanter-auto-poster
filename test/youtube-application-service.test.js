@@ -44,7 +44,7 @@ function youtubeAccount(overrides = {}) {
   };
 }
 
-function tiktokAccount() {
+function tiktokAccount(overrides = {}) {
   return {
     accountId: 'tt-account',
     userId: 'owner',
@@ -53,7 +53,8 @@ function tiktokAccount() {
     connected: true,
     access_token: 'tt-access',
     refresh_token: 'tt-refresh',
-    scope: 'user.info.basic,video.publish'
+    scope: 'user.info.basic,video.publish',
+    ...overrides
   };
 }
 
@@ -61,16 +62,35 @@ function buildService({
   account = youtubeAccount(),
   tiktok = tiktokAccount(),
   existingPosts = [],
-  trustLookupOwner = false
+  trustLookupOwner = false,
+  references = null
 } = {}) {
   const calls = { addUploadedPosts: [] };
+  const matchesWorkspace = (candidate, workspaceScope) => {
+    if (!candidate || !workspaceScope || !workspaceScope.workspaceId) return true;
+    if (candidate.workspaceId) return candidate.workspaceId === workspaceScope.workspaceId;
+    return Boolean(workspaceScope.allowLegacyOwnerRecords);
+  };
   const storageFake = {
-    getYouTubeAccount: async (userId, accountId) =>
-      (account && (trustLookupOwner || userId === account.userId) && accountId === account.accountId ? account : null),
+    getYouTubeAccount: async (userId, accountId, workspaceScope) =>
+      (account && (trustLookupOwner || userId === account.userId) && accountId === account.accountId
+        && matchesWorkspace(account, workspaceScope) ? account : null),
     getYouTubeAccounts: async () => (account ? [account] : []),
-    getTikTokAccount: async (userId, accountId) =>
-      (tiktok && (trustLookupOwner || userId === tiktok.userId) && accountId === tiktok.accountId ? tiktok : null),
+    getCanonicalTikTokAccount: async (userId, accountId, workspaceScope) =>
+      (tiktok && (trustLookupOwner || userId === tiktok.userId) && accountId === tiktok.accountId
+        && matchesWorkspace(tiktok, workspaceScope) ? tiktok : null),
+    getCanonicalTikTokAccounts: async () => (tiktok ? [tiktok] : []),
+    getTikTokAccount: async (userId, accountId, workspaceScope) =>
+      (tiktok && (trustLookupOwner || userId === tiktok.userId) && accountId === tiktok.accountId
+        && matchesWorkspace(tiktok, workspaceScope) ? tiktok : null),
     getTikTokAccounts: async () => (tiktok ? [tiktok] : []),
+    listConnectedAccountReferencesForOwner: async () => references || [account, tiktok]
+      .filter(Boolean)
+      .map((candidate) => ({
+        provider: candidate.provider || candidate.platform || 'tiktok',
+        accountId: candidate.accountId,
+        workspaceId: candidate.workspaceId || ''
+      })),
     getPosts: async () => existingPosts,
     getPost: async () => null,
     addUploadedPosts: async (userId, files, defaults) => {
@@ -196,7 +216,7 @@ test('a storage lookup cannot return another owner account into queue creation',
   });
   await assert.rejects(
     () => service.schedulePost(websiteContext, youtubeInput()),
-    (error) => error.status === 404 && error.code === 'not_found'
+    (error) => error.status === 404 && error.code === 'unknown_account_id'
   );
   assert.equal(calls.addUploadedPosts.length, 0);
 });
@@ -212,6 +232,104 @@ test('one valid YouTube account creates exactly one provider-native draft', asyn
   assert.equal(calls.addUploadedPosts[0].defaults.selfApprove, null, 'approval gate remains closed');
 });
 
+test('exact connected-account preflight succeeds and returns only the canonical safe view', async () => {
+  const { service } = buildService();
+  const result = await service.validateConnectedAccount(websiteContext, {
+    provider: 'youtube',
+    accountId: 'UC-chanter'
+  });
+
+  assert.equal(result.account.accountId, 'UC-chanter');
+  assert.equal(result.account.connectionId, 'youtube:UC-chanter');
+  assert.equal(result.account.connectionStatus, 'connected');
+  assert.equal(result.account.publishingReady, true);
+  assert.equal(JSON.stringify(result).includes('credential'), false);
+  assert.equal(JSON.stringify(result).includes('access_token'), false);
+});
+
+test('connected-account preflight emits stable exact typed failures without queue creation', async () => {
+  const ready = buildService();
+  const cases = [
+    {
+      name: 'unknown account',
+      service: ready.service,
+      context: websiteContext,
+      input: { provider: 'youtube', accountId: 'CANARY-UNKNOWN-ACCOUNT-TOKEN' },
+      code: 'unknown_account_id'
+    },
+    {
+      name: 'case mismatch',
+      service: ready.service,
+      context: websiteContext,
+      input: { provider: 'youtube', accountId: 'uc-CHANTER' },
+      code: 'account_id_case_mismatch'
+    },
+    {
+      name: 'surrounding whitespace',
+      service: ready.service,
+      context: websiteContext,
+      input: { provider: 'youtube', accountId: ' UC-chanter' },
+      code: 'account_id_non_canonical'
+    },
+    {
+      name: 'provider mismatch',
+      service: ready.service,
+      context: websiteContext,
+      input: { provider: 'youtube', accountId: 'tt-account' },
+      code: 'provider_account_mismatch'
+    },
+    {
+      name: 'disconnected account',
+      service: buildService({
+        account: youtubeAccount({ connected: false, tokenPresent: false })
+      }).service,
+      context: websiteContext,
+      input: { provider: 'youtube', accountId: 'UC-chanter' },
+      code: 'account_disconnected'
+    },
+    {
+      name: 'not publishing-ready',
+      service: buildService({
+        account: youtubeAccount({ grantedScopes: READONLY_SCOPE, scope: READONLY_SCOPE })
+      }).service,
+      context: websiteContext,
+      input: { provider: 'youtube', accountId: 'UC-chanter' },
+      code: 'account_not_publishing_ready'
+    }
+  ];
+
+  const workspaceMismatch = buildService({
+    account: youtubeAccount({ workspaceId: 'workspace-other' }),
+    references: [{ provider: 'youtube', accountId: 'UC-chanter', workspaceId: 'workspace-other' }]
+  });
+  cases.push({
+    name: 'workspace mismatch',
+    service: workspaceMismatch.service,
+    context: { ...websiteContext, workspaceId: 'workspace-current' },
+    input: { provider: 'youtube', accountId: 'UC-chanter' },
+    code: 'account_workspace_mismatch'
+  });
+
+  for (const scenario of cases) {
+    await assert.rejects(
+      () => scenario.service.validateConnectedAccount(scenario.context, scenario.input),
+      (error) => {
+        assert.equal(error.code, scenario.code, scenario.name);
+        assert.equal(JSON.stringify(error).includes('workspace-other'), false, 'other workspace stays undisclosed');
+        assert.equal(JSON.stringify(error).includes('CANARY-UNKNOWN-ACCOUNT-TOKEN'), false, 'unknown input is not echoed');
+        return true;
+      }
+    );
+  }
+  assert.equal(ready.calls.addUploadedPosts.length, 0);
+
+  await assert.rejects(
+    () => ready.service.schedulePost(runtimeContext, youtubeInput({ accountIds: ['uc-CHANTER'] })),
+    (error) => error.code === 'account_id_case_mismatch'
+  );
+  assert.equal(ready.calls.addUploadedPosts.length, 0, 'schedule reuses preflight before queue creation');
+});
+
 test('a disconnected channel cannot schedule', async () => {
   const { service, calls } = buildService({ account: youtubeAccount({ connected: false, tokenPresent: false }) });
   await assert.rejects(
@@ -225,7 +343,7 @@ test('reauthorization_required blocks scheduling truthfully', async () => {
   const { service } = buildService({ account: youtubeAccount({ reauthorizationRequired: true }) });
   await assert.rejects(
     () => service.schedulePost(websiteContext, youtubeInput()),
-    (error) => error.code === 'account_not_ready'
+    (error) => error.code === 'account_not_publishing_ready'
       && error.details.blockers.includes('reauthorization_required')
   );
 });
@@ -236,7 +354,7 @@ test('a recorded scope set without youtube.upload blocks scheduling', async () =
   });
   await assert.rejects(
     () => service.schedulePost(websiteContext, youtubeInput()),
-    (error) => error.code === 'account_not_ready'
+    (error) => error.code === 'account_not_publishing_ready'
       && error.details.blockers.includes('missing_video_publish_scope')
   );
 });
@@ -272,6 +390,35 @@ test('a duplicate idempotency key returns the existing job instead of creating a
   assert.equal(result.duplicate, true);
   assert.equal(result.post.id, 'existing-post');
   assert.equal(calls.addUploadedPosts.length, 0, 'no second queue item was created');
+});
+
+test('the same raw account id and idempotency key remain isolated by provider', async () => {
+  const sharedId = 'shared-provider-account';
+  const existingTikTok = {
+    id: 'existing-tiktok-post',
+    accountId: sharedId,
+    provider: 'tiktok',
+    idempotencyKey: 'mission-key-1',
+    runtimeIdempotencyKey: 'mission-key-1',
+    status: 'scheduled',
+    scheduledAt
+  };
+  const { service, calls } = buildService({
+    account: youtubeAccount({ accountId: sharedId, channelId: sharedId }),
+    tiktok: tiktokAccount({ accountId: sharedId, open_id: sharedId }),
+    existingPosts: [existingTikTok]
+  });
+
+  const result = await service.schedulePost(
+    runtimeContext,
+    youtubeInput({ accountIds: [sharedId] })
+  );
+
+  assert.equal(result.duplicate, false);
+  assert.equal(result.post.provider, 'youtube');
+  assert.equal(result.post.accountId, sharedId);
+  assert.equal(calls.addUploadedPosts.length, 1, 'the TikTok draft cannot satisfy a YouTube replay');
+  assert.equal(calls.addUploadedPosts[0].defaults.provider, 'youtube');
 });
 
 test('unknown providers fail closed before any account or media work', async () => {

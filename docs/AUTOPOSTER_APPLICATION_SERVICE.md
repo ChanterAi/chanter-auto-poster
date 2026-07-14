@@ -11,12 +11,14 @@ for that coordination is now:
 src/autoposterApplicationService.js
 ```
 
-This boundary is TikTok-only. It does not add an Instagram, YouTube, LinkedIn,
-or generic provider integration. It does not activate the older P1A
+Part 1 introduced this boundary for TikTok. The current boundary is
+provider-aware for TikTok and for YouTube when the implemented private-only
+YouTube provider is fully configured. It does not add an Instagram, LinkedIn,
+or generic provider integration, and it does not activate the older P1A
 `src/runtime/` mapping adapter; that adapter remains pure, read-only, and
 outside the active P1B control path. None of these application operations
 publishes content or calls a provider. Scheduler claiming and the existing
-TikTok publishing boundary remain separate and unchanged.
+TikTok/YouTube provider boundaries remain separate.
 
 Part 1 is additive: no Firestore migration, destructive backfill, UI redesign,
 push, deployment, or live publishing is part of this work.
@@ -29,9 +31,9 @@ push, deployment, or live publishing is part of this work.
 | **DUPLICATED** | Admin `/upload`, client upload, and P1B Runtime `/schedule` independently resolved accounts, validated timestamps, created jobs, and applied schedules. Queue/status projections and retry-reset patches also existed in more than one controller. | Route all supported product actions through the application service while leaving transport/rendering concerns in controllers. |
 | **ROUTE-EMBEDDED** | Browser routes selected active/all queue scope, resolved multi-channel plans, performed media checks, and assembled bulk-delete truth. Runtime routes separately owned bounded listing, status views, explicit-time validation, idempotency lookup, and create-then-schedule behavior. | Controllers authenticate, build context, translate input/output, and render; the service owns the product operation. |
 | **STORAGE-EMBEDDED** | `addUploadedPosts` owns media persistence/fallback, campaign child construction, duplicate warnings, initial approval, and the stored job shape. `updatePost`, `autoSchedulePosts`, `applyExplicitSchedule`, and `reschedulePendingQueue` own existing scheduling writes. | Keep low-level persistence in storage. The service coordinates these primitives and reports partial failure truthfully. |
-| **TIKTOK-SPECIFIC** | Account identity uses TikTok account/open-id fields, new intake is video-only, and current jobs default to `platform: "tiktok"`. | Make the current contract explicit as `platform: "tiktok"` and `provider: "tiktok"`; reject other providers. Do not build provider abstractions in Part 1. |
+| **PROVIDER-SCOPED** | Account identity is an exact provider/account pair. TikTok legacy records may use TikTok open-id aliases and a missing legacy provider defaults to TikTok; YouTube records use provider-native channel identity and private-only metadata. Both implemented scheduling paths are video-only. | Preserve exact provider/account identity. Keep TikTok aliases and settings scoped to TikTok, keep YouTube metadata scoped to YouTube, and reject unsupported or unconfigured providers. |
 | **SAFE TO CONSOLIDATE** | Queue listing, status, media validation, scheduling, approval/revocation, deletion, bulk deletion, the existing manual retry/reset, and existing queue rescheduling all have reusable primitives. | Expose only these real operations through `autoposterApplicationService.js`. |
-| **OUT OF SCOPE** | Provider integrations, workspace tenancy, subscriptions, UI changes, auth replacement, scheduler/provider publishing changes, automatic approval, migration, and activation of the P1A adapter. | Keep these dormant or unchanged. |
+| **OUT OF SCOPE** | Provider integrations, replacement of the existing workspace/entitlement model, subscriptions, UI changes, auth replacement, scheduler/provider publishing changes, automatic approval, migration, and activation of the P1A adapter. | Preserve the existing authority boundaries and keep these otherwise dormant or unchanged. |
 
 The highest-risk pre-consolidation gap was Runtime idempotency: it used a
 read-then-create lookup and applied the schedule in a later write. The shared
@@ -52,10 +54,10 @@ Every operation accepts a structured context, normalized by
 {
   userId,          // authenticated queue owner; never trust a request-body override
   actorId,         // human or runtime actor for audit metadata; defaults to userId
-  accountId,       // TikTok channel scope; may be empty only for operations that allow all owned channels
+  accountId,       // exact opaque provider-account scope; may be empty only for all-account reads
   source,          // "website" | "runtime" | "internal_worker"
   correlationId,  // caller trace/correlation identifier when available
-  workspaceId,     // optional reserved slot; workspace tenancy is not implemented
+  workspaceId,     // requested workspace; resolved and authorized server-side
   approval: { approvedBy } | null,
   idempotency: { key }
 }
@@ -65,11 +67,13 @@ Context rules:
 
 - `userId` comes from the authenticated website/client session or the
   server-side Runtime token mapping, never from an untrusted payload.
-- `accountId` is rechecked against the owner's TikTok accounts by operations
-  that require a channel.
-- `workspaceId` is accepted only as a future-compatible slot. It is not an
-  authorization boundary, is not persisted as tenancy proof, and must not be
-  presented as implemented multi-tenancy.
+- `accountId` is opaque and case-sensitive. Operations that require a channel
+  preserve its exact bytes and recheck it against the owner's canonical
+  TikTok/YouTube account registry; they do not trim or repair it.
+- A requested `workspaceId` is never authoritative by itself. Commercial
+  context resolution verifies server-side workspace ownership and provides the
+  workspace scope used by account reads; legacy owner records are accepted only
+  when that resolved scope explicitly allows them.
 - A Runtime schedule requires an idempotency key and cannot use context
   approval to self-approve. Website approval is honored only when it represents
   the existing explicit human action.
@@ -82,9 +86,11 @@ response shaping stays outside this module.
 
 | Operation | Existing behavior preserved |
 | --- | --- |
+| `listConnectedAccounts(context, { provider? })` | Returns safe canonical account views for the resolved owner/workspace; credentials, scopes, and raw provider payloads are excluded. |
+| `validateConnectedAccount(context, { provider, accountId })` | Revalidates the exact canonical ID, workspace, provider, connection state, and publishing readiness with stable typed refusals before Operator persistence or scheduling. |
 | `listQueue(context, { accountId?, limit? })` | Checks optional owned-account scope, applies a bounded limit, returns items, counts, total-in-scope, and scope without treating an empty queue as a storage error. |
 | `getPostStatus(context, { postId, accountId? })` | Uses owner/account-scoped `storage.getPost`; missing and non-owned posts retain the same non-probing not-found result. |
-| `validateMedia(context, input)` | Delegates acceptance to `mediaPolicy.js`; TikTok remains video-only and public URLs remain HTTPS plus MP4/MOV/WebM only. |
+| `validateMedia(context, input)` | Delegates acceptance to `mediaPolicy.js`; the implemented TikTok and YouTube scheduling paths remain video-only, and public URLs remain HTTPS plus MP4/MOV/WebM only. |
 | `schedulePost(context, input)` | Resolves owned connected accounts, validates media and the existing automatic/explicit/browser-local/Max modes, plus the already-supported human-confirmed live-test plan, creates through `addUploadedPosts`, and schedules through existing storage primitives. It never publishes. |
 | `approvePost(context, { postId, accountId?, approvedBy? })` | Reuses the existing reviewable-status approval write. Approval records permission; it does not publish. |
 | `revokeApproval(context, { postId, accountId? })` | Clears the existing approval fields only for reviewable jobs, preserving fail-closed worker behavior. |
@@ -109,10 +115,10 @@ through the service use the existing stored shape plus additive metadata:
 
 | Field group | Canonical meaning |
 | --- | --- |
-| Identity | `id`, `userId`, `accountId`, TikTok account display/open-id fields |
-| Provider | `platform: "tiktok"`, `provider: "tiktok"` |
+| Identity | `id`, `userId`, exact `accountId`, provider-native display fields, and `connectedAccountId`; TikTok open-id aliases are populated only for TikTok jobs |
+| Provider | Explicit `platform` / `provider` identity for TikTok or configured YouTube; a missing legacy provider defaults to TikTok and an explicit unknown provider fails closed |
 | Origin/audit | `creationSource`, `createdBy`, `correlationId` |
-| Media/content | Existing media reference/type/source fields, `caption`, `hashtags`, and safe TikTok settings |
+| Media/content | Existing media reference/type/source fields and provider-scoped metadata: TikTok caption/hashtags/settings or bounded private-only YouTube title/description metadata |
 | Scheduling | Firestore `scheduledAt`; mapper/API projections expose UTC ISO time; `status` is the queue state |
 | Queue status | Existing `pending`, `scheduled`, `processing`, `ready`, `posted`, or `failed`; legacy `publishing` reads as `processing` and no provider state is invented |
 | Approval | Stored `approvedAt` and `approvedBy`; mapped `approved` and `approvalState` are derived from a valid approval timestamp |
@@ -121,9 +127,11 @@ through the service use the existing stored shape plus additive metadata:
 | Lifecycle | Existing `createdAt`, `updatedAt`, campaign/order metadata, and safe duplicate warning |
 
 For an idempotent request, `schedulePost` supports exactly one owned account and
-derives the document ID from `userId + accountId + idempotencyKey`. Storage uses
-create-only semantics for that deterministic ID. Existing generic and Runtime
-idempotency fields are checked first so older P1B jobs remain replay-safe.
+derives the document ID from `workspaceId + userId + provider + exact accountId +
+idempotencyKey`. The usage ledger key carries the same provider/account target
+scope. Storage uses create-only semantics for that deterministic ID. Existing
+generic and Runtime idempotency fields are checked first within the matching
+provider/account scope so older same-provider P1B jobs remain replay-safe.
 
 No existing document is rewritten. `postsMapper.js` reads provider/platform
 and idempotency aliases compatibly, defaults legacy provider identity to
@@ -139,7 +147,7 @@ Website routes -------> storage/media/schedule helpers -------> Firestore posts
 Client routes --------> storage/media/schedule helpers -------> Firestore posts
 P1B Runtime routes ---> separate orchestration ---------------> Firestore posts
 P1A mapping adapter --> pure/read-only and inactive
-Scheduler -----------> claim/approval/provider boundary ------> TikTok
+Scheduler -----------> claim/approval/provider dispatch ------> TikTok / configured YouTube
 ```
 
 After consolidation:
@@ -153,12 +161,13 @@ P1B Runtime controller ---/          |
                                       +--> the same Firestore posts queue
 
 P1A mapping adapter --> remains pure/read-only and inactive
-Scheduler -----------> unchanged claim/approval/provider boundary --> TikTok
+Scheduler -----------> unchanged claim/approval/provider dispatch --> TikTok / configured YouTube
 ```
 
-Future controlled entry points must use the same application operations. A
-future provider may be added behind an explicit reviewed contract, but this
-phase accepts only TikTok and adds no provider implementation.
+Future controlled entry points must use the same application operations. The
+current service accepts TikTok and fully configured private-only YouTube; any
+additional provider still requires an explicit reviewed contract. This work
+adds no provider implementation and does not prove a live provider publish.
 
 The existing `scripts/live-publish-test.js` CLI is also a transport adapter to
 `schedulePost`; its precomputed plan mode is restricted to `internal_worker`
@@ -171,8 +180,9 @@ Required behavioral proof:
 
 - Equivalent website and Runtime scheduling reaches `schedulePost` and writes
   the same canonical queue-item shape to the same `posts` collection.
-- Runtime replay with the same owner, account, and idempotency key returns one
-  deterministic item, including concurrent create attempts.
+- Runtime replay with the same workspace, owner, provider, exact account, and
+  idempotency key returns one deterministic item, including concurrent create
+  attempts.
 - Runtime scheduling remains unapproved; approval and scheduler claim checks
   remain fail-closed.
 - Media, owner/account isolation, truthful delete/partial-delete, retry reset,
@@ -191,4 +201,5 @@ git status --short --branch
 ```
 
 Passing these checks proves local contract and regression coverage only. It
-does not prove deployment readiness or a successful live TikTok publish.
+does not prove deployment readiness or a successful live TikTok or YouTube
+provider publish.

@@ -445,3 +445,51 @@ test('verified legacy accounts seed capacity and only bind to the verified defau
     (error) => error.code === 'account_already_assigned'
   );
 });
+
+test('connected-account reference inspection is owner-scoped, secret-free, and never lazily migrates legacy auth', async (t) => {
+  const { db, storage, cleanup } = installStorage();
+  t.after(cleanup);
+  db.set('tiktokAccounts', encodeURIComponent('Case-Sensitive'), {
+    userId: 'owner',
+    workspaceId: 'workspace-a',
+    accountId: 'Case-Sensitive',
+    open_id: 'Case-Sensitive',
+    access_token: 'CANARY-REFERENCE-ACCESS-TOKEN'
+  });
+  db.set('youtubeAccounts', encodeURIComponent('UC-exact'), {
+    userId: 'owner',
+    workspaceId: 'workspace-b',
+    accountId: 'UC-exact',
+    channelId: 'UC-exact',
+    credential: { ct: 'CANARY-REFERENCE-CIPHERTEXT' }
+  });
+  db.set('tiktokAccounts', encodeURIComponent('other-owner'), {
+    userId: 'someone-else',
+    workspaceId: 'workspace-a',
+    accountId: 'other-owner',
+    access_token: 'CANARY-OTHER-OWNER-TOKEN'
+  });
+  db.set('config', 'tiktokAuth', {
+    connected: true,
+    open_id: 'legacy-not-migrated',
+    access_token: 'CANARY-LEGACY-TOKEN'
+  });
+
+  const before = db.records('tiktokAccounts').size;
+  const canonicalTikTok = await storage.getCanonicalTikTokAccounts('owner');
+  const canonicalExact = await storage.getCanonicalTikTokAccount('owner', 'Case-Sensitive');
+  const canonicalWrongCase = await storage.getCanonicalTikTokAccount('owner', 'case-sensitive');
+  const references = await storage.listConnectedAccountReferencesForOwner('owner');
+  assert.deepEqual(canonicalTikTok.map((account) => account.accountId), ['Case-Sensitive']);
+  assert.equal(canonicalExact.accountId, 'Case-Sensitive');
+  assert.equal(canonicalWrongCase, null);
+  assert.deepEqual(references, [
+    { provider: 'tiktok', accountId: 'Case-Sensitive', workspaceId: 'workspace-a' },
+    { provider: 'youtube', accountId: 'UC-exact', workspaceId: 'workspace-b' }
+  ]);
+  assert.equal(db.records('tiktokAccounts').size, before, 'canonical inspection cannot create a legacy account doc');
+  const serialized = JSON.stringify(references);
+  assert.equal(serialized.includes('CANARY-'), false);
+  assert.equal(serialized.includes('access_token'), false);
+  assert.equal(serialized.includes('credential'), false);
+});

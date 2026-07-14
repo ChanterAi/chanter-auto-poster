@@ -12,7 +12,8 @@ const {
   AutoPosterApplicationError,
   createAutoPosterApplicationService,
   createExecutionContext,
-  deterministicPostId
+  deterministicPostId,
+  targetScopedIdempotencyKey
 } = require('../src/autoposterApplicationService');
 
 function makeHarness({ planId = 'legacy_full_access' } = {}) {
@@ -37,6 +38,13 @@ function makeHarness({ planId = 'legacy_full_access' } = {}) {
   let failNextGetPost = false;
 
   const storage = {
+    async getCanonicalTikTokAccount(userId, accountId) {
+      if (userId !== 'owner') return null;
+      return accounts.find((account) => account.accountId === accountId) || null;
+    },
+    async getCanonicalTikTokAccounts(userId) {
+      return userId === 'owner' ? accounts : [];
+    },
     async getTikTokAccount(userId, accountId) {
       if (userId !== 'owner') return null;
       return accounts.find((account) => account.accountId === accountId) || null;
@@ -439,6 +447,10 @@ test('runtime idempotency uses one deterministic create-only queue document', as
   assert.equal(second.duplicate, true);
   assert.equal(harness.calls.add.length, 1);
   assert.equal(
+    harness.calls.add[0].defaults.usageReservation.idempotencyKey,
+    targetScopedIdempotencyKey('tiktok', 'account-a', 'same-key')
+  );
+  assert.equal(
     first.post.id,
     deterministicPostId('owner', 'account-a', 'same-key', defaultWorkspaceId('owner'))
   );
@@ -450,10 +462,28 @@ test('runtime idempotency uses one deterministic create-only queue document', as
   assert.equal(terminalDuplicate.post.status, 'posted');
 });
 
+test('provider is part of durable document and usage idempotency scope', () => {
+  const workspaceId = defaultWorkspaceId('owner');
+  assert.notEqual(
+    deterministicPostId('owner', 'shared-id', 'same-key', workspaceId, 'tiktok'),
+    deterministicPostId('owner', 'shared-id', 'same-key', workspaceId, 'youtube')
+  );
+  assert.notEqual(
+    targetScopedIdempotencyKey('tiktok', 'shared-id', 'same-key'),
+    targetScopedIdempotencyKey('youtube', 'shared-id', 'same-key')
+  );
+});
+
 test('a concurrent Firestore create race returns the already-created scheduled item', async () => {
   let existing = null;
   let addCalls = 0;
   const storage = {
+    async getCanonicalTikTokAccount() {
+      return {
+        accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok',
+        username: 'creator_a', connected: true
+      };
+    },
     async getTikTokAccount() {
       return {
         accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok',
