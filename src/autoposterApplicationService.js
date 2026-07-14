@@ -33,6 +33,8 @@ const INTERNAL_PLAN_DUE_GRACE_MS = 60_000;
 const ISO_WITH_ZONE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
 const RETRYABLE_QUEUE_STATUSES = new Set(['failed']);
 const EDIT_BLOCKED_QUEUE_STATUSES = new Set(['processing', 'posted', 'outcome_unknown']);
+const RUNTIME_SCHEDULE_ACTION = 'autoposter.post.schedule';
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
 
 class AutoPosterApplicationError extends Error {
   constructor(message, { status = 400, code = 'validation_failed', details = {} } = {}) {
@@ -74,8 +76,7 @@ function createExecutionContext(input = {}) {
   const approvedBy = String((input.approval && input.approval.approvedBy) || '').trim();
   const idempotencyKey = String(
     (input.idempotency && input.idempotency.key) || input.idempotencyKey || ''
-  ).trim();
-
+  );
   return Object.freeze({
     userId,
     actorId: String(input.actorId || userId).trim() || userId,
@@ -86,6 +87,9 @@ function createExecutionContext(input = {}) {
     // Requested workspace identity is never authoritative by itself. Every
     // operation resolves and verifies membership server-side before storage.
     workspaceId: String(input.workspaceId || '').trim() || null,
+    rawWorkspaceId: String(input.rawWorkspaceId === undefined
+      ? (input.workspaceId || '')
+      : input.rawWorkspaceId),
     commercialContext: input.commercialContext || null,
     source,
     correlationId: String(input.correlationId || '').trim(),
@@ -207,6 +211,61 @@ function isAlreadyExistsError(error) {
   return code === 6 || code === '6' || code === 'already-exists' || code === 'ALREADY_EXISTS';
 }
 
+function runtimeScheduleMetadata(input = {}, { required = false, allowBindingMismatch = false } = {}) {
+  const missionId = String(input.runtimeMissionId || input.missionId || '');
+  const action = String(input.runtimeAction || input.action || '');
+  const missionPayloadHash = String(input.runtimePayloadHash || input.missionPayloadHash || '');
+  const anyPresent = Boolean(missionId || action || missionPayloadHash);
+  if (!required && !anyPresent) {
+    return { missionId: '', action: '', missionPayloadHash: '' };
+  }
+  if (
+    !missionId
+    || missionId !== missionId.trim()
+    || (!allowBindingMismatch && action !== RUNTIME_SCHEDULE_ACTION)
+    || (allowBindingMismatch && (!action || action !== action.trim()))
+    || !SHA256_HEX_PATTERN.test(missionPayloadHash)
+  ) {
+    throw new AutoPosterApplicationError('Runtime mission recovery metadata is invalid.', {
+      status: 409,
+      code: 'recovery_scope_mismatch'
+    });
+  }
+  return { missionId, action, missionPayloadHash };
+}
+
+function runtimePostMatchesScope(post, {
+  workspaceId,
+  accountId,
+  provider,
+  idempotencyKey,
+  metadata
+}) {
+  const storedWorkspaceId = String(post.workspaceId || '');
+  const storedKey = String(post.runtimeIdempotencyKey || post.idempotencyKey || '');
+  const hasStoredMetadata = Boolean(
+    post.runtimeMissionId || post.runtimeAction || post.runtimePayloadHash
+  );
+  const hasRequestedMetadata = Boolean(
+    metadata.missionId || metadata.action || metadata.missionPayloadHash
+  );
+  const storedProvider = hasStoredMetadata || hasRequestedMetadata
+    ? String(post.provider || '')
+    : providers.normalizeStoredProviderId(post.provider || post.platform).providerId;
+  const metadataMatches = !hasStoredMetadata && !hasRequestedMetadata
+    ? true
+    : post.runtimeMissionId === metadata.missionId
+      && post.runtimeAction === metadata.action
+      && post.runtimePayloadHash === metadata.missionPayloadHash;
+  const workspaceMatches = storedWorkspaceId === workspaceId
+    || (!hasRequestedMetadata && !storedWorkspaceId);
+  return workspaceMatches
+    && post.accountId === accountId
+    && storedProvider === provider
+    && storedKey === idempotencyKey
+    && metadataMatches;
+}
+
 function createAutoPosterApplicationService(dependencies = {}) {
   const storageAdapter = dependencies.storage || storage;
   const policy = dependencies.mediaPolicy || mediaPolicy;
@@ -214,6 +273,10 @@ function createAutoPosterApplicationService(dependencies = {}) {
   const maxSchedulePlanner = dependencies.computeMaxSchedulePlan || computeMaxSchedulePlan;
   const dailySchedulePlanner = dependencies.computeDailySchedulePlan || computeDailySchedulePlan;
   const commercialAdapter = dependencies.commercialService || commercialService;
+  const injectFailure = typeof dependencies.failureInjector === 'function'
+    ? dependencies.failureInjector
+    : () => {};
+  const inFlightRuntimeCreates = new Map();
 
   async function resolveCommercialContext(context) {
     if (
@@ -794,6 +857,9 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   async function schedulePost(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
+    const runtimeMetadata = context.source === 'runtime'
+      ? runtimeScheduleMetadata(input)
+      : { missionId: '', action: '', missionPayloadHash: '' };
     // Provider gate: a request without a provider targets TikTok (the only
     // active provider); an explicit provider must resolve through the
     // registry and be schedulable. Unknown and non-active providers fail
@@ -840,6 +906,12 @@ function createAutoPosterApplicationService(dependencies = {}) {
     if (context.source === 'runtime' && !idempotencyKey) {
       throw new AutoPosterApplicationError('idempotencyKey is required.');
     }
+    if (context.source === 'runtime' && idempotencyKey !== idempotencyKey.trim()) {
+      throw new AutoPosterApplicationError(
+        'idempotencyKey must be canonical and contain no surrounding whitespace.',
+        { status: 409, code: 'recovery_scope_mismatch' }
+      );
+    }
     if (idempotencyKey && accounts.length !== 1) {
       throw new AutoPosterApplicationError('An idempotent schedule request must target exactly one publishing channel.');
     }
@@ -863,14 +935,41 @@ function createAutoPosterApplicationService(dependencies = {}) {
     if (idempotencyKey) {
       const existingPosts = await storageAdapter.getPosts(
         context.userId,
-        accounts[0].accountId,
+        undefined,
         commercialContext.workspaceScope
       );
-      const existing = existingPosts.find((post) =>
-        providers.normalizeStoredProviderId(post.provider || post.platform).providerId === provider
-        && (post.idempotencyKey === idempotencyKey || post.runtimeIdempotencyKey === idempotencyKey)
+      const keyMatches = existingPosts.filter((post) =>
+        post.idempotencyKey === idempotencyKey || post.runtimeIdempotencyKey === idempotencyKey
       );
-      if (existing) return duplicateResult(existing);
+      const exactMatches = keyMatches.filter((post) => runtimePostMatchesScope(post, {
+        workspaceId: commercialContext.workspace.workspaceId,
+        accountId: accounts[0].accountId,
+        provider,
+        idempotencyKey,
+        metadata: runtimeMetadata
+      }));
+      const exactRecoveryMetadata = Boolean(
+        runtimeMetadata.missionId
+        || runtimeMetadata.action
+        || runtimeMetadata.missionPayloadHash
+      );
+      if (exactRecoveryMetadata && keyMatches.length !== exactMatches.length) {
+        throw new AutoPosterApplicationError(
+          'This idempotency key is already bound to a different exact execution scope.',
+          { status: 409, code: 'recovery_scope_mismatch' }
+        );
+      }
+      if (exactMatches.length > 1) {
+        throw new AutoPosterApplicationError(
+          'Multiple queue records claim the same exact runtime execution scope.',
+          {
+            status: 409,
+            code: 'reconciliation_required',
+            details: { conflictingPostIds: exactMatches.map((post) => post.id) }
+          }
+        );
+      }
+      if (exactMatches.length === 1) return duplicateResult(exactMatches[0]);
       // Preserve replay for pre-provider-scope deterministic documents without
       // allowing a same-raw-id post from another provider to satisfy it.
       const legacyId = legacyDeterministicPostId(
@@ -907,6 +1006,18 @@ function createAutoPosterApplicationService(dependencies = {}) {
         commercialContext.workspaceScope
       );
       if (deterministicExisting) {
+        if (!runtimePostMatchesScope(deterministicExisting, {
+          workspaceId: commercialContext.workspace.workspaceId,
+          accountId: accounts[0].accountId,
+          provider,
+          idempotencyKey,
+          metadata: runtimeMetadata
+        })) {
+          throw new AutoPosterApplicationError(
+            'The deterministic queue record does not match this exact execution scope.',
+            { status: 409, code: 'recovery_scope_mismatch' }
+          );
+        }
         return duplicateResult(deterministicExisting);
       }
     }
@@ -964,6 +1075,9 @@ function createAutoPosterApplicationService(dependencies = {}) {
       idempotencyKey,
       runtimeIdempotencyKey: context.source === 'runtime' ? idempotencyKey : '',
       runtimeScheduledBy: context.source === 'runtime' ? requestedBy : '',
+      runtimeMissionId: context.source === 'runtime' ? runtimeMetadata.missionId : '',
+      runtimeAction: context.source === 'runtime' ? runtimeMetadata.action : '',
+      runtimePayloadHash: context.source === 'runtime' ? runtimeMetadata.missionPayloadHash : '',
       scheduledAt: schedule.mode === 'explicit' ? schedule.scheduledAt : '',
       scheduleEntries: schedule.mode === 'recurring_daily' ? schedule.plan.jobs : undefined,
       scheduleSeries: schedule.mode === 'recurring_daily' ? schedule.plan.series : undefined,
@@ -1010,11 +1124,55 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
     let created;
     try {
-      created = await storageAdapter.addUploadedPosts(
-        context.userId,
-        Array.isArray(input.files) ? input.files : [],
-        creationDefaults
-      );
+      const existingCreate = deterministicId
+        ? inFlightRuntimeCreates.get(deterministicId)
+        : null;
+      if (existingCreate) {
+        const [concurrentPost] = await existingCreate;
+        if (!concurrentPost || !runtimePostMatchesScope(concurrentPost, {
+          workspaceId: commercialContext.workspace.workspaceId,
+          accountId: firstAccount.accountId,
+          provider,
+          idempotencyKey,
+          metadata: runtimeMetadata
+        })) {
+          throw new AutoPosterApplicationError(
+            'The concurrent queue result does not match this exact execution scope.',
+            { status: 409, code: 'recovery_scope_mismatch' }
+          );
+        }
+        return duplicateResult(concurrentPost);
+      }
+      const createPosts = async () => {
+        injectFailure('before_autoposter_durable_create', {
+          missionId: runtimeMetadata.missionId,
+          idempotencyKey,
+          documentId: deterministicId
+        });
+        const result = await storageAdapter.addUploadedPosts(
+          context.userId,
+          Array.isArray(input.files) ? input.files : [],
+          creationDefaults
+        );
+        injectFailure('after_autoposter_durable_create_before_response', {
+          missionId: runtimeMetadata.missionId,
+          idempotencyKey,
+          documentId: deterministicId,
+          createdPostIds: Array.isArray(result)
+            ? result.map((post) => post && post.id).filter(Boolean)
+            : []
+        });
+        return result;
+      };
+      const creation = createPosts();
+      if (deterministicId) inFlightRuntimeCreates.set(deterministicId, creation);
+      try {
+        created = await creation;
+      } finally {
+        if (deterministicId && inFlightRuntimeCreates.get(deterministicId) === creation) {
+          inFlightRuntimeCreates.delete(deterministicId);
+        }
+      }
     } catch (error) {
       if (deterministicId && isAlreadyExistsError(error)) {
         const existing = await storageAdapter.getPost(
@@ -1023,7 +1181,21 @@ function createAutoPosterApplicationService(dependencies = {}) {
           firstAccount.accountId,
           commercialContext.workspaceScope
         );
-        if (existing) return duplicateResult(existing);
+        if (existing) {
+          if (!runtimePostMatchesScope(existing, {
+            workspaceId: commercialContext.workspace.workspaceId,
+            accountId: firstAccount.accountId,
+            provider,
+            idempotencyKey,
+            metadata: runtimeMetadata
+          })) {
+            throw new AutoPosterApplicationError(
+              'The concurrently created queue record does not match this exact execution scope.',
+              { status: 409, code: 'recovery_scope_mismatch' }
+            );
+          }
+          return duplicateResult(existing);
+        }
       }
       if (error && error.code && String(error.code).includes('limit')) {
         throw new AutoPosterApplicationError(error.message, {
@@ -1397,6 +1569,124 @@ function createAutoPosterApplicationService(dependencies = {}) {
     };
   }
 
+  async function reconcileRuntimeSchedule(contextInput, input = {}) {
+    const context = createExecutionContext(contextInput);
+    if (context.source !== 'runtime') {
+      throw new AutoPosterApplicationError('Runtime reconciliation is restricted to the runtime control surface.', {
+        status: 403,
+        code: 'forbidden'
+      });
+    }
+    const idempotencyKey = context.idempotency.key;
+    if (!idempotencyKey) {
+      throw new AutoPosterApplicationError('idempotencyKey is required for reconciliation.');
+    }
+    const metadata = runtimeScheduleMetadata(input, { required: true, allowBindingMismatch: true });
+    const provider = String(input.provider || '');
+    const accountId = String(input.accountId || '');
+    const scheduledAt = String(input.scheduledAt || '');
+    if (!ISO_WITH_ZONE_PATTERN.test(scheduledAt) || !Number.isFinite(Date.parse(scheduledAt))) {
+      throw new AutoPosterApplicationError('Recovery schedule evidence is invalid.', {
+        status: 409,
+        code: 'recovery_evidence_invalid'
+      });
+    }
+
+    const commercialContext = await resolveCommercialContext(context);
+    const posts = await storageAdapter.getPosts(context.userId, undefined, undefined);
+    const missionMatches = posts.filter((post) =>
+      String(post.runtimeMissionId || '') === metadata.missionId
+    );
+    if (missionMatches.length === 0) {
+      return {
+        outcome: 'not_found',
+        count: 0,
+        unique: true,
+        safeToReuse: false,
+        approvalState: 'not_started',
+        publishingState: 'not_started',
+        evidenceStatus: 'not_found'
+      };
+    }
+
+    const mismatchResult = (outcome) => ({
+      outcome,
+      count: missionMatches.length,
+      unique: missionMatches.length === 1,
+      safeToReuse: false,
+      approvalState: 'unknown',
+      publishingState: 'not_started',
+      evidenceStatus: outcome
+    });
+    if (missionMatches.some((post) =>
+      String(post.runtimeIdempotencyKey || '') !== idempotencyKey
+    )) {
+      return mismatchResult('idempotency_mismatch');
+    }
+    if (missionMatches.some((post) =>
+      String(post.runtimePayloadHash || '') !== metadata.missionPayloadHash
+    )) {
+      return mismatchResult('payload_mismatch');
+    }
+    const exactWorkspaceId = context.rawWorkspaceId || '';
+    if (missionMatches.some((post) =>
+      String(post.runtimeAction || '') !== metadata.action
+      || String(post.workspaceId || '') !== exactWorkspaceId
+      || String(post.provider || '') !== provider
+      || String(post.accountId || '') !== accountId
+      || String(post.scheduledAt || '') !== scheduledAt
+    )) {
+      return mismatchResult('scope_mismatch');
+    }
+    const exactMatches = missionMatches;
+    if (exactMatches.length > 1) {
+      return {
+        outcome: 'conflict',
+        count: exactMatches.length,
+        unique: false,
+        safeToReuse: false,
+        approvalState: 'unknown',
+        publishingState: 'unknown',
+        evidenceStatus: 'conflict',
+        conflictingPostIds: exactMatches.map((post) => post.id).sort()
+      };
+    }
+
+    const post = exactMatches[0];
+    const safePostId = typeof post.id === 'string' && post.id && post.id === post.id.trim();
+    const safeSchedule = typeof post.scheduledAt === 'string'
+      && post.scheduledAt === scheduledAt;
+    const safeToReuse = Boolean(
+      safePostId
+      && safeSchedule
+      && post.status === 'scheduled'
+      && post.approved === false
+    );
+    if (!safeToReuse) {
+      return {
+        outcome: 'unique',
+        count: 1,
+        unique: true,
+        safeToReuse: false,
+        approvalState: post.approved ? 'approved' : 'unknown',
+        publishingState: ['processing', 'posted', 'failed'].includes(post.status)
+          ? post.status
+          : 'unknown',
+        evidenceStatus: 'invalid'
+      };
+    }
+    return {
+      outcome: 'unique',
+      count: 1,
+      unique: true,
+      safeToReuse: true,
+      approvalState: 'required',
+      publishingState: 'blocked_until_human_approval',
+      evidenceStatus: 'authoritative',
+      post
+    };
+  }
+
   async function listConnectedAccounts(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
     const commercialContext = await resolveCommercialContext(context);
@@ -1487,6 +1777,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
     listConnectedAccounts,
     listQueue,
     markPostManually,
+    reconcileRuntimeSchedule,
     rescheduleQueue,
     retryPost,
     revokeApproval,

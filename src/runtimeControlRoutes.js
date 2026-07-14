@@ -73,7 +73,7 @@ function runtimeContext(req, {
     userId: req.runtimeUserId,
     actorId,
     accountId,
-    workspaceId: String(workspaceId || req.get('x-chanter-workspace-id') || '').trim(),
+    workspaceId: String(workspaceId || req.get('x-chanter-workspace-id') || ''),
     source: 'runtime',
     correlationId: req.get('x-request-id') || req.get('x-correlation-id') || '',
     idempotency: { key: idempotencyKey }
@@ -223,6 +223,31 @@ router.post('/media/validate', applicationRoute(async (req, res) => {
   res.json({ ok: true, ...validation });
 }));
 
+// Read-only recovery contract. It returns zero/one/conflicting exact durable
+// queue records and never creates, approves, publishes, or repairs anything.
+router.post('/schedule/reconcile', applicationRoute(async (req, res) => {
+  const body = req.body || {};
+  const workspaceId = String(body.workspaceId || req.get('x-chanter-workspace-id') || '');
+  const accountId = String(body.accountId || '');
+  const idempotencyKey = String(body.idempotencyKey || '');
+  const result = await applicationService.reconcileRuntimeSchedule(
+    runtimeContext(req, { accountId, idempotencyKey, workspaceId }),
+    {
+      provider: String(body.provider || ''),
+      accountId,
+      scheduledAt: String(body.scheduledAt || ''),
+      missionId: String(body.missionId || ''),
+      action: String(body.action || ''),
+      missionPayloadHash: String(body.missionPayloadHash || '')
+    }
+  );
+  res.json({
+    ok: true,
+    ...result,
+    ...(result.post ? { post: postStatusView(result.post) } : {})
+  });
+}));
+
 // Controlled scheduling creates one unapproved draft. Runtime approval is
 // permission to invoke this operation, never AutoPoster's human publish gate.
 router.post('/schedule', applicationRoute(async (req, res) => {
@@ -231,7 +256,7 @@ router.post('/schedule', applicationRoute(async (req, res) => {
   // and whitespace mismatches before queue creation.
   const accountId = String(body.accountId || '');
   const mediaUrl = String(body.mediaUrl || '').trim();
-  const idempotencyKey = String(body.idempotencyKey || '').trim();
+  const idempotencyKey = String(body.idempotencyKey || '');
   const requestedBy = String(body.requestedBy || '').trim() || 'agent-runtime';
   const workspaceId = String(body.workspaceId || req.get('x-chanter-workspace-id') || '').trim();
   // Optional provider selection (defaults to TikTok for full backward
@@ -254,6 +279,9 @@ router.post('/schedule', applicationRoute(async (req, res) => {
         ? { title: body.title, description: body.description }
         : undefined,
       requestedBy,
+      runtimeMissionId: body.missionId,
+      runtimeAction: body.action,
+      runtimePayloadHash: body.missionPayloadHash,
       requireSingle: true,
       schedule: {
         mode: 'explicit',

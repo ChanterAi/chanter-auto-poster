@@ -15,6 +15,7 @@ const express = require('express');
 const config = require('../src/config');
 const storage = require('../src/storage');
 const applicationService = require('../src/autoposterApplicationService');
+const { defaultWorkspaceId } = require('../src/workspaceService');
 
 const TOKEN = 'test-runtime-token-1234567890';
 
@@ -34,7 +35,9 @@ function makePost(overrides = {}) {
   return {
     id: 'post-1',
     userId: 'owner',
+    workspaceId: 'workspace-owner',
     accountId: 'account-a',
+    provider: 'tiktok',
     username: 'creator_a',
     status: 'scheduled',
     scheduledAt: '2026-07-11T09:00:00.000Z',
@@ -51,6 +54,9 @@ function makePost(overrides = {}) {
     lastResult: null,
     runtimeIdempotencyKey: '',
     runtimeScheduledBy: '',
+    runtimeMissionId: '',
+    runtimeAction: '',
+    runtimePayloadHash: '',
     ...overrides
   };
 }
@@ -123,7 +129,12 @@ storage.addUploadedPosts = async (userId, files, defaults) => {
     caption: String(defaults.caption || ''),
     idempotencyKey: defaults.idempotencyKey || '',
     runtimeIdempotencyKey: defaults.runtimeIdempotencyKey || '',
-    runtimeScheduledBy: defaults.runtimeScheduledBy || ''
+    runtimeScheduledBy: defaults.runtimeScheduledBy || '',
+    workspaceId: defaults.workspaceId || '',
+    runtimeMissionId: defaults.runtimeMissionId || '',
+    runtimeAction: defaults.runtimeAction || '',
+    runtimePayloadHash: defaults.runtimePayloadHash || '',
+    provider: defaults.provider || 'tiktok'
   });
   state.posts.push(created);
   return [created];
@@ -354,6 +365,9 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
       caption: 'Launch teaser',
       scheduledAt,
       idempotencyKey: 'idem-100',
+      missionId: 'mission-100',
+      action: 'autoposter.post.schedule',
+      missionPayloadHash: 'a'.repeat(64),
       requestedBy: 'mcp-client'
     }
   });
@@ -387,8 +401,12 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
     body: {
       accountId: 'account-a',
       mediaUrl: 'https://cdn.example.com/new.mp4',
-      scheduledAt: futureIso(120),
-      idempotencyKey: 'idem-100'
+      caption: 'Launch teaser',
+      scheduledAt,
+      idempotencyKey: 'idem-100',
+      missionId: 'mission-100',
+      action: 'autoposter.post.schedule',
+      missionPayloadHash: 'a'.repeat(64)
     }
   });
   assert.equal(duplicate.status, 200);
@@ -397,6 +415,60 @@ test('runtime control routes: auth, scoping, media policy, idempotent scheduling
   assert.equal(duplicateBody.duplicate, true);
   assert.equal(duplicateBody.post.id, scheduleBody.post.id);
   assert.equal(state.addUploadedPostsCalls.length, 1, 'no second queue item for a duplicate key');
+
+  const reconciliationBody = {
+    workspaceId: defaultWorkspaceId('owner'),
+    accountId: 'account-a',
+    provider: 'tiktok',
+    scheduledAt,
+    idempotencyKey: 'idem-100',
+    missionId: 'mission-100',
+    action: 'autoposter.post.schedule',
+    missionPayloadHash: 'a'.repeat(64)
+  };
+  const reconciled = await call('POST', '/api/runtime/schedule/reconcile', {
+    body: reconciliationBody
+  });
+  assert.equal(reconciled.status, 200);
+  const reconciledBody = await reconciled.json();
+  assert.equal(reconciledBody.ok, true);
+  assert.equal(reconciledBody.outcome, 'unique');
+  assert.equal(reconciledBody.safeToReuse, true);
+  assert.equal(reconciledBody.post.id, scheduleBody.post.id);
+  assert.equal(reconciledBody.approvalState, 'required');
+  assert.equal(reconciledBody.publishingState, 'blocked_until_human_approval');
+  assert.equal(state.addUploadedPostsCalls.length, 1, 'read-only reconciliation creates nothing');
+
+  const reconciliationMutations = [
+    ['action', { action: 'autoposter.queue.list' }, 'scope_mismatch'],
+    ['workspace', { workspaceId: ` ${reconciliationBody.workspaceId}` }, 'scope_mismatch'],
+    ['provider', { provider: 'TikTok' }, 'scope_mismatch'],
+    ['account-value', { accountId: 'other-account' }, 'scope_mismatch'],
+    ['account-case', { accountId: 'Account-A' }, 'scope_mismatch'],
+    ['account-whitespace', { accountId: ' account-a' }, 'scope_mismatch'],
+    ['payload', { missionPayloadHash: 'b'.repeat(64) }, 'payload_mismatch'],
+    ['idempotency-key', { idempotencyKey: 'idem-101' }, 'idempotency_mismatch'],
+    ['schedule', { scheduledAt: scheduledAt.replace('Z', '+00:00') }, 'scope_mismatch']
+  ];
+  for (const [label, mutation, expectedOutcome] of reconciliationMutations) {
+    const mismatched = await call('POST', '/api/runtime/schedule/reconcile', {
+      body: { ...reconciliationBody, ...mutation }
+    });
+    assert.equal(mismatched.status, 200, label);
+    const mismatchedBody = await mismatched.json();
+    assert.equal(mismatchedBody.ok, true, label);
+    assert.equal(mismatchedBody.outcome, expectedOutcome, label);
+    assert.equal(mismatchedBody.safeToReuse, false, label);
+    assert.equal(mismatchedBody.post, undefined, label);
+  }
+  const absent = await call('POST', '/api/runtime/schedule/reconcile', {
+    body: { ...reconciliationBody, missionId: 'mission-not-created' }
+  });
+  assert.equal(absent.status, 200);
+  const absentBody = await absent.json();
+  assert.equal(absentBody.outcome, 'not_found');
+  assert.equal(absentBody.post, undefined);
+  assert.equal(state.addUploadedPostsCalls.length, 1);
 
   // ── Scheduling refusals: timestamps, scope, connectivity, media, key ─────
   const refusals = [

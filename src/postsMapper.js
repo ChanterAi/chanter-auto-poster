@@ -307,6 +307,9 @@ function postFromDoc(doc) {
     idempotencyKey: data.idempotencyKey || data.runtimeIdempotencyKey || '',
     runtimeIdempotencyKey: data.runtimeIdempotencyKey || data.idempotencyKey || '',
     runtimeScheduledBy: data.runtimeScheduledBy || '',
+    runtimeMissionId: data.runtimeMissionId || '',
+    runtimeAction: data.runtimeAction || '',
+    runtimePayloadHash: data.runtimePayloadHash || '',
     // Usage linkage contains identifiers and lifecycle state only. Counter
     // documents, subscription overrides, and billing identifiers never ride
     // on queue/API projections.

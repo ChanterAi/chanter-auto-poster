@@ -85,6 +85,7 @@ function makeHarness({ planId = 'legacy_full_access' } = {}) {
           id: defaults.documentId || `post-${++sequence}`,
           data: () => ({
             userId,
+            workspaceId: defaults.workspaceId,
             platform: defaults.provider,
             provider: defaults.provider,
             creationSource: defaults.creationSource,
@@ -93,6 +94,9 @@ function makeHarness({ planId = 'legacy_full_access' } = {}) {
             idempotencyKey: defaults.idempotencyKey,
             runtimeIdempotencyKey: defaults.runtimeIdempotencyKey,
             runtimeScheduledBy: defaults.runtimeScheduledBy,
+            runtimeMissionId: defaults.runtimeMissionId,
+            runtimeAction: defaults.runtimeAction,
+            runtimePayloadHash: defaults.runtimePayloadHash,
             accountId: account.accountId,
             tiktokOpenId: account.tiktokOpenId,
             username: account.username,
@@ -462,6 +466,122 @@ test('runtime idempotency uses one deterministic create-only queue document', as
   assert.equal(terminalDuplicate.post.status, 'posted');
 });
 
+test('runtime reconciliation returns only exact unique durable truth and exposes conflicts', async () => {
+  const harness = makeHarness();
+  const workspaceId = defaultWorkspaceId('owner');
+  const scheduledAt = '2026-07-12T09:00:00.000Z';
+  const idempotencyKey = 'recovery-key';
+  const metadata = {
+    missionId: 'mission-recovery-1',
+    action: 'autoposter.post.schedule',
+    missionPayloadHash: 'a'.repeat(64)
+  };
+  const runtimeContext = context({
+    source: 'runtime',
+    actorId: 'chanter-agent-runtime',
+    accountId: 'account-a',
+    workspaceId,
+    idempotency: { key: idempotencyKey }
+  });
+  const scheduleResult = await harness.service.schedulePost(runtimeContext, {
+    accountId: 'account-a',
+    mediaUrl: 'https://cdn.example.com/recovery.mp4',
+    runtimeMissionId: metadata.missionId,
+    runtimeAction: metadata.action,
+    runtimePayloadHash: metadata.missionPayloadHash,
+    requireSingle: true,
+    schedule: {
+      mode: 'explicit',
+      scheduledAt,
+      requireExplicitTimezone: true,
+      requireFuture: true
+    }
+  });
+  const reconcileInput = {
+    provider: 'tiktok',
+    accountId: 'account-a',
+    scheduledAt,
+    ...metadata
+  };
+
+  const unique = await harness.service.reconcileRuntimeSchedule(runtimeContext, reconcileInput);
+  assert.equal(unique.outcome, 'unique');
+  assert.equal(unique.safeToReuse, true);
+  assert.equal(unique.post.id, scheduleResult.post.id);
+  assert.equal(unique.approvalState, 'required');
+  assert.equal(unique.publishingState, 'blocked_until_human_approval');
+
+  const exactFailureCases = [
+    [runtimeContext, { ...reconcileInput, action: 'autoposter.queue.list' }, 'scope_mismatch'],
+    [context({ ...runtimeContext, workspaceId: 'workspace-other', rawWorkspaceId: 'workspace-other' }), reconcileInput, 'scope_mismatch'],
+    [runtimeContext, { ...reconcileInput, provider: 'youtube' }, 'scope_mismatch'],
+    [context({ ...runtimeContext, accountId: 'account-b' }), { ...reconcileInput, accountId: 'account-b' }, 'scope_mismatch'],
+    [context({ ...runtimeContext, accountId: 'Account-A' }), { ...reconcileInput, accountId: 'Account-A' }, 'scope_mismatch'],
+    [context({ ...runtimeContext, accountId: ' account-a' }), { ...reconcileInput, accountId: ' account-a' }, 'scope_mismatch'],
+    [runtimeContext, { ...reconcileInput, missionPayloadHash: 'b'.repeat(64) }, 'payload_mismatch'],
+    [context({ ...runtimeContext, idempotency: { key: 'different-key' } }), reconcileInput, 'idempotency_mismatch']
+  ];
+  for (const [mutatedContext, mutatedInput, expectedOutcome] of exactFailureCases) {
+    const mismatch = await harness.service.reconcileRuntimeSchedule(mutatedContext, mutatedInput);
+    assert.equal(mismatch.outcome, expectedOutcome);
+    assert.equal(mismatch.safeToReuse, false);
+    assert.equal(mismatch.post, undefined);
+  }
+  const missing = await harness.service.reconcileRuntimeSchedule(
+    context({ ...runtimeContext, idempotency: { key: 'different-key' } }),
+    { ...reconcileInput, missionId: 'mission-not-created' }
+  );
+  assert.equal(missing.outcome, 'not_found');
+  assert.equal(missing.post, undefined);
+  assert.equal(harness.calls.add.length, 1, 'reconciliation and scope refusal never create another queue job');
+
+  harness.posts.push({ ...scheduleResult.post, id: 'conflicting-recovery-post' });
+  const conflict = await harness.service.reconcileRuntimeSchedule(runtimeContext, reconcileInput);
+  assert.equal(conflict.outcome, 'conflict');
+  assert.equal(conflict.safeToReuse, false);
+  assert.deepEqual(conflict.conflictingPostIds, [
+    'conflicting-recovery-post',
+    scheduleResult.post.id
+  ].sort());
+  assert.equal(conflict.post, undefined);
+  assert.equal(harness.calls.add.length, 1);
+});
+
+test('runtime reconciliation refuses a unique queue record that is approved or no longer scheduled', async () => {
+  const harness = makeHarness();
+  const workspaceId = defaultWorkspaceId('owner');
+  const scheduledAt = '2026-07-12T09:00:00.000Z';
+  const runtimeContext = context({
+    source: 'runtime',
+    accountId: 'account-a',
+    workspaceId,
+    idempotency: { key: 'unsafe-recovery-key' }
+  });
+  const metadata = {
+    missionId: 'mission-unsafe-recovery',
+    action: 'autoposter.post.schedule',
+    missionPayloadHash: 'c'.repeat(64)
+  };
+  const scheduled = await harness.service.schedulePost(runtimeContext, {
+    accountId: 'account-a',
+    mediaUrl: 'https://cdn.example.com/unsafe-recovery.mp4',
+    runtimeMissionId: metadata.missionId,
+    runtimeAction: metadata.action,
+    runtimePayloadHash: metadata.missionPayloadHash,
+    requireSingle: true,
+    schedule: { mode: 'explicit', scheduledAt, requireExplicitTimezone: true, requireFuture: true }
+  });
+  scheduled.post.approved = true;
+  const result = await harness.service.reconcileRuntimeSchedule(runtimeContext, {
+    provider: 'tiktok', accountId: 'account-a', scheduledAt, ...metadata
+  });
+  assert.equal(result.outcome, 'unique');
+  assert.equal(result.safeToReuse, false);
+  assert.equal(result.evidenceStatus, 'invalid');
+  assert.equal(result.post, undefined);
+  assert.equal(harness.calls.add.length, 1);
+});
+
 test('provider is part of durable document and usage idempotency scope', () => {
   const workspaceId = defaultWorkspaceId('owner');
   assert.notEqual(
@@ -498,11 +618,15 @@ test('a concurrent Firestore create race returns the already-created scheduled i
         id: defaults.documentId,
         data: () => ({
           userId,
+          workspaceId: defaults.workspaceId,
           platform: 'tiktok',
           provider: 'tiktok',
           creationSource: 'runtime',
           idempotencyKey: defaults.idempotencyKey,
           runtimeIdempotencyKey: defaults.runtimeIdempotencyKey,
+          runtimeMissionId: defaults.runtimeMissionId,
+          runtimeAction: defaults.runtimeAction,
+          runtimePayloadHash: defaults.runtimePayloadHash,
           accountId: 'account-a',
           tiktokOpenId: 'open-a',
           username: 'creator_a',
@@ -554,6 +678,7 @@ test('an old incomplete idempotent draft fails truthfully instead of claiming sc
   harness.posts.push({
     id: 'old-partial',
     userId: 'owner',
+    workspaceId: defaultWorkspaceId('owner'),
     accountId: 'account-a',
     status: 'pending',
     scheduledAt: null,

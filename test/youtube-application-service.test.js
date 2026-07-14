@@ -63,7 +63,8 @@ function buildService({
   tiktok = tiktokAccount(),
   existingPosts = [],
   trustLookupOwner = false,
-  references = null
+  references = null,
+  failureInjector
 } = {}) {
   const calls = { addUploadedPosts: [] };
   const matchesWorkspace = (candidate, workspaceScope) => {
@@ -113,7 +114,8 @@ function buildService({
   return {
     service: createAutoPosterApplicationService({
       storage: storageFake,
-      commercialService: createCommercialFixture(storageFake)
+      commercialService: createCommercialFixture(storageFake),
+      failureInjector
     }),
     calls
   };
@@ -390,6 +392,38 @@ test('a duplicate idempotency key returns the existing job instead of creating a
   assert.equal(result.duplicate, true);
   assert.equal(result.post.id, 'existing-post');
   assert.equal(calls.addUploadedPosts.length, 0, 'no second queue item was created');
+});
+
+test('durable-create failure hooks straddle the real storage boundary', async () => {
+  const before = buildService({
+    failureInjector(boundary) {
+      if (boundary === 'before_autoposter_durable_create') throw new Error('injected-before-create');
+    }
+  });
+  await assert.rejects(
+    () => before.service.schedulePost(runtimeContext, youtubeInput()),
+    /injected-before-create/
+  );
+  assert.equal(before.calls.addUploadedPosts.length, 0, 'pre-create crash leaves no queue record');
+
+  const observed = [];
+  const after = buildService({
+    failureInjector(boundary) {
+      observed.push(boundary);
+      if (boundary === 'after_autoposter_durable_create_before_response') {
+        throw new Error('injected-after-create');
+      }
+    }
+  });
+  await assert.rejects(
+    () => after.service.schedulePost(runtimeContext, youtubeInput()),
+    /injected-after-create/
+  );
+  assert.equal(after.calls.addUploadedPosts.length, 1, 'post-create crash occurs after one durable write');
+  assert.deepEqual(observed, [
+    'before_autoposter_durable_create',
+    'after_autoposter_durable_create_before_response'
+  ]);
 });
 
 test('the same raw account id and idempotency key remain isolated by provider', async () => {
