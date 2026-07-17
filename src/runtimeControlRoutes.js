@@ -8,11 +8,16 @@ const express = require('express');
 const { createHash, timingSafeEqual } = require('crypto');
 const config = require('./config');
 const applicationService = require('./autoposterApplicationService');
+const { normalizeQueueStatus, sanitizeHistory, sanitizePostResult } = require('./postsMapper');
 
 const router = express.Router();
 const QUEUE_LIST_DEFAULT_LIMIT = 25;
 const QUEUE_LIST_MAX_LIMIT = 100;
 const CAPTION_SUMMARY_LIMIT = 140;
+// Phase 2E-B: the status wire view carries at most this many of the newest
+// canonical history entries so one response stays bounded no matter how long
+// a job's evidence log grows (the document itself is already capped at 50).
+const STATUS_HISTORY_LIMIT = 20;
 
 function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
@@ -110,18 +115,67 @@ function lastErrorMessage(post) {
   return String(reason || '').slice(0, 300);
 }
 
+// Phase 2E-B bounded lastResult wire subset. Re-sanitizes through the
+// canonical postsMapper allowlist (defense in depth), then projects only the
+// exact facts the Operator result projection needs to classify a lifecycle
+// state truthfully: never the provider response object, never attempts of
+// arbitrary shape, never raw payloads.
+function statusLastResultView(post) {
+  const safe = sanitizePostResult(post.lastResult);
+  if (!safe) return null;
+  const view = {};
+  if (typeof safe.mode === 'string') view.mode = safe.mode;
+  if (typeof safe.code === 'string') view.code = safe.code;
+  if (typeof safe.reason === 'string') view.message = safe.reason.slice(0, 300);
+  if (typeof safe.completedAt === 'string') view.completedAt = safe.completedAt;
+  if (typeof safe.willRetry === 'boolean') view.willRetry = safe.willRetry;
+  if (typeof safe.outcomeUnknown === 'boolean') view.outcomeUnknown = safe.outcomeUnknown;
+  return Object.keys(view).length > 0 ? view : null;
+}
+
+// Phase 2E-B capped history wire view: the newest STATUS_HISTORY_LIMIT
+// canonical evidence entries, re-scrubbed, with only { at, event, detail }.
+function statusHistoryView(post) {
+  return sanitizeHistory(post.history)
+    .slice(-STATUS_HISTORY_LIMIT)
+    .map((entry) => ({
+      at: typeof entry.at === 'string' ? entry.at : null,
+      event: entry.event,
+      detail: typeof entry.detail === 'string' ? entry.detail : ''
+    }));
+}
+
 function postStatusView(post) {
   return {
     ...queueItemView(post),
+    // Canonical queue lifecycle status. postFromDoc already normalizes the
+    // legacy 'publishing' alias; re-normalizing here keeps the wire contract
+    // closed even for callers that bypass the mapper.
+    status: normalizeQueueStatus(post.status),
+    // Verified workspace ownership scope ('' for legacy records). This is an
+    // opaque identifier, never billing/subscription data.
+    workspaceId: String(post.workspaceId || ''),
     approvedAt: post.approvedAt || null,
     approvedBy: post.approvedBy || '',
+    approvalState: post.approvalState === 'approved' ? 'approved' : 'unapproved',
     postedAt: post.postedAt || null,
     publishId: post.publishId || '',
     // Provider-reported state and bounded provider metadata (postsMapper
     // allowlist — titles/privacy flags only, never credentials).
     providerStatus: post.providerStatus || '',
     providerMetadata: post.providerMetadata || null,
+    // Scheduler lifecycle evidence. lockedAt is safe timing evidence;
+    // lockedBy (worker identity) is deliberately never exposed.
+    lockedAt: post.lockedAt || null,
     claimAttempts: Number(post.claimAttempts || 0),
+    // Agent Runtime correlation metadata persisted at schedule time. These
+    // are opaque mission identifiers/hashes, never tokens or payloads.
+    runtimeMissionId: String(post.runtimeMissionId || ''),
+    runtimeIdempotencyKey: String(post.runtimeIdempotencyKey || ''),
+    runtimeAction: String(post.runtimeAction || ''),
+    runtimePayloadHash: String(post.runtimePayloadHash || ''),
+    lastResult: statusLastResultView(post),
+    history: statusHistoryView(post),
     lastErrorMessage: lastErrorMessage(post)
   };
 }

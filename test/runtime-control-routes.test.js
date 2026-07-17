@@ -610,3 +610,272 @@ test('runtime routes propagate verified workspace context and preserve structure
   assert.equal('scheduledPostsPerCycle' in scheduleCall.input, false);
   assert.equal(state.addUploadedPostsCalls.length, 1, 'structured denial creates no additional queue item');
 });
+
+test('runtime post status exposes the bounded Phase 2E-B lifecycle contract truthfully', async (t) => {
+  const app = express();
+  app.use('/api/runtime', runtimeControlRoutes);
+  app.use((error, req, res, next) => {
+    if (!error) { next(); return; }
+    res.status(error.status || 500).json({ ok: false, reason: error.message || 'Unexpected server error' });
+  });
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const headers = { 'x-chanter-runtime-token': TOKEN, Accept: 'application/json' };
+
+  const savedPosts = state.posts;
+  t.after(() => { state.posts = savedPosts; });
+
+  const statusOf = async (postId) => {
+    const response = await fetch(`${baseUrl}/api/runtime/posts/${postId}/status`, { headers });
+    assert.equal(response.status, 200, postId);
+    const body = await response.json();
+    assert.equal(body.ok, true, postId);
+    return body.post;
+  };
+
+  const EXPECTED_STATUS_KEYS = [
+    'accountId', 'approvalState', 'approved', 'approvedAt', 'approvedBy',
+    'captionSummary', 'claimAttempts', 'connectedAccountId', 'createdAt',
+    'history', 'id', 'lastErrorMessage', 'lastResult', 'lockedAt',
+    'mediaType', 'postedAt', 'provider', 'providerMetadata', 'providerStatus',
+    'publishId', 'runtimeAction', 'runtimeIdempotencyKey', 'runtimeMissionId',
+    'runtimePayloadHash', 'scheduledAt', 'status', 'updatedAt', 'username',
+    'workspaceId'
+  ];
+
+  // ── Scheduled unapproved draft (exact Phase 2E-A success state) ─────────
+  state.posts = [makePost({
+    id: 'draft-1',
+    runtimeMissionId: 'graph:g-1:node:n-1',
+    runtimeIdempotencyKey: 'graph:g-1:node:n-1',
+    runtimeAction: 'autoposter.post.schedule',
+    runtimePayloadHash: 'c'.repeat(64),
+    history: [{ at: '2026-07-10T08:00:00.000Z', event: 'runtime_scheduled', detail: 'Draft created; awaits human approval.' }]
+  })];
+  const draft = await statusOf('draft-1');
+  assert.deepEqual(Object.keys(draft).sort(), EXPECTED_STATUS_KEYS);
+  assert.equal(draft.status, 'scheduled');
+  assert.equal(draft.approved, false);
+  assert.equal(draft.approvalState, 'unapproved');
+  assert.equal(draft.workspaceId, 'workspace-owner');
+  assert.equal(draft.runtimeMissionId, 'graph:g-1:node:n-1');
+  assert.equal(draft.runtimeIdempotencyKey, 'graph:g-1:node:n-1');
+  assert.equal(draft.runtimeAction, 'autoposter.post.schedule');
+  assert.equal(draft.runtimePayloadHash, 'c'.repeat(64));
+  assert.equal(draft.lockedAt, null);
+  assert.equal(draft.lastResult, null);
+  assert.deepEqual(draft.history, [{
+    at: '2026-07-10T08:00:00.000Z',
+    event: 'runtime_scheduled',
+    detail: 'Draft created; awaits human approval.'
+  }]);
+
+  // ── Approved for publishing (human approval, not yet claimed) ───────────
+  state.posts = [makePost({
+    id: 'approved-1',
+    approvedAt: '2026-07-10T10:00:00.000Z',
+    approvedBy: 'founder@chanter',
+    approved: true,
+    approvalState: 'approved'
+  })];
+  const approved = await statusOf('approved-1');
+  assert.equal(approved.approvalState, 'approved');
+  assert.equal(approved.approved, true);
+  assert.equal(approved.approvedBy, 'founder@chanter');
+  assert.equal(approved.status, 'scheduled');
+  assert.equal(approved.lastResult, null);
+
+  // ── Processing (claimed by scheduler; lock time visible, worker not) ────
+  state.posts = [makePost({
+    id: 'processing-1',
+    status: 'processing',
+    approved: true,
+    approvalState: 'approved',
+    approvedAt: '2026-07-10T10:00:00.000Z',
+    lockedAt: '2026-07-11T09:00:05.000Z',
+    lockedBy: 'worker-CANARY-LOCKED-BY',
+    claimAttempts: 1
+  })];
+  const processing = await statusOf('processing-1');
+  assert.equal(processing.status, 'processing');
+  assert.equal(processing.lockedAt, '2026-07-11T09:00:05.000Z');
+  assert.equal(processing.claimAttempts, 1);
+  assert.equal('lockedBy' in processing, false, 'worker lock identity is never exposed');
+
+  // ── Retry scheduled (transient failure; AutoPoster owns the retry) ──────
+  state.posts = [makePost({
+    id: 'retry-1',
+    status: 'scheduled',
+    approved: true,
+    approvalState: 'approved',
+    approvedAt: '2026-07-10T10:00:00.000Z',
+    claimAttempts: 2,
+    lastResult: {
+      ok: false, code: 'PROVIDER_5XX', reason: 'TikTok returned HTTP 502.',
+      willRetry: true, attempts: 2
+    },
+    history: [{ at: '2026-07-11T09:01:00.000Z', event: 'retry_scheduled', detail: 'Retrying in 5 minutes.' }]
+  })];
+  const retry = await statusOf('retry-1');
+  assert.equal(retry.status, 'scheduled');
+  assert.equal(retry.lastResult.willRetry, true);
+  assert.equal(retry.lastResult.code, 'PROVIDER_5XX');
+  assert.equal(retry.lastResult.message, 'TikTok returned HTTP 502.');
+  assert.equal(retry.history[retry.history.length - 1].event, 'retry_scheduled');
+  assert.equal('attempts' in retry.lastResult, false, 'wire lastResult carries only the exact bounded subset');
+  assert.equal('ok' in retry.lastResult, false);
+
+  // ── YouTube uploaded private (terminal upload, explicitly not public) ───
+  state.posts = [makePost({
+    id: 'youtube-1',
+    provider: 'youtube',
+    connectedAccountId: 'youtube:channel-a',
+    accountId: 'channel-a',
+    status: 'posted',
+    approved: true,
+    approvalState: 'approved',
+    approvedAt: '2026-07-10T10:00:00.000Z',
+    postedAt: '2026-07-11T09:02:00.000Z',
+    publishId: 'yt-video-123',
+    providerStatus: 'uploaded_private',
+    providerMetadata: { youtube: { title: 'Launch', description: '', privacyStatus: 'private', notifySubscribers: false } },
+    lastResult: { ok: true, published: true, completedAt: '2026-07-11T09:02:00.000Z' }
+  })];
+  const youtube = await statusOf('youtube-1');
+  assert.equal(youtube.provider, 'youtube');
+  assert.equal(youtube.status, 'posted');
+  assert.equal(youtube.providerStatus, 'uploaded_private');
+  assert.equal(youtube.publishId, 'yt-video-123');
+  assert.equal(youtube.providerMetadata.youtube.privacyStatus, 'private');
+  assert.equal(youtube.lastResult.completedAt, '2026-07-11T09:02:00.000Z');
+
+  // ── TikTok provider accepted (API acceptance, visibility unverified) ────
+  state.posts = [makePost({
+    id: 'tiktok-1',
+    status: 'posted',
+    approved: true,
+    approvalState: 'approved',
+    approvedAt: '2026-07-10T10:00:00.000Z',
+    postedAt: '2026-07-11T09:03:00.000Z',
+    publishId: 'tt-publish-9',
+    lastResult: { ok: true, mode: 'api', completedAt: '2026-07-11T09:03:00.000Z' }
+  })];
+  const tiktok = await statusOf('tiktok-1');
+  assert.equal(tiktok.provider, 'tiktok');
+  assert.equal(tiktok.status, 'posted');
+  assert.equal(tiktok.publishId, 'tt-publish-9');
+  assert.equal(tiktok.lastResult.mode, 'api');
+  assert.equal(tiktok.providerStatus, '', 'no invented provider visibility state');
+
+  // ── Manually reconciled (human assertion, not provider verification) ────
+  state.posts = [makePost({
+    id: 'manual-1',
+    status: 'posted',
+    approved: true,
+    approvalState: 'approved',
+    approvedAt: '2026-07-10T10:00:00.000Z',
+    postedAt: '2026-07-11T09:04:00.000Z',
+    lastResult: { ok: true, mode: 'manual', reason: 'Marked posted manually', completedAt: '2026-07-11T09:04:00.000Z' },
+    history: [{ at: '2026-07-11T09:04:00.000Z', event: 'marked_posted', detail: 'Marked posted manually by the operator.' }]
+  })];
+  const manual = await statusOf('manual-1');
+  assert.equal(manual.status, 'posted');
+  assert.equal(manual.lastResult.mode, 'manual');
+  assert.equal(manual.history[manual.history.length - 1].event, 'marked_posted');
+  assert.equal(manual.publishId, '', 'a manual assertion has no provider publish identity');
+
+  // ── Definitive failure ───────────────────────────────────────────────────
+  state.posts = [makePost({
+    id: 'failed-1',
+    status: 'failed',
+    approved: true,
+    approvalState: 'approved',
+    approvedAt: '2026-07-10T10:00:00.000Z',
+    claimAttempts: 3,
+    lastResult: { ok: false, code: 'PROVIDER_AUTH', reason: 'Reauthorize the TikTok account.', definitiveFailure: true },
+    history: [{ at: '2026-07-11T09:05:00.000Z', event: 'failed', detail: 'Reauthorize the TikTok account.' }]
+  })];
+  const failed = await statusOf('failed-1');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.lastResult.code, 'PROVIDER_AUTH');
+  assert.equal(failed.lastErrorMessage, 'Reauthorize the TikTok account.');
+
+  // ── Outcome unknown (terminal for automation; highest human priority) ───
+  state.posts = [makePost({
+    id: 'unknown-1',
+    status: 'outcome_unknown',
+    approved: true,
+    approvalState: 'approved',
+    approvedAt: '2026-07-10T10:00:00.000Z',
+    providerStatus: 'provider_reconciliation_required',
+    lastResult: { ok: false, outcomeUnknown: true, code: 'PROVIDER_RECONCILIATION_REQUIRED', reason: 'Upload session ended without a definitive result.' },
+    history: [{ at: '2026-07-11T09:06:00.000Z', event: 'outcome_unknown', detail: 'Upload session ended without a definitive result.' }]
+  })];
+  const unknown = await statusOf('unknown-1');
+  assert.equal(unknown.status, 'outcome_unknown');
+  assert.equal(unknown.providerStatus, 'provider_reconciliation_required');
+  assert.equal(unknown.lastResult.outcomeUnknown, true);
+
+  // ── Legacy publishing status normalizes; legacy record has empty fields ──
+  state.posts = [makePost({
+    id: 'legacy-1',
+    status: 'publishing',
+    workspaceId: '',
+    runtimeMissionId: '',
+    runtimeIdempotencyKey: '',
+    runtimeAction: '',
+    runtimePayloadHash: '',
+    history: undefined,
+    lastResult: undefined
+  })];
+  const legacy = await statusOf('legacy-1');
+  assert.equal(legacy.status, 'processing', 'legacy publishing status normalizes to processing');
+  assert.equal(legacy.workspaceId, '');
+  assert.equal(legacy.runtimeMissionId, '');
+  assert.equal(legacy.lastResult, null);
+  assert.deepEqual(legacy.history, []);
+
+  // ── Redaction and size bounds on malformed/hostile stored evidence ──────
+  const hostileHistory = Array.from({ length: 30 }, (_, index) => ({
+    at: `2026-07-11T08:${String(index).padStart(2, '0')}:00.000Z`,
+    event: `event_${index}`,
+    detail: index === 29
+      ? 'access_token: CANARY-STATUS-ACCESS-TOKEN and Bearer abcdefghijklmnop.qrstuvwxyz012345.ABCDEFGHIJKLMNOP'
+      : `detail ${index} ${'x'.repeat(400)}`
+  }));
+  state.posts = [makePost({
+    id: 'hostile-1',
+    status: 'failed',
+    lastResult: {
+      ok: false,
+      reason: 'refresh_token: CANARY-STATUS-REFRESH-TOKEN caused the failure.',
+      code: 'X'.repeat(500),
+      access_token: 'CANARY-STATUS-RAW-TOKEN',
+      response: { publish_id: 'p-1', access_token: 'CANARY-STATUS-RESPONSE-TOKEN' }
+    },
+    history: hostileHistory
+  })];
+  const hostile = await statusOf('hostile-1');
+  assert.equal(hostile.history.length, 20, 'wire history is capped');
+  assert.equal(hostile.history[19].event, 'event_29', 'the newest entries are kept');
+  assert.ok(hostile.history[19].detail.includes('access_token=[redacted]'));
+  assert.ok(hostile.history[0].detail.length <= 300, 'history details stay bounded');
+  assert.ok(hostile.lastResult.message.includes('refresh_token=[redacted]'));
+  assert.ok(hostile.lastResult.code.length <= 120, 'lastResult code stays bounded');
+  assert.equal('response' in hostile.lastResult, false, 'raw provider response objects never reach the wire');
+  const hostileJson = JSON.stringify(hostile);
+  for (const canary of [
+    'CANARY-STATUS-ACCESS-TOKEN',
+    'CANARY-STATUS-REFRESH-TOKEN',
+    'CANARY-STATUS-RAW-TOKEN',
+    'CANARY-STATUS-RESPONSE-TOKEN',
+    'worker-CANARY-LOCKED-BY'
+  ]) {
+    assert.equal(hostileJson.includes(canary), false, `${canary} must never appear in a status response`);
+  }
+  assert.equal('mediaUrl' in hostile, false, 'raw media URLs are not exposed');
+  assert.equal('caption' in hostile, false, 'full captions are not exposed');
+});
