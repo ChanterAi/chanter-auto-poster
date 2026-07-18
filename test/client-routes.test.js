@@ -174,6 +174,29 @@ test('client portal isolates tenants and blocks admin/debug leakage', async (t) 
   assert.match(portalBHtml, /account-b-queue\.jpg/);
   assert.doesNotMatch(portalBHtml, /account-a-history\.jpg/);
 
+  const originalRetryPost = applicationService.retryPost;
+  let retryInput = null;
+  applicationService.retryPost = async (context, input) => {
+    retryInput = { context, input };
+    throw new applicationService.AutoPosterApplicationError(
+      'The durable publish-attempt budget is exhausted; this item cannot be retried under its current authorization.',
+      { status: 409, code: 'attempt_budget_exhausted' }
+    );
+  };
+  t.after(() => { applicationService.retryPost = originalRetryPost; });
+  const exhaustedRetry = await fetch(`${baseUrl}/client/autoposter/posts/post-b/pending`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { Cookie: cookieB }
+  });
+  assert.equal(exhaustedRetry.status, 302);
+  assert.match(
+    decodeURIComponent(exhaustedRetry.headers.get('location')),
+    /cannot be retried under its current authorization/i
+  );
+  assert.doesNotMatch(decodeURIComponent(exhaustedRetry.headers.get('location')), /Ready to retry/i);
+  assert.equal(retryInput.input.accountId, 'account-b');
+
   // Account A's session cannot delete/act on account B's post id, even
   // though it's a directly-guessable id (post-b) — storage-layer ownership
   // check must reject it.

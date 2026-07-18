@@ -31,6 +31,7 @@ function makeHarness({ planId = 'legacy_full_access' } = {}) {
     delete: [],
     approve: [],
     revoke: [],
+    retry: [],
     authorizeSchedule: []
   };
   let sequence = 0;
@@ -135,6 +136,39 @@ function makeHarness({ planId = 'legacy_full_access' } = {}) {
       Object.assign(post, patch);
       if ('scheduledAt' in patch) post.status = patch.scheduledAt ? 'scheduled' : 'pending';
       return post;
+    },
+    async retryFailedPost(userId, id, accountId) {
+      calls.retry.push({ userId, id, accountId });
+      const post = posts.find((item) => item.id === id && item.accountId === accountId);
+      if (!post) return { outcome: 'not_found' };
+      if (post.status !== 'failed') return { outcome: 'queue_transition_blocked', post };
+
+      const claimAttempts = Number(post.claimAttempts || 0);
+      const effectiveAttemptBudget = Number(post.publishAttemptBudget);
+      if (claimAttempts >= effectiveAttemptBudget) {
+        return {
+          outcome: 'attempt_budget_exhausted',
+          post,
+          claimAttempts,
+          effectiveAttemptBudget
+        };
+      }
+
+      post.status = post.scheduledAt ? 'scheduled' : 'pending';
+      post.postedAt = null;
+      post.readyAt = null;
+      post.errorMessage = null;
+      post.lastResult = null;
+      post.lockedAt = null;
+      post.lockedBy = null;
+      post.history = [
+        ...(Array.isArray(post.history) ? post.history : []),
+        {
+          event: 'retry_requested',
+          detail: `${claimAttempts} of ${effectiveAttemptBudget} authorized claims are already consumed.`
+        }
+      ];
+      return { outcome: 'retried', post, claimAttempts, effectiveAttemptBudget };
     },
     async autoSchedulePosts(userId, ids, accountId) {
       calls.auto.push({ userId, ids, accountId });

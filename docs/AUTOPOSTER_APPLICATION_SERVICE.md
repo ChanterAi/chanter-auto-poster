@@ -28,11 +28,11 @@ push, deployment, or live publishing is part of this work.
 | Classification | Confirmed repository truth | Consolidation rule |
 | --- | --- | --- |
 | **AUTHORITATIVE** | Firestore `posts`, `storage.js` ownership-aware reads/writes and queue construction, `postsMapper.js`, `mediaPolicy.js`, and the scheduler's transactional approval/claim checks are the current truth. | Orchestrate these modules; do not replace them. |
-| **DUPLICATED** | Admin `/upload`, client upload, and P1B Runtime `/schedule` independently resolved accounts, validated timestamps, created jobs, and applied schedules. Queue/status projections and retry-reset patches also existed in more than one controller. | Route all supported product actions through the application service while leaving transport/rendering concerns in controllers. |
+| **DUPLICATED** | Admin `/upload`, client upload, and P1B Runtime `/schedule` independently resolved accounts, validated timestamps, created jobs, and applied schedules. Queue/status projections and retry transitions also existed in more than one controller. | Route all supported product actions through the application service while leaving transport/rendering concerns in controllers. |
 | **ROUTE-EMBEDDED** | Browser routes selected active/all queue scope, resolved multi-channel plans, performed media checks, and assembled bulk-delete truth. Runtime routes separately owned bounded listing, status views, explicit-time validation, idempotency lookup, and create-then-schedule behavior. | Controllers authenticate, build context, translate input/output, and render; the service owns the product operation. |
 | **STORAGE-EMBEDDED** | `addUploadedPosts` owns media persistence/fallback, campaign child construction, duplicate warnings, initial approval, and the stored job shape. `updatePost`, `autoSchedulePosts`, `applyExplicitSchedule`, and `reschedulePendingQueue` own existing scheduling writes. | Keep low-level persistence in storage. The service coordinates these primitives and reports partial failure truthfully. |
 | **PROVIDER-SCOPED** | Account identity is an exact provider/account pair. TikTok legacy records may use TikTok open-id aliases and a missing legacy provider defaults to TikTok; YouTube records use provider-native channel identity and private-only metadata. Both implemented scheduling paths are video-only. | Preserve exact provider/account identity. Keep TikTok aliases and settings scoped to TikTok, keep YouTube metadata scoped to YouTube, and reject unsupported or unconfigured providers. |
-| **SAFE TO CONSOLIDATE** | Queue listing, status, media validation, scheduling, approval/revocation, deletion, bulk deletion, the existing manual retry/reset, and existing queue rescheduling all have reusable primitives. | Expose only these real operations through `autoposterApplicationService.js`. |
+| **SAFE TO CONSOLIDATE** | Queue listing, status, media validation, scheduling, approval/revocation, deletion, bulk deletion, the existing manual retry transition, and existing queue rescheduling all have reusable primitives. | Expose only these real operations through `autoposterApplicationService.js`. |
 | **OUT OF SCOPE** | Provider integrations, replacement of the existing workspace/entitlement model, subscriptions, UI changes, auth replacement, scheduler/provider publishing changes, automatic approval, migration, and activation of the P1A adapter. | Preserve the existing authority boundaries and keep these otherwise dormant or unchanged. |
 
 The highest-risk pre-consolidation gap was Runtime idempotency: it used a
@@ -96,7 +96,7 @@ response shaping stays outside this module.
 | `revokeApproval(context, { postId, accountId? })` | Clears the existing approval fields only for reviewable jobs, preserving fail-closed worker behavior. |
 | `deletePost(context, { postId, accountId? })` | Preserves ownership scope and returns the actual storage deletion truth. |
 | `deleteMarkedPosts(context, { postIds, accountId? })` | Deduplicates and bounds the selection, calls `deletePost` for every item, and returns separate `deleted` and `failed` results. |
-| `retryPost(context, { postId, accountId? })` | Extracts the already-supported manual reset: clears result/lock/attempt fields and returns the job to `scheduled` or `pending`. It is not worker stale-lock reclaim and does not publish. |
+| `retryPost(context, { postId, accountId? })` | Atomically returns a definitively failed job to `scheduled` or `pending` only while its scheduler-resolved publish-attempt budget has room. It preserves the monotone claim count, approval, attempt budget, and schedule; exhausted authorization returns the stable `attempt_budget_exhausted` conflict without changing the queue item. It is not worker stale-lock reclaim and does not publish. |
 | `rescheduleQueue(context, { accountId? })` | Wraps the existing owner/channel-scoped pending-queue rescheduler. It adds no new scheduling algorithm. |
 | `updatePost(context, input)` | Preserves the existing owner/account-scoped queue edit, normalizes browser-local schedule input with `timeUtil.js`, and rejects invalid timestamps instead of silently changing product state. |
 | `markPostManually(context, { postId, accountId? })` | Preserves the explicit human-only "marked posted" evidence transition; it records no API publish and checks the underlying update result. |
@@ -185,7 +185,7 @@ Required behavioral proof:
   attempts.
 - Runtime scheduling remains unapproved; approval and scheduler claim checks
   remain fail-closed.
-- Media, owner/account isolation, truthful delete/partial-delete, retry reset,
+- Media, owner/account isolation, truthful delete/partial-delete, authorization-preserving retry,
   queue/status normalization, and all existing browser behavior remain covered.
 - No validation command performs a provider publish.
 

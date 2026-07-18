@@ -311,11 +311,21 @@ test('a YouTube-only workspace can manage its queue without a TikTok connection'
   assert.equal(providerAttempts, 1, 'the mocked shared worker path is reached once');
 
   post.status = 'failed';
-  const updateCalls = [];
-  storage.updatePost = async (userId, postId, patch, accountId) => {
-    updateCalls.push({ userId, postId, patch, accountId });
-    Object.assign(post, patch);
-    return post;
+  post.claimAttempts = 0;
+  post.publishAttemptBudget = 1;
+  const retryCalls = [];
+  storage.retryFailedPost = async (userId, postId, accountId, workspaceScope) => {
+    retryCalls.push({ userId, postId, accountId, workspaceScope });
+    post.status = post.scheduledAt ? 'scheduled' : 'pending';
+    post.failedAt = null;
+    post.providerStatus = null;
+    post.history = [...post.history, { event: 'retry_requested' }];
+    return {
+      outcome: 'retried',
+      post,
+      claimAttempts: post.claimAttempts,
+      effectiveAttemptBudget: post.publishAttemptBudget
+    };
   };
   const retry = await fetch(`${baseUrl}/posts/${post.id}/pending`, {
     method: 'POST',
@@ -324,8 +334,33 @@ test('a YouTube-only workspace can manage its queue without a TikTok connection'
     body: new URLSearchParams({ accountId: post.accountId })
   });
   assert.equal(retry.status, 302);
-  assert.equal(updateCalls.length, 1);
-  assert.equal(updateCalls[0].accountId, 'UC-chanter');
+  assert.equal(retryCalls.length, 1);
+  assert.equal(retryCalls[0].accountId, 'UC-chanter');
+  assert.equal(post.claimAttempts, 0);
+  assert.equal(post.publishAttemptBudget, 1);
+  assert.equal(post.history.at(-1).event, 'retry_requested');
+
+  post.status = 'failed';
+  post.claimAttempts = 1;
+  const exhausted = { ...post, history: post.history.map((entry) => ({ ...entry })) };
+  storage.retryFailedPost = async () => ({
+    outcome: 'attempt_budget_exhausted',
+    post,
+    claimAttempts: 1,
+    effectiveAttemptBudget: 1
+  });
+  const rejectedRetry = await fetch(`${baseUrl}/posts/${post.id}/pending`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: adminCookie, Origin: baseUrl },
+    body: new URLSearchParams({ accountId: post.accountId })
+  });
+  assert.equal(rejectedRetry.status, 302);
+  assert.match(
+    decodeURIComponent(rejectedRetry.headers.get('location')),
+    /cannot be retried under its current authorization/i
+  );
+  assert.deepEqual(post, exhausted);
 
   const deleteCalls = [];
   storage.deletePost = async (userId, postId, accountId, workspaceScope) => {

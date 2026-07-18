@@ -31,7 +31,6 @@ const DEFAULT_QUEUE_LIMIT = 100;
 const MAX_QUEUE_LIMIT = 1000;
 const INTERNAL_PLAN_DUE_GRACE_MS = 60_000;
 const ISO_WITH_ZONE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
-const RETRYABLE_QUEUE_STATUSES = new Set(['failed']);
 const EDIT_BLOCKED_QUEUE_STATUSES = new Set(['processing', 'posted', 'outcome_unknown']);
 const RUNTIME_SCHEDULE_ACTION = 'autoposter.post.schedule';
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
@@ -1389,16 +1388,41 @@ function createAutoPosterApplicationService(dependencies = {}) {
     const context = createExecutionContext(contextInput);
     const commercialContext = await resolveCommercialContext(context);
     if (context.source !== 'website') {
-      throw new AutoPosterApplicationError('Only the website workflow can reset a post for retry.', {
+      throw new AutoPosterApplicationError('Only the website workflow can retry a failed post.', {
         status: 403,
         code: 'forbidden'
       });
     }
-    const { post } = await getPostStatus(
-      { ...context, commercialContext },
-      input
+    const postId = String(input.postId || '').trim();
+    if (!postId) throw new AutoPosterApplicationError('postId is required.');
+
+    const transition = await storageAdapter.retryFailedPost(
+      context.userId,
+      postId,
+      input.accountId || context.accountId || undefined,
+      commercialContext.workspaceScope
     );
-    if (!RETRYABLE_QUEUE_STATUSES.has(String(post.status || '').toLowerCase())) {
+    if (!transition || transition.outcome === 'not_found') {
+      throw new AutoPosterApplicationError('Post not found for this tenant/account scope.', {
+        status: 404,
+        code: 'not_found'
+      });
+    }
+    if (transition.outcome === 'attempt_budget_exhausted') {
+      throw new AutoPosterApplicationError(
+        'The durable publish-attempt budget is exhausted; this item cannot be retried under its current authorization.',
+        {
+          status: 409,
+          code: 'attempt_budget_exhausted',
+          details: {
+            claimAttempts: transition.claimAttempts,
+            effectiveAttemptBudget: transition.effectiveAttemptBudget
+          }
+        }
+      );
+    }
+    if (transition.outcome === 'queue_transition_blocked') {
+      const post = transition.post || {};
       throw new AutoPosterApplicationError(
         post.status === 'outcome_unknown'
           ? 'This provider outcome is unknown. Reconcile it before any retry.'
@@ -1406,19 +1430,13 @@ function createAutoPosterApplicationService(dependencies = {}) {
         { status: 409, code: 'queue_transition_blocked', details: {} }
       );
     }
-    const updated = await storageAdapter.updatePost(context.userId, post.id, {
-      status: post.scheduledAt ? 'scheduled' : 'pending',
-      postedAt: null,
-      readyAt: null,
-      errorMessage: null,
-      lastResult: null,
-      claimAttempts: 0,
-      lockedAt: null,
-      lockedBy: null
-    }, input.accountId || context.accountId || undefined,
-    { event: 'reset', detail: 'Returned to the queue by the operator; attempt counter cleared.' },
-    commercialContext.workspaceScope);
-    return { ok: Boolean(updated), post: updated };
+    if (transition.outcome !== 'retried' || !transition.post) {
+      throw new AutoPosterApplicationError('Retry transition could not be verified.', {
+        status: 503,
+        code: 'retry_truth_unverified'
+      });
+    }
+    return { ok: true, post: transition.post };
   }
 
   async function updatePost(contextInput, input = {}) {

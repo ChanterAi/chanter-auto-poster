@@ -7,6 +7,8 @@
 
 > **STATUS UPDATE (2026-07-09):** This document is a historical audit journal. The P0/P1-1 security findings below (P0-1 CSRF, P0-2 git-tracked data files, P1-1 SHA-256 password hashing) were **fixed** (commit `584326e` and the P1 security loop) and later **independently re-verified as resolved** — see [`AUTPOSTER_P0_VERIFICATION_REPORT.md`](AUTPOSTER_P0_VERIFICATION_REPORT.md) (recorded in commit `415aadb`). Current code: `csrfOriginCheck` is globally mounted in `src/server.js`, password hashing uses `crypto.scryptSync` in `src/auth.js` (test-covered in `test/p1-security.test.js`), and `git ls-files data/` is empty. Known remaining LOW-severity follow-up: `GET /disconnect/tiktok` and `GET /disconnect/instagram` bypass the CSRF origin check (GET is safe-listed); convert to POST+CSRF in a future scoped loop. Original findings are preserved unedited below as audit history.
 
+> **STATUS UPDATE (2026-07-18):** Historical recommendations below that allow `claimAttempts` to decrement are superseded by the authorization-preserving retry seal. Current retry code keeps the durable attempt count monotone, uses the scheduler's effective attempt budget, and leaves an exhausted queue item unchanged with an `attempt_budget_exhausted` conflict. The original entries remain below only as historical audit evidence.
+
 ---
 
 ## 1. Executive Summary

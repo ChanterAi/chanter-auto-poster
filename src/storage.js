@@ -27,7 +27,8 @@ const {
   mapPatchToFirestore,
   appendHistoryEntry,
   toTimestampOrNull,
-  normalizeQueueStatus
+  normalizeQueueStatus,
+  resolvePublishAttemptBudget
 } = require('./postsMapper');
 const { generateAccessCode, parseAccessCode, verifyAccessSecret } = require('./clientAuth');
 const {
@@ -1710,6 +1711,85 @@ async function updatePost(userId, id, patch, accountId, historyEvent, workspaceS
   return postFromDoc(updated);
 }
 
+async function retryFailedPost(userId, id, accountId, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const ref = postsCollection().doc(id);
+
+  // Retry and worker claim are competing transitions on the same durable row.
+  // Recheck status and authorization inside one transaction so a stale retry
+  // can never overwrite a claim, its lock, or its monotone attempt count.
+  return getFirestore().runTransaction(async (tx) => {
+    const current = await tx.get(ref);
+    if (!current.exists) return { outcome: 'not_found' };
+
+    const data = current.data() || {};
+    if ((data.userId || DEFAULT_USER_ID) !== ownerId) return { outcome: 'not_found' };
+    if (!recordMatchesWorkspace(data, ownerId, workspaceScope)) return { outcome: 'not_found' };
+
+    const post = postFromDoc(current);
+    if (accountId && post.accountId !== accountId) return { outcome: 'not_found' };
+
+    const status = normalizeQueueStatus(data.status);
+    if (status !== 'failed') {
+      return { outcome: 'queue_transition_blocked', post };
+    }
+
+    const claimAttempts = Number(data.claimAttempts || 0);
+    const effectiveAttemptBudget = resolvePublishAttemptBudget(data);
+    if (claimAttempts >= effectiveAttemptBudget) {
+      return {
+        outcome: 'attempt_budget_exhausted',
+        post,
+        claimAttempts,
+        effectiveAttemptBudget
+      };
+    }
+
+    // Keep legacy scheduledTimeUTC-only rows in `pending`: that is the state
+    // paired with the scheduler's legacy due-query. Only the canonical
+    // scheduledAt field is eligible for the canonical `scheduled` query.
+    const nextStatus = data.scheduledAt ? 'scheduled' : 'pending';
+    const history = appendHistoryEntry(
+      data.history,
+      'retry_requested',
+      `Returned to the ${nextStatus === 'scheduled' ? 'schedule' : 'pending queue'} for another authorized claim; ${claimAttempts} of ${effectiveAttemptBudget} authorized claims are already consumed.`
+    );
+    tx.update(ref, {
+      status: nextStatus,
+      postedAt: null,
+      readyAt: null,
+      failedAt: null,
+      errorMessage: null,
+      lastResult: null,
+      providerStatus: null,
+      lockedAt: null,
+      lockedBy: null,
+      history,
+      updatedAt: FieldValue.serverTimestamp()
+    });
+
+    return {
+      outcome: 'retried',
+      claimAttempts,
+      effectiveAttemptBudget,
+      post: {
+        ...post,
+        status: nextStatus,
+        postedAt: null,
+        readyAt: null,
+        failedAt: null,
+        lastResult: null,
+        lastError: '',
+        providerStatus: null,
+        lockedAt: null,
+        lockedBy: null,
+        history,
+        logs: history
+      }
+    };
+  });
+}
+
 // ── Approval gate ────────────────────────────────────────────────────────
 // The one write path that marks a job publishable. Workers (scheduler.js
 // claimPost) refuse to claim anything without a valid approvedAt, so a job
@@ -2207,6 +2287,7 @@ module.exports = {
   clearInstagramAuth,
   addUploadedPosts,
   updatePost,
+  retryFailedPost,
   approvePost,
   revokePostApproval,
   markPostManuallyWithUsage,
