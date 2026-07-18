@@ -522,6 +522,19 @@ test('storage and scheduler preserve transactional usage truth across queue life
       ok: true,
       mode: 'api',
       providerStatus: 'uploaded_private',
+      providerVerification: {
+        provider: 'youtube',
+        externalVideoId: 'yt-video-1',
+        channelId: 'UC-chanter',
+        channelTitle: 'CHANTER',
+        channelHandle: '@chantercy',
+        title: 'Private upload',
+        privacyStatus: 'private',
+        uploadStatus: 'uploaded',
+        processingStatus: 'succeeded',
+        verifiedAt: FIXED_NOW.toISOString(),
+        uploadMethod: 'resumable'
+      },
       response: {
         video_id: 'yt-video-1',
         privacy_status: 'private',
@@ -551,6 +564,7 @@ test('storage and scheduler preserve transactional usage truth across queue life
     assert.equal(youtubeTruth.post.status, 'posted');
     assert.equal(youtubeTruth.post.providerStatus, 'uploaded_private');
     assert.equal(youtubeTruth.post.publishId, 'yt-video-1');
+    assert.equal(youtubeTruth.post.providerVerification.externalVideoId, 'yt-video-1');
     assert.equal(youtubeTruth.ledger.state, USAGE_STATES.CONSUMED);
     assert.equal(youtubeTruth.counter.reservedQuantity, 0);
     assert.equal(youtubeTruth.counter.consumedQuantity, 2);

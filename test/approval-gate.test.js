@@ -171,6 +171,10 @@ test('approvePost sets the approval record only for reviewable states', async (t
   const { storage, docs, updates, cleanup } = installStorageMocks({
     seededDocs: [
       { id: 'draft-1', userId: 'owner', accountId: 'account-a', status: 'scheduled', history: [] },
+      {
+        id: 'youtube-failed', userId: 'owner', accountId: 'UC-chanter', provider: 'youtube',
+        status: 'failed', claimAttempts: 4, history: []
+      },
       { id: 'busy-1', userId: 'owner', accountId: 'account-a', status: 'processing', history: [] },
       { id: 'done-1', userId: 'owner', accountId: 'account-a', status: 'posted', history: [] },
       { id: 'other-owner', userId: 'someone-else', accountId: 'account-a', status: 'scheduled', history: [] }
@@ -185,6 +189,15 @@ test('approvePost sets the approval record only for reviewable states', async (t
   assert.ok(docs.get('draft-1').approvedAt);
   assert.equal(docs.get('draft-1').history.at(-1).event, 'approved');
 
+  const youtubeApproved = await storage.approvePost(
+    'owner',
+    'youtube-failed',
+    { approvedBy: 'admin:owner' },
+    'UC-chanter'
+  );
+  assert.equal(youtubeApproved.publishAttemptBudget, 5);
+  assert.equal(docs.get('youtube-failed').publishAttemptBudget, 5);
+
   // Mid-publish, already-posted, cross-account, and cross-owner jobs all
   // refuse the approval write.
   assert.equal(await storage.approvePost('owner', 'busy-1', {}, 'account-a'), null);
@@ -192,7 +205,10 @@ test('approvePost sets the approval record only for reviewable states', async (t
   assert.equal(await storage.approvePost('owner', 'draft-1', {}, 'account-b'), null);
   assert.equal(await storage.approvePost('owner', 'other-owner', {}, 'account-a'), null);
   assert.equal(await storage.approvePost('owner', 'missing', {}, 'account-a'), null);
-  assert.equal(updates.filter((update) => update.id !== 'draft-1').length, 0);
+  assert.deepEqual(
+    updates.map((update) => update.id).sort(),
+    ['draft-1', 'youtube-failed']
+  );
 });
 
 test('revokePostApproval clears the approval record and logs evidence', async (t) => {

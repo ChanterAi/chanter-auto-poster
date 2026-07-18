@@ -34,6 +34,9 @@ const UPLOAD_SCOPE = 'https://www.googleapis.com/auth/youtube.upload';
 const READONLY_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
 const MAX_TITLE_LENGTH = 100;
 const MAX_DESCRIPTION_LENGTH = 5000;
+const UPLOAD_METHOD = 'resumable';
+const VERIFICATION_ATTEMPTS = 3;
+const VERIFICATION_BACKOFF_MS = Object.freeze([250, 1_000]);
 
 const SENSITIVE_KEYS = new Set([
   'access_token', 'accessToken', 'refresh_token', 'refreshToken',
@@ -599,7 +602,8 @@ async function uploadVideo({ accessToken, media, metadata }) {
         video_id: String(body.id),
         privacy_status: String(status.privacyStatus || ''),
         upload_status: String(status.uploadStatus || ''),
-        channel_id: String((body.snippet && body.snippet.channelId) || '')
+        channel_id: String((body.snippet && body.snippet.channelId) || ''),
+        upload_method: UPLOAD_METHOD
       }
     };
   }
@@ -626,41 +630,127 @@ async function uploadVideo({ accessToken, media, metadata }) {
 
 // ── Status lookup (youtube.readonly) ───────────────────────────────────────
 
-async function getUploadedVideoStatus({ userId, accountId, videoId, workspaceScope }) {
+async function readUploadedVideo(accessToken, videoId) {
   const cleanVideoId = String(videoId || '').trim();
   if (!cleanVideoId) return { ok: false, reason: 'A YouTube video ID is required.' };
-  const credentials = await getActiveYouTubeCredentials(userId, accountId, workspaceScope);
-  if (!credentials.ok) return { ok: false, code: credentials.code, reason: credentials.reason };
 
   const url = new URL(`${config.youtube.apiBaseUrl}/videos`);
-  url.search = new URLSearchParams({ part: 'status,processingDetails', id: cleanVideoId }).toString();
+  url.search = new URLSearchParams({ part: 'snippet,status,processingDetails', id: cleanVideoId }).toString();
   let response;
   try {
     response = await fetch(url, {
-      headers: { Authorization: `Bearer ${credentials.accessToken}` },
+      headers: { Authorization: `Bearer ${accessToken}` },
       signal: requestSignal()
     });
   } catch (error) {
-    return { ok: false, reason: `YouTube status lookup failed: ${error.message}` };
+    return {
+      ok: false,
+      code: 'youtube_api_unavailable',
+      retryable: true,
+      reason: `YouTube status lookup failed: ${error.message}`
+    };
   }
   const body = await parseResponseBody(response);
   if (!response.ok) {
     return {
       ok: false,
       reason: normalizeGoogleApiErrorMessage(body, response.status, 'YouTube status lookup'),
-      code: response.status === 403 ? 'missing_readonly_scope' : 'youtube_api_error'
+      code: response.status === 403 ? 'missing_readonly_scope' : 'youtube_api_error',
+      retryable: response.status === 429 || response.status >= 500
     };
   }
   const item = body && Array.isArray(body.items) ? body.items[0] : null;
-  if (!item) return { ok: false, reason: 'YouTube returned no video for this ID (it may have been deleted).', code: 'video_not_found' };
+  if (!item) {
+    return {
+      ok: false,
+      reason: 'YouTube returned no video for this ID (it may still be propagating or may have been deleted).',
+      code: 'video_not_found',
+      retryable: true
+    };
+  }
   const status = item.status || {};
+  const snippet = item.snippet || {};
   const processing = item.processingDetails || {};
   return {
     ok: true,
     videoId: cleanVideoId,
+    channelId: String(snippet.channelId || ''),
+    channelTitle: String(snippet.channelTitle || ''),
+    channelHandle: '',
+    title: String(snippet.title || ''),
     uploadStatus: String(status.uploadStatus || ''),
     privacyStatus: String(status.privacyStatus || ''),
     processingStatus: String(processing.processingStatus || '')
+  };
+}
+
+async function getUploadedVideoStatus({ userId, accountId, videoId, workspaceScope }) {
+  const credentials = await getActiveYouTubeCredentials(userId, accountId, workspaceScope);
+  if (!credentials.ok) return { ok: false, code: credentials.code, reason: credentials.reason };
+  return readUploadedVideo(credentials.accessToken, videoId);
+}
+
+function verificationFailure(code, reason, status = null) {
+  return {
+    ok: false,
+    code,
+    reason,
+    ...(status && status.videoId ? { externalVideoId: status.videoId } : {})
+  };
+}
+
+async function verifyUploadedVideo({ accessToken, accountId, videoId, expectedTitle }) {
+  let status = null;
+  for (let attempt = 0; attempt < VERIFICATION_ATTEMPTS; attempt += 1) {
+    status = await readUploadedVideo(accessToken, videoId);
+    if (status.ok || !status.retryable || attempt === VERIFICATION_ATTEMPTS - 1) break;
+    await new Promise((resolve) => setTimeout(resolve, VERIFICATION_BACKOFF_MS[attempt] || 1_000));
+  }
+  if (!status || !status.ok) {
+    return verificationFailure(
+      status && status.code ? status.code : 'provider_verification_failed',
+      status && status.reason ? status.reason : 'YouTube read-back verification did not return a resource.',
+      status
+    );
+  }
+  if (status.videoId !== String(videoId || '').trim()) {
+    return verificationFailure('provider_video_id_mismatch', 'YouTube read-back returned a different video ID.', status);
+  }
+  if (status.channelId !== String(accountId || '').trim()) {
+    return verificationFailure('provider_channel_mismatch', 'YouTube read-back returned a different channel.', status);
+  }
+  if (status.privacyStatus !== 'private') {
+    return verificationFailure('provider_privacy_mismatch', 'YouTube read-back did not confirm private visibility.', status);
+  }
+  if (status.title !== String(expectedTitle || '').trim()) {
+    return verificationFailure('provider_title_mismatch', 'YouTube read-back title does not match the submitted proof title.', status);
+  }
+  if (['rejected', 'deleted', 'failed'].includes(status.uploadStatus.toLowerCase())) {
+    return verificationFailure('provider_upload_rejected', `YouTube reported upload status ${status.uploadStatus}.`, status);
+  }
+  let channel;
+  try {
+    const channels = await listMyChannels(accessToken);
+    channel = channels.find((entry) => entry.channelId === status.channelId);
+  } catch (error) {
+    return verificationFailure('provider_channel_verification_failed', error.message, status);
+  }
+  if (!channel) {
+    return verificationFailure('provider_channel_mismatch', 'The uploaded resource channel is not owned by the authenticated YouTube identity.', status);
+  }
+  return {
+    ok: true,
+    provider: 'youtube',
+    externalVideoId: status.videoId,
+    channelId: status.channelId,
+    channelTitle: channel.title || status.channelTitle,
+    channelHandle: channel.handle,
+    title: status.title,
+    privacyStatus: status.privacyStatus,
+    uploadStatus: status.uploadStatus,
+    processingStatus: status.processingStatus,
+    verifiedAt: new Date().toISOString(),
+    uploadMethod: UPLOAD_METHOD
   };
 }
 
@@ -668,6 +758,17 @@ async function getUploadedVideoStatus({ userId, accountId, videoId, workspaceSco
 
 function scopeIncludesUpload(scopeValue) {
   return String(scopeValue || '').split(/[,\s]+/).includes(UPLOAD_SCOPE);
+}
+
+function preProviderUploadFailure(reason, code) {
+  return {
+    ok: false,
+    mode: 'api',
+    ...(code ? { code } : {}),
+    providerMutationStarted: false,
+    failureBoundary: 'before_provider_upload_session',
+    reason
+  };
 }
 
 /**
@@ -679,53 +780,53 @@ function scopeIncludesUpload(scopeValue) {
 async function publishScheduledYouTubePost(post) {
   const configStatus = getYouTubeConfigStatus();
   if (!configStatus.configured) {
-    return { ok: false, mode: 'api', reason: 'YouTube publishing is not configured on this deployment; publishing was blocked.' };
+    return preProviderUploadFailure('YouTube publishing is not configured on this deployment; publishing was blocked.');
   }
   if (!configStatus.privateOnly) {
     // Part 3 implements private uploads only. Disabling the safety mode
     // does not unlock anything — it halts the provider.
-    return { ok: false, mode: 'api', reason: 'YOUTUBE_PRIVATE_ONLY is disabled but only private publishing is implemented; publishing was blocked.' };
+    return preProviderUploadFailure('YOUTUBE_PRIVATE_ONLY is disabled but only private publishing is implemented; publishing was blocked.');
   }
   const accountId = String(post.accountId || '').trim();
   if (!accountId || accountId === 'legacy') {
-    return { ok: false, mode: 'api', reason: 'YouTube channel is unassigned for this job; publishing was blocked.' };
+    return preProviderUploadFailure('YouTube channel is unassigned for this job; publishing was blocked.');
   }
   if (post.publishId) {
-    return { ok: false, mode: 'api', reason: 'This job already has a YouTube video ID; publishing again was blocked.' };
+    return preProviderUploadFailure('This job already has a YouTube video ID; publishing again was blocked.');
   }
 
   const workspaceScope = post.workspaceId ? { workspaceId: post.workspaceId } : undefined;
   const account = await storage.getYouTubeAccount(post.userId, accountId, workspaceScope);
   if (!account) {
-    return { ok: false, mode: 'api', reason: `YouTube channel ${accountId} is not connected for this owner; publishing was blocked.` };
+    return preProviderUploadFailure(`YouTube channel ${accountId} is not connected for this owner; publishing was blocked.`);
   }
   if (!account.connected) {
-    return { ok: false, mode: 'api', reason: 'YouTube channel is disconnected; reconnect it before publishing.' };
+    return preProviderUploadFailure('YouTube channel is disconnected; reconnect it before publishing.');
   }
   if (account.reauthorizationRequired) {
-    return { ok: false, mode: 'api', code: 'reauthorization_required', reason: 'YouTube channel requires reauthorization; reconnect it before publishing.' };
+    return preProviderUploadFailure('YouTube channel requires reauthorization; reconnect it before publishing.', 'reauthorization_required');
   }
   if (account.grantedScopes && !scopeIncludesUpload(account.grantedScopes)) {
-    return { ok: false, mode: 'api', reason: 'The stored YouTube authorization is missing the youtube.upload scope; reconnect the channel.' };
+    return preProviderUploadFailure('The stored YouTube authorization is missing the youtube.upload scope; reconnect the channel.');
   }
 
   const youtubeMeta = (post.providerMetadata && post.providerMetadata.youtube) || {};
   const metadataCheck = validateYouTubeMetadata(youtubeMeta);
   if (!metadataCheck.ok) {
-    return { ok: false, mode: 'api', reason: metadataCheck.reason };
+    return preProviderUploadFailure(metadataCheck.reason);
   }
   if (String(post.mediaType || '').toLowerCase() !== 'video') {
-    return { ok: false, mode: 'api', reason: 'YouTube publishing is video-only; this job has no video media.' };
+    return preProviderUploadFailure('YouTube publishing is video-only; this job has no video media.');
   }
 
   const credentials = await getActiveYouTubeCredentials(post.userId, accountId, workspaceScope);
   if (!credentials.ok) {
-    return { ok: false, mode: 'api', code: credentials.code, reason: credentials.reason };
+    return preProviderUploadFailure(credentials.reason, credentials.code);
   }
 
   const media = await getVideoSource(post);
   if (!media.ok) {
-    return { ok: false, mode: 'api', reason: media.reason };
+    return preProviderUploadFailure(media.reason);
   }
 
   try {
@@ -739,12 +840,41 @@ async function publishScheduledYouTubePost(post) {
       }
     });
     if (result.ok) {
-      return { ...result, providerStatus: 'uploaded_private' };
+      const verification = await verifyUploadedVideo({
+        accessToken: credentials.accessToken,
+        accountId,
+        videoId: result.response.video_id,
+        expectedTitle: metadataCheck.title
+      });
+      if (!verification.ok) {
+        return {
+          ok: false,
+          mode: 'api',
+          code: 'PROVIDER_VERIFICATION_FAILED',
+          outcomeUnknown: true,
+          sessionCreated: true,
+          providerMutationStarted: true,
+          failureBoundary: 'provider_read_back',
+          providerStatus: 'provider_verification_required',
+          response: result.response,
+          reason: verification.reason
+        };
+      }
+      return {
+        ...result,
+        providerMutationStarted: true,
+        providerStatus: 'uploaded_private',
+        providerVerification: verification
+      };
     }
     return {
       ok: false,
       mode: 'api',
       reason: result.reason,
+      providerMutationStarted: result.sessionCreated === true,
+      failureBoundary: result.sessionCreated === true
+        ? 'provider_upload_session'
+        : 'before_provider_upload_session',
       ...(result.outcomeUnknown ? { outcomeUnknown: true, code: 'PROVIDER_RECONCILIATION_REQUIRED' } : {}),
       ...(result.providerErrorCategory ? { providerErrorCategory: result.providerErrorCategory } : {})
     };
@@ -819,7 +949,9 @@ module.exports = {
   isTrustedRemoteMediaUrl,
   getVideoSource,
   uploadVideo,
+  readUploadedVideo,
   getUploadedVideoStatus,
+  verifyUploadedVideo,
   publishScheduledYouTubePost,
   redactSensitive
 };

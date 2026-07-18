@@ -1611,7 +1611,13 @@ async function addUploadedPosts(userId, files, defaults = {}) {
           brandedContent: false,
           lockedAt: null,
           lockedBy: null,
-          claimAttempts: 0
+          claimAttempts: 0,
+          // YouTube approval grants exactly one durable provider attempt.
+          // Unapproved drafts start closed; approvePost advances this ceiling
+          // from the current durable claim count.
+          publishAttemptBudget: providerId === providers.PROVIDER_YOUTUBE
+            ? (selfApprove ? 1 : 0)
+            : null
         };
 
         if (!defaults.usageReservation) {
@@ -1725,12 +1731,18 @@ async function approvePost(userId, id, { approvedBy } = {}, accountId, workspace
   if (!APPROVABLE_STATUSES.includes(post.status)) return null;
 
   const reviewer = String(approvedBy || '').trim() || 'admin';
-  await ref.update({
+  const approvalPatch = {
     approvedAt: Timestamp.now(),
     approvedBy: reviewer,
     history: appendHistoryEntry(snap.data().history, 'approved', `Approved by ${reviewer}.`),
     updatedAt: FieldValue.serverTimestamp()
-  });
+  };
+  if (post.provider === providers.PROVIDER_YOUTUBE) {
+    // Each explicit human approval authorizes one and only one additional
+    // claim. The ceiling is absolute, so restart/replay cannot reset it.
+    approvalPatch.publishAttemptBudget = Number(snap.data().claimAttempts || 0) + 1;
+  }
+  await ref.update(approvalPatch);
   const updated = await ref.get();
   return postFromDoc(updated);
 }

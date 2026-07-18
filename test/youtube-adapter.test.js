@@ -114,7 +114,12 @@ const server = http.createServer((req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/videos') {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({
-        items: [{ id: url.searchParams.get('id'), status: { uploadStatus: 'processed', privacyStatus: 'private' }, processingDetails: { processingStatus: 'succeeded' } }]
+        items: [{
+          id: url.searchParams.get('id'),
+          snippet: { channelId: 'UC-chanter', channelTitle: 'chanterCy', title: 'Test title' },
+          status: { uploadStatus: 'processed', privacyStatus: 'private' },
+          processingDetails: { processingStatus: 'succeeded' }
+        }]
       }));
       return;
     }
@@ -297,6 +302,21 @@ test('successful upload streams a local file, forces private + notifySubscribers
   assert.equal(result.response.video_id, 'yt-video-123');
   assert.equal(result.response.privacy_status, 'private');
   assert.equal(result.providerStatus, 'uploaded_private');
+  assert.deepEqual(result.providerVerification, {
+    ok: true,
+    provider: 'youtube',
+    externalVideoId: 'yt-video-123',
+    channelId: 'UC-chanter',
+    channelTitle: 'chanterCy',
+    channelHandle: '@chanterCy',
+    title: 'Test title',
+    privacyStatus: 'private',
+    uploadStatus: 'processed',
+    processingStatus: 'succeeded',
+    verifiedAt: result.providerVerification.verifiedAt,
+    uploadMethod: 'resumable'
+  });
+  assert.equal(Number.isFinite(Date.parse(result.providerVerification.verifiedAt)), true);
 
   const init = requestsLog.filter((entry) => entry.path === '/upload/videos').at(-1);
   assert.equal(init.query.uploadType, 'resumable', 'the documented resumable protocol is used');
@@ -461,6 +481,10 @@ test('status lookup returns normalized safe fields', async () => {
   assert.deepEqual(status, {
     ok: true,
     videoId: 'yt-video-123',
+    channelId: 'UC-chanter',
+    channelTitle: 'chanterCy',
+    channelHandle: '',
+    title: 'Test title',
     uploadStatus: 'processed',
     privacyStatus: 'private',
     processingStatus: 'succeeded'

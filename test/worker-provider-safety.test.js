@@ -193,7 +193,9 @@ test('worker publishes TikTok jobs, refuses unsupported explicit providers, and 
   const youtubeRecord = records.get('youtube-job');
   assert.equal(youtubeRecord.status, 'failed', 'youtube-job must be terminally refused when unconfigured');
   assert.match(youtubeRecord.errorMessage, /not configured/i);
-  assert.equal(youtubeRecord.lastResult.willRetry, undefined, 'an unconfigured provider must not schedule a retry');
+  assert.equal(youtubeRecord.lastResult.willRetry, false, 'an unconfigured provider must not schedule a retry');
+  assert.equal(youtubeRecord.lastResult.code, 'PUBLISH_ATTEMPT_BUDGET_EXHAUSTED');
+  assert.equal(youtubeRecord.providerStatus, 'attempt_budget_exhausted');
   const youtubeError = summary.errors.find((entry) => entry.id === 'youtube-job');
   assert.match(youtubeError.error, /not configured/i);
 

@@ -4,6 +4,7 @@ const config = require('./config');
 const { Timestamp } = require('./firestore');
 
 const DEFAULT_USER_ID = config.defaultUserId;
+const YOUTUBE_APPROVAL_ATTEMPT_GRANT = 1;
 
 // Evidence log cap. Publish attempts are already bounded by
 // SCHEDULER_MAX_CLAIM_ATTEMPTS, so this is a belt-and-braces limit that
@@ -15,7 +16,8 @@ const SAFE_RESULT_STRING_FIELDS = Object.freeze([
   'code',
   'completedAt',
   'providerStatus',
-  'providerErrorCategory'
+  'providerErrorCategory',
+  'failureBoundary'
 ]);
 const SAFE_RESULT_BOOLEAN_FIELDS = Object.freeze([
   'ok',
@@ -23,7 +25,8 @@ const SAFE_RESULT_BOOLEAN_FIELDS = Object.freeze([
   'willRetry',
   'published',
   'sessionCreated',
-  'definitiveFailure'
+  'definitiveFailure',
+  'providerMutationStarted'
 ]);
 const SAFE_RESULT_NUMBER_FIELDS = Object.freeze(['attempts']);
 const SAFE_RESPONSE_FIELDS = new Set([
@@ -31,7 +34,7 @@ const SAFE_RESPONSE_FIELDS = new Set([
   'video_id', 'videoid', 'share_url', 'shareurl', 'post_url', 'posturl',
   'permalink', 'public_url', 'publicurl', 'status', 'publish_status',
   'publishstatus', 'log_id', 'logid', 'privacy_status', 'upload_status',
-  'channel_id', 'uploaded', 'size', 'chunks'
+  'channel_id', 'upload_method', 'uploaded', 'size', 'chunks'
 ]);
 const SAFE_RESPONSE_CONTAINERS = new Set(['data', 'result', 'video']);
 
@@ -109,6 +112,39 @@ function sanitizePostResult(value) {
   return Object.keys(safe).length > 0 ? safe : null;
 }
 
+function sanitizeProviderVerification(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const provider = String(value.provider || '').trim().toLowerCase();
+  const externalVideoId = scrubEvidenceText(value.externalVideoId, 128).trim();
+  const channelId = scrubEvidenceText(value.channelId, 256).trim();
+  const title = scrubEvidenceText(value.title, 100).trim();
+  const privacyStatus = String(value.privacyStatus || '').trim().toLowerCase();
+  const verifiedAt = String(value.verifiedAt || '').trim();
+  const uploadMethod = String(value.uploadMethod || '').trim().toLowerCase();
+  if (
+    provider !== 'youtube'
+    || !externalVideoId
+    || !channelId
+    || !title
+    || privacyStatus !== 'private'
+    || uploadMethod !== 'resumable'
+    || !Number.isFinite(Date.parse(verifiedAt))
+  ) return null;
+  return {
+    provider: 'youtube',
+    externalVideoId,
+    channelId,
+    channelTitle: scrubEvidenceText(value.channelTitle, 200).trim(),
+    channelHandle: scrubEvidenceText(value.channelHandle, 200).trim(),
+    title,
+    privacyStatus: 'private',
+    uploadStatus: scrubEvidenceText(value.uploadStatus, 120).trim(),
+    processingStatus: scrubEvidenceText(value.processingStatus, 120).trim(),
+    verifiedAt,
+    uploadMethod: 'resumable'
+  };
+}
+
 function sanitizeHistory(history) {
   if (!Array.isArray(history)) return [];
   return history.slice(-POST_HISTORY_LIMIT).flatMap((entry) => {
@@ -154,6 +190,32 @@ function normalizeQueueStatus(value) {
   // Compatibility for documents created before the Firestore scheduler
   // renamed the in-flight state. Do not manufacture provider states here.
   return status === 'publishing' ? 'processing' : status;
+}
+
+/**
+ * Returns the durable claim ceiling for the current publish approval.
+ *
+ * YouTube approvals are intentionally single-attempt. Older YouTube drafts
+ * predate the persisted field, so they fail closed to one total claim rather
+ * than inheriting the deployment-wide retry count. Other providers retain
+ * the existing scheduler retry ceiling.
+ */
+function resolvePublishAttemptBudget(data) {
+  const rawStored = data && data.publishAttemptBudget;
+  const stored = Number(rawStored);
+  if (
+    rawStored !== null
+    && rawStored !== undefined
+    && Number.isSafeInteger(stored)
+    && stored >= 0
+    && stored <= 1000
+  ) return stored;
+
+  const provider = String((data && (data.provider || data.platform)) || 'tiktok')
+    .trim()
+    .toLowerCase();
+  if (provider === 'youtube') return YOUTUBE_APPROVAL_ATTEMPT_GRANT;
+  return Math.max(1, Number(config.scheduler.maxClaimAttempts) || 1);
 }
 
 /**
@@ -276,6 +338,7 @@ function postFromDoc(doc) {
     // Provider-reported state beyond the queue lifecycle (e.g. YouTube
     // 'uploaded_private'). '' means the provider reported nothing.
     providerStatus: data.providerStatus || '',
+    providerVerification: sanitizeProviderVerification(data.providerVerification),
     // Bounded provider-specific metadata (Part 3: YouTube). Explicit
     // allowlist copy — whatever lands in the document, only these safe
     // fields reach the app/UI/Runtime, never anything credential-shaped.
@@ -320,7 +383,10 @@ function postFromDoc(doc) {
     // or the view currently reads these, but scheduler.js does.
     lockedAt: toIsoOrNull(data.lockedAt),
     lockedBy: data.lockedBy || null,
-    claimAttempts: Number(data.claimAttempts || 0)
+    claimAttempts: Number(data.claimAttempts || 0),
+    publishAttemptBudget: resolvePublishAttemptBudget(data),
+    attemptBudgetExhausted:
+      Number(data.claimAttempts || 0) >= resolvePublishAttemptBudget(data)
   };
 }
 
@@ -335,6 +401,9 @@ function mapPatchToFirestore(patch) {
   if ('lastResult' in result) result.lastResult = sanitizePostResult(result.lastResult);
   if ('lastInstagramResult' in result) result.lastInstagramResult = sanitizePostResult(result.lastInstagramResult);
   if ('history' in result) result.history = sanitizeHistory(result.history);
+  if ('providerVerification' in result) {
+    result.providerVerification = sanitizeProviderVerification(result.providerVerification);
+  }
 
   if ('scheduledAt' in result) {
     result.scheduledAt = toTimestampOrNull(result.scheduledAt);
@@ -359,9 +428,11 @@ module.exports = {
   toTimestampOrNull,
   toIsoOrNull,
   normalizeQueueStatus,
+  resolvePublishAttemptBudget,
   scrubEvidenceText,
   sanitizeProviderResponse,
   sanitizePostResult,
+  sanitizeProviderVerification,
   sanitizeHistory,
   postFromDoc,
   mapPatchToFirestore

@@ -130,6 +130,10 @@ function statusLastResultView(post) {
   if (typeof safe.completedAt === 'string') view.completedAt = safe.completedAt;
   if (typeof safe.willRetry === 'boolean') view.willRetry = safe.willRetry;
   if (typeof safe.outcomeUnknown === 'boolean') view.outcomeUnknown = safe.outcomeUnknown;
+  if (typeof safe.providerMutationStarted === 'boolean') {
+    view.providerMutationStarted = safe.providerMutationStarted;
+  }
+  if (typeof safe.failureBoundary === 'string') view.failureBoundary = safe.failureBoundary;
   return Object.keys(view).length > 0 ? view : null;
 }
 
@@ -146,6 +150,8 @@ function statusHistoryView(post) {
 }
 
 function postStatusView(post) {
+  const claimAttempts = Number(post.claimAttempts || 0);
+  const publishAttemptBudget = Number(post.publishAttemptBudget || 0);
   return {
     ...queueItemView(post),
     // Canonical queue lifecycle status. postFromDoc already normalizes the
@@ -164,10 +170,17 @@ function postStatusView(post) {
     // allowlist — titles/privacy flags only, never credentials).
     providerStatus: post.providerStatus || '',
     providerMetadata: post.providerMetadata || null,
+    // Provider read-back proof is a strict allowlisted mapper projection:
+    // external artifact identity, channel/title, private status, processing
+    // state, and verification time only. No provider response or credential
+    // material crosses the Runtime boundary.
+    providerVerification: post.providerVerification || null,
     // Scheduler lifecycle evidence. lockedAt is safe timing evidence;
     // lockedBy (worker identity) is deliberately never exposed.
     lockedAt: post.lockedAt || null,
-    claimAttempts: Number(post.claimAttempts || 0),
+    claimAttempts,
+    publishAttemptBudget,
+    attemptBudgetExhausted: claimAttempts >= publishAttemptBudget,
     // Agent Runtime correlation metadata persisted at schedule time. These
     // are opaque mission identifiers/hashes, never tokens or payloads.
     runtimeMissionId: String(post.runtimeMissionId || ''),

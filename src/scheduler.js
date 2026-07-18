@@ -7,7 +7,9 @@ const {
   postFromDoc,
   toTimestampOrNull,
   appendHistoryEntry,
-  sanitizePostResult
+  sanitizePostResult,
+  sanitizeProviderVerification,
+  resolvePublishAttemptBudget
 } = require('./postsMapper');
 const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
@@ -25,8 +27,6 @@ function getUsageService() {
 }
 
 const STALE_LOCK_MS = Math.max(1, config.scheduler.staleLockMinutes) * 60 * 1000;
-const MAX_CLAIM_ATTEMPTS = Math.max(1, config.scheduler.maxClaimAttempts);
-
 // Deterministic, bounded backoff schedule (minutes) for transient publish
 // failures. Indexed by claim attempt number; the last entry caps the delay.
 const RETRY_BACKOFF_MINUTES = [1, 5, 15, 60];
@@ -117,6 +117,9 @@ const APPROVAL_BLOCKED_REASON =
 // handler here. The refusal is terminal (no retry) and never falls back to
 // the TikTok publish path.
 const PROVIDER_UNSUPPORTED = 'PROVIDER_UNSUPPORTED';
+const PUBLISH_ATTEMPT_BUDGET_EXHAUSTED = 'PUBLISH_ATTEMPT_BUDGET_EXHAUSTED';
+const ATTEMPT_BUDGET_BLOCKED_REASON =
+  'The durable publish-attempt budget for this approval is exhausted; a new human approval is required.';
 
 function isExplicitlyApproved(data) {
   const approvedAt = data && data.approvedAt;
@@ -327,7 +330,8 @@ async function reclaimOne(ref) {
       if (data.status !== 'processing') return;
 
       const attempts = Number(data.claimAttempts || 0);
-      if (attempts >= MAX_CLAIM_ATTEMPTS) {
+      const attemptBudget = resolvePublishAttemptBudget(data);
+      if (attempts >= attemptBudget) {
         const reason = `Publish worker stopped during ${attempts} attempts`;
         tx.update(ref, {
           status: 'failed',
@@ -335,9 +339,17 @@ async function reclaimOne(ref) {
           lockedBy: null,
           failedAt: FieldValue.serverTimestamp(),
           errorMessage: reason,
+          providerStatus: 'attempt_budget_exhausted',
           updatedAt: FieldValue.serverTimestamp(),
-          lastResult: sanitizePostResult({ ok: false, mode: 'api', reason, completedAt: new Date().toISOString() }),
-          history: appendHistoryEntry(data.history, 'failed', reason)
+          lastResult: sanitizePostResult({
+            ok: false,
+            mode: 'api',
+            code: PUBLISH_ATTEMPT_BUDGET_EXHAUSTED,
+            reason,
+            attempts,
+            completedAt: new Date().toISOString()
+          }),
+          history: appendHistoryEntry(data.history, 'attempt_budget_exhausted', reason)
         });
         return;
       }
@@ -399,17 +411,56 @@ async function claimPost(id, { force, workerId, now = new Date() }) {
       return { blocked: APPROVAL_REQUIRED };
     }
 
+    const attempts = Number(data.claimAttempts || 0);
+    const attemptBudget = resolvePublishAttemptBudget(data);
+    if (attempts >= attemptBudget) {
+      // A duplicate delivery or manual force replay must not reopen the
+      // exhausted approval. A scheduled legacy record is closed through the
+      // canonical queue transition; an already-terminal record is untouched.
+      if (data.status !== 'failed') {
+        tx.update(ref, {
+          status: 'failed',
+          failedAt: FieldValue.serverTimestamp(),
+          errorMessage: data.errorMessage || ATTEMPT_BUDGET_BLOCKED_REASON,
+          lockedAt: null,
+          lockedBy: null,
+          providerStatus: 'attempt_budget_exhausted',
+          lastResult: sanitizePostResult({
+            ...(data.lastResult || {}),
+            ok: false,
+            mode: (data.lastResult && data.lastResult.mode) || 'blocked',
+            code: PUBLISH_ATTEMPT_BUDGET_EXHAUSTED,
+            reason: data.errorMessage || ATTEMPT_BUDGET_BLOCKED_REASON,
+            willRetry: false,
+            attempts,
+            completedAt: new Date().toISOString()
+          }),
+          history: appendHistoryEntry(
+            data.history,
+            'attempt_budget_exhausted',
+            `Publishing remained blocked at ${attempts} of ${attemptBudget} authorized claims.`
+          ),
+          updatedAt: FieldValue.serverTimestamp()
+        });
+      }
+      return {
+        blocked: PUBLISH_ATTEMPT_BUDGET_EXHAUSTED,
+        reason: ATTEMPT_BUDGET_BLOCKED_REASON
+      };
+    }
+
     tx.update(ref, {
       status: 'processing',
       lockedAt: FieldValue.serverTimestamp(),
       lockedBy: workerId,
       claimAttempts: FieldValue.increment(1),
-      history: appendHistoryEntry(data.history, 'publish_attempt', `Claimed by worker for publishing (attempt ${Number(data.claimAttempts || 0) + 1}).`),
+      history: appendHistoryEntry(data.history, 'publish_attempt', `Claimed by worker for publishing (attempt ${attempts + 1} of ${attemptBudget} authorized claims).`),
       updatedAt: FieldValue.serverTimestamp()
     });
 
     const claimed = postFromDoc(snap);
     claimed.status = 'processing';
+    claimed.claimAttempts = attempts + 1;
     return claimed;
   });
 }
@@ -428,6 +479,16 @@ async function processPost(id, {
       code: APPROVAL_REQUIRED,
       postId: id,
       reason: APPROVAL_BLOCKED_REASON
+    };
+  }
+  if (claimed && claimed.blocked === PUBLISH_ATTEMPT_BUDGET_EXHAUSTED) {
+    console.warn(`[JOB_BLOCKED_ATTEMPT_BUDGET] id=${id}`);
+    return {
+      ok: false,
+      mode: 'blocked',
+      code: PUBLISH_ATTEMPT_BUDGET_EXHAUSTED,
+      postId: id,
+      reason: claimed.reason || ATTEMPT_BUDGET_BLOCKED_REASON
     };
   }
   if (!claimed) {
@@ -525,14 +586,32 @@ async function publishScheduledInstagramPost(post) {
 async function finalize(id, workerId, result) {
   const ref = postsCollection().doc(id);
   const completedAt = new Date().toISOString();
+  let publishId = extractPublishId(result && result.response);
+  let providerVerification = sanitizeProviderVerification(result && result.providerVerification);
+  if (
+    result.ok
+    && result.providerStatus === 'uploaded_private'
+    && (!publishId || !providerVerification)
+  ) {
+    result = {
+      ...result,
+      ok: false,
+      outcomeUnknown: true,
+      code: 'PROVIDER_VERIFICATION_FAILED',
+      providerStatus: 'provider_verification_required',
+      reason: 'YouTube returned upload success without complete read-back verification; reconciliation is required.'
+    };
+    publishId = extractPublishId(result.response);
+    providerVerification = sanitizeProviderVerification(result.providerVerification);
+  }
   const reason = result.reason || 'TikTok publish failed';
   let applied = false;
   let retryScheduled = false;
   let usageReconciliationRequired = false;
 
-  // Extract a durable publish identifier from the TikTok API response
-  // so we can guard against duplicate publishing on retry.
-  const publishId = result.ok ? extractPublishId(result.response) : null;
+  // Extract a durable publish identifier even when provider read-back fails
+  // after upload. Once a real external ID is known, no retry path may create
+  // another video merely because verification or persistence was delayed.
 
   await getFirestore().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
@@ -596,6 +675,9 @@ async function finalize(id, workerId, result) {
       if (result.providerStatus) {
         update.providerStatus = String(result.providerStatus);
       }
+      if (providerVerification) {
+        update.providerVerification = providerVerification;
+      }
       tx.update(ref, update);
     } else if (result.outcomeUnknown) {
       // Ambiguous external outcome (bytes may have reached the provider,
@@ -603,7 +685,7 @@ async function finalize(id, workerId, result) {
       // never report clean failure. The job leaves the claimable state
       // machine until a human (or a future reconciliation flow) resolves
       // what the provider actually did.
-      tx.update(ref, {
+      const update = {
         status: 'outcome_unknown',
         failedAt: null,
         errorMessage: reason,
@@ -615,6 +697,10 @@ async function finalize(id, workerId, result) {
           mode: result.mode || 'api',
           code: result.code || 'PROVIDER_RECONCILIATION_REQUIRED',
           outcomeUnknown: true,
+          ...(typeof result.providerMutationStarted === 'boolean'
+            ? { providerMutationStarted: result.providerMutationStarted }
+            : {}),
+          ...(result.failureBoundary ? { failureBoundary: result.failureBoundary } : {}),
           reason,
           completedAt
         }),
@@ -622,7 +708,11 @@ async function finalize(id, workerId, result) {
         usageReconciliationRequired,
         history: appendHistoryEntry(data.history, 'outcome_unknown', reason),
         updatedAt: FieldValue.serverTimestamp()
-      });
+      };
+      if (publishId) update.publishId = publishId;
+      if (result.providerStatus) update.providerStatus = String(result.providerStatus);
+      if (providerVerification) update.providerVerification = providerVerification;
+      tx.update(ref, update);
     } else {
       // Store redacted error metadata — no raw tokens or full payloads.
       const safeResult = {
@@ -632,9 +722,15 @@ async function finalize(id, workerId, result) {
         completedAt
       };
       if (result.code) safeResult.code = result.code;
+      if (typeof result.providerMutationStarted === 'boolean') {
+        safeResult.providerMutationStarted = result.providerMutationStarted;
+      }
+      if (result.failureBoundary) safeResult.failureBoundary = result.failureBoundary;
 
       const attempts = Number(data.claimAttempts || 0);
-      const shouldRetry = isTransientPublishFailure(result) && attempts < MAX_CLAIM_ATTEMPTS;
+      const attemptBudget = resolvePublishAttemptBudget(data);
+      const attemptBudgetExhausted = attempts >= attemptBudget;
+      const shouldRetry = isTransientPublishFailure(result) && !attemptBudgetExhausted;
 
       if (shouldRetry) {
         const nextAttemptAt = Timestamp.fromMillis(Date.now() + retryBackoffMs(attempts));
@@ -651,14 +747,29 @@ async function finalize(id, workerId, result) {
           updatedAt: FieldValue.serverTimestamp()
         });
       } else {
+        const terminalResult = attemptBudgetExhausted
+          ? {
+              ...safeResult,
+              code: PUBLISH_ATTEMPT_BUDGET_EXHAUSTED,
+              willRetry: false,
+              attempts
+            }
+          : safeResult;
         tx.update(ref, {
           status: 'failed',
           failedAt: Timestamp.now(),
           errorMessage: reason,
           lockedAt: null,
           lockedBy: null,
-          lastResult: sanitizePostResult(safeResult),
-          history: appendHistoryEntry(data.history, 'failed', reason),
+          ...(attemptBudgetExhausted ? { providerStatus: 'attempt_budget_exhausted' } : {}),
+          lastResult: sanitizePostResult(terminalResult),
+          history: appendHistoryEntry(
+            data.history,
+            attemptBudgetExhausted ? 'attempt_budget_exhausted' : 'failed',
+            attemptBudgetExhausted
+              ? `${reason} No automatic retry was scheduled because all ${attemptBudget} authorized claims were consumed.`
+              : reason
+          ),
           updatedAt: FieldValue.serverTimestamp()
         });
       }
@@ -752,6 +863,7 @@ module.exports = {
   processPost,
   APPROVAL_REQUIRED,
   PROVIDER_UNSUPPORTED,
+  PUBLISH_ATTEMPT_BUDGET_EXHAUSTED,
   _private: {
     claimPost,
     findDueJobs,

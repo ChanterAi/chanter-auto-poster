@@ -637,11 +637,11 @@ test('runtime post status exposes the bounded Phase 2E-B lifecycle contract trut
   };
 
   const EXPECTED_STATUS_KEYS = [
-    'accountId', 'approvalState', 'approved', 'approvedAt', 'approvedBy',
+    'accountId', 'approvalState', 'approved', 'approvedAt', 'approvedBy', 'attemptBudgetExhausted',
     'captionSummary', 'claimAttempts', 'connectedAccountId', 'createdAt',
     'history', 'id', 'lastErrorMessage', 'lastResult', 'lockedAt',
     'mediaType', 'postedAt', 'provider', 'providerMetadata', 'providerStatus',
-    'publishId', 'runtimeAction', 'runtimeIdempotencyKey', 'runtimeMissionId',
+    'providerVerification', 'publishAttemptBudget', 'publishId', 'runtimeAction', 'runtimeIdempotencyKey', 'runtimeMissionId',
     'runtimePayloadHash', 'scheduledAt', 'status', 'updatedAt', 'username',
     'workspaceId'
   ];

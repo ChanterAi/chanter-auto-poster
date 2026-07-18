@@ -48,6 +48,7 @@ test('worker routes YouTube jobs to the adapter and persists truthful outcomes',
   });
   const records = new Map([
     ['youtube-ok-job', baseJob({})],
+    ['youtube-unverified-job', baseJob({})],
     ['youtube-ambiguous-job', baseJob({})],
     ['youtube-already-uploaded-job', baseJob({ publishId: 'yt-existing-1' })],
     ['tiktok-job', baseJob({
@@ -118,7 +119,20 @@ test('worker routes YouTube jobs to the adapter and persists truthful outcomes',
       ok: true,
       mode: 'api',
       response: { video_id: 'yt-video-777', privacy_status: 'private', upload_status: 'uploaded', channel_id: 'UC-chanter' },
-      providerStatus: 'uploaded_private'
+      providerStatus: 'uploaded_private',
+      providerVerification: {
+        provider: 'youtube',
+        externalVideoId: 'yt-video-777',
+        channelId: 'UC-chanter',
+        channelTitle: 'CHANTER',
+        channelHandle: '@chantercy',
+        title: 'Private test',
+        privacyStatus: 'private',
+        uploadStatus: 'uploaded',
+        processingStatus: 'succeeded',
+        verifiedAt: '2026-07-11T12:00:00.000Z',
+        uploadMethod: 'resumable'
+      }
     }],
     ['youtube-ambiguous-job', {
       ok: false,
@@ -126,6 +140,12 @@ test('worker routes YouTube jobs to the adapter and persists truthful outcomes',
       outcomeUnknown: true,
       code: 'PROVIDER_RECONCILIATION_REQUIRED',
       reason: 'YouTube upload did not return a definitive result. A video may exist; reconcile before retrying.'
+    }],
+    ['youtube-unverified-job', {
+      ok: true,
+      mode: 'api',
+      response: { video_id: 'yt-video-unverified', privacy_status: 'private', upload_status: 'uploaded', channel_id: 'UC-chanter' },
+      providerStatus: 'uploaded_private'
     }]
   ]);
   require.cache[youtubePath] = {
@@ -156,10 +176,10 @@ test('worker routes YouTube jobs to the adapter and persists truthful outcomes',
   const scheduler = require('../src/scheduler');
   const summary = await scheduler.runSchedulerTick({ now: fixedNow });
 
-  // Routing: exactly the two runnable YouTube jobs reached the adapter;
+  // Routing: exactly the three runnable YouTube jobs reached the adapter;
   // the TikTok job stayed on the TikTok path; the job that already has a
   // provider video id was never claimed at all.
-  assert.deepEqual(youtubeCalls.sort(), ['youtube-ambiguous-job', 'youtube-ok-job']);
+  assert.deepEqual(youtubeCalls.sort(), ['youtube-ambiguous-job', 'youtube-ok-job', 'youtube-unverified-job']);
   assert.deepEqual(tiktokCalls, ['tiktok-job']);
 
   // Success: one video id persisted once, provider status truthful.
@@ -167,6 +187,8 @@ test('worker routes YouTube jobs to the adapter and persists truthful outcomes',
   assert.equal(okRecord.status, 'posted');
   assert.equal(okRecord.publishId, 'yt-video-777');
   assert.equal(okRecord.providerStatus, 'uploaded_private');
+  assert.equal(okRecord.providerVerification.externalVideoId, 'yt-video-777');
+  assert.equal(okRecord.providerVerification.privacyStatus, 'private');
   assert.match(okRecord.history.at(-1).detail, /private/i);
   assert.match(okRecord.history.at(-1).detail, /notifications disabled/i);
   assert.equal(JSON.stringify(okRecord).includes('access_token'), false);
@@ -179,6 +201,14 @@ test('worker routes YouTube jobs to the adapter and persists truthful outcomes',
   assert.equal(ambiguousRecord.lastResult.willRetry, undefined, 'an ambiguous outcome must never blind-retry');
   assert.notEqual(ambiguousRecord.status, 'scheduled', 'the job is out of the claimable pool');
 
+  // An upload response with a real external ID but incomplete read-back is
+  // retained as outcome_unknown. The durable ID blocks every replay path.
+  const unverifiedRecord = records.get('youtube-unverified-job');
+  assert.equal(unverifiedRecord.status, 'outcome_unknown');
+  assert.equal(unverifiedRecord.publishId, 'yt-video-unverified');
+  assert.equal(unverifiedRecord.providerStatus, 'provider_verification_required');
+  assert.equal(unverifiedRecord.lastResult.code, 'PROVIDER_VERIFICATION_FAILED');
+
   // Duplicate prevention: an existing providerPostId blocks any re-upload.
   const alreadyUploaded = records.get('youtube-already-uploaded-job');
   assert.equal(alreadyUploaded.publishId, 'yt-existing-1');
@@ -187,7 +217,7 @@ test('worker routes YouTube jobs to the adapter and persists truthful outcomes',
   // A second tick cannot double-publish anything: posted jobs are not due,
   // outcome_unknown jobs are not claimable, publishId jobs are refused.
   const secondSummary = await scheduler.runSchedulerTick({ now: fixedNow });
-  assert.deepEqual(youtubeCalls.sort(), ['youtube-ambiguous-job', 'youtube-ok-job'], 'no second adapter call for any job');
+  assert.deepEqual(youtubeCalls.sort(), ['youtube-ambiguous-job', 'youtube-ok-job', 'youtube-unverified-job'], 'no second adapter call for any job');
   assert.equal(tiktokCalls.length, 1);
   assert.equal(secondSummary.posted, 0);
 
@@ -195,13 +225,13 @@ test('worker routes YouTube jobs to the adapter and persists truthful outcomes',
   const forced = await scheduler.processPost('youtube-already-uploaded-job', { force: true, now: fixedNow });
   assert.equal(forced.ok, false);
   assert.equal(forced.mode, 'skipped');
-  assert.equal(youtubeCalls.length, 2, 'the adapter was not invoked for the already-uploaded job');
+  assert.equal(youtubeCalls.length, 3, 'the adapter was not invoked for the already-uploaded job');
 
   // Sequential re-processing of a completed job is refused by the claim.
   const reprocess = await scheduler.processPost('youtube-ok-job', { force: true, now: fixedNow });
   assert.equal(reprocess.ok, false);
   assert.equal(reprocess.mode, 'skipped');
-  assert.equal(youtubeCalls.length, 2);
+  assert.equal(youtubeCalls.length, 3);
 
-  assert.equal(summary.posted, 2, 'one TikTok + one YouTube success in the first tick');
+  assert.equal(summary.posted, 2, 'one TikTok + one verified YouTube success in the first tick');
 });
