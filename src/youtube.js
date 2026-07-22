@@ -21,13 +21,30 @@
 // plaintext token.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { createHash, randomBytes } = require('crypto');
+const { createHash, randomBytes, randomUUID } = require('crypto');
+const { Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 const config = require('./config');
 const storage = require('./storage');
 const tokenVault = require('./tokenVault');
 const mediaPolicy = require('./mediaPolicy');
 const providers = require('./providers');
+const {
+  RECEIPT_METHOD,
+  canonicalSha256,
+  sanitizeProviderOperation
+} = require('./youtubeProviderOperation');
+const {
+  approvedMediaMatches,
+  inspectMp4File,
+  sanitizeApprovedMediaIdentity
+} = require('./approvedMediaIdentity');
+const {
+  safeDiagnosticText,
+  sanitizeProviderMaterial
+} = require('./forbiddenMaterial');
 
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 const UPLOAD_SCOPE = 'https://www.googleapis.com/auth/youtube.upload';
@@ -42,7 +59,7 @@ const SENSITIVE_KEYS = new Set([
   'access_token', 'accessToken', 'refresh_token', 'refreshToken',
   'client_secret', 'clientSecret', 'code', 'id_token', 'idToken',
   'authorization', 'Authorization', 'codeVerifier', 'code_verifier',
-  'credentialEnvelope'
+  'credentialEnvelope', 'sessionUrl', 'sessionLocator', 'sessionLocatorEnvelope'
 ]);
 
 function redactSensitive(value) {
@@ -59,7 +76,7 @@ function redactSensitive(value) {
 }
 
 function safeWarn(label, obj) {
-  console.warn(label, JSON.stringify(redactSensitive(obj)));
+  console.warn(label, JSON.stringify(sanitizeProviderMaterial(redactSensitive(obj))));
 }
 
 function requestSignal(timeoutMs = config.youtube.requestTimeoutMs) {
@@ -402,7 +419,8 @@ function getLocalMediaPath(post) {
   if (!fileName) return '';
   const uploadPath = path.resolve(config.uploadsDir, fileName);
   const uploadsRoot = path.resolve(config.uploadsDir);
-  if (!uploadPath.startsWith(uploadsRoot)) return '';
+  const relative = path.relative(uploadsRoot, uploadPath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return '';
   return uploadPath;
 }
 
@@ -442,7 +460,16 @@ async function getVideoSource(post) {
         if (stats.size > config.youtube.maxVideoBytes) {
           return { ok: false, reason: `Video exceeds the ${config.youtube.maxVideoBytes} byte YouTube upload limit configured for this product.` };
         }
-        return { ok: true, source: 'local', createBody: () => fs.createReadStream(localPath), fileSize: stats.size };
+        const fileName = path.basename(localPath);
+        return {
+          ok: true,
+          source: 'local',
+          sourceId: `local:${canonicalSha256({ fileName })}`,
+          fileName,
+          mimeType: String(post.mimeType || 'video/mp4').split(';')[0].trim().toLowerCase(),
+          createBody: () => fs.createReadStream(localPath),
+          fileSize: stats.size
+        };
       }
     } catch (error) {
       // Local uploads are wiped on redeploy; fall through to the durable URL.
@@ -475,7 +502,26 @@ async function getVideoSource(post) {
     await cancelBody(response);
     return { ok: false, reason: `Video exceeds the ${config.youtube.maxVideoBytes} byte YouTube upload limit configured for this product.` };
   }
-  return { ok: true, source: 'remote', createBody: () => response.body, fileSize: contentLength, cancel: () => cancelBody(response) };
+  const parsedUrl = new URL(remoteUrl);
+  const fileName = path.basename(parsedUrl.pathname) || 'video.mp4';
+  const responseMimeType = String(response.headers.get('content-type') || post.mimeType || 'video/mp4')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+  if (!responseMimeType.startsWith('video/')) {
+    await cancelBody(response);
+    return { ok: false, reason: 'Video media source returned a non-video content type; YouTube upload was blocked.' };
+  }
+  return {
+    ok: true,
+    source: 'remote',
+    sourceId: `remote:${canonicalSha256({ origin: parsedUrl.origin, pathname: parsedUrl.pathname })}`,
+    fileName,
+    mimeType: responseMimeType,
+    createBody: () => response.body,
+    fileSize: contentLength,
+    cancel: () => cancelBody(response)
+  };
 }
 
 async function cancelBody(response) {
@@ -484,6 +530,88 @@ async function cancelBody(response) {
   } catch (error) {
     // Stream may already be consumed or closed.
   }
+}
+
+async function removePreparedMedia(prepared) {
+  if (!prepared) return;
+  try {
+    if (prepared.filePath) await fs.promises.unlink(prepared.filePath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') safeWarn('[youtube] temporary media cleanup failed', { error: error.message });
+  }
+  try {
+    if (prepared.tempDir) await fs.promises.rmdir(prepared.tempDir);
+  } catch (error) {
+    if (error.code !== 'ENOENT') safeWarn('[youtube] temporary media directory cleanup failed', { error: error.message });
+  }
+}
+
+/**
+ * Materializes the exact provider bytes into a bounded temporary file. This
+ * gives the operation a stable digest and lets reconciliation reopen the
+ * identical range without retaining the video in memory.
+ */
+async function materializeVideoSource(post) {
+  const source = await getVideoSource(post);
+  if (!source.ok) return source;
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'chanter-youtube-'));
+  const filePath = path.join(tempDir, 'provider-media.bin');
+  const hash = createHash('sha256');
+  let byteSize = 0;
+  const meter = new Transform({
+    transform(chunk, encoding, callback) {
+      byteSize += chunk.length;
+      if (byteSize > config.youtube.maxVideoBytes) {
+        callback(new Error('Video exceeded the configured YouTube upload limit while being read.'));
+        return;
+      }
+      hash.update(chunk);
+      callback(null, chunk);
+    }
+  });
+  try {
+    await pipeline(source.createBody(), meter, fs.createWriteStream(filePath, { flags: 'wx' }));
+    if (byteSize !== source.fileSize) {
+      throw new Error('Video media size changed while being read; provider upload was blocked.');
+    }
+    const mp4 = await inspectMp4File(filePath);
+    if (!mp4.valid) throw new Error(`Media is not a valid MP4/ISO BMFF file (${mp4.code}).`);
+    const prepared = {
+      ok: true,
+      tempDir,
+      filePath,
+      fileSize: byteSize,
+      mediaSha256: hash.digest('hex'),
+      mimeType: mp4.mimeType,
+      container: mp4.container,
+      fileName: source.fileName,
+      sourceId: source.sourceId,
+      createBody: (start = 0) => fs.createReadStream(filePath, { start })
+    };
+    return prepared;
+  } catch (error) {
+    await removePreparedMedia({ tempDir, filePath });
+    return { ok: false, reason: error.message };
+  } finally {
+    if (typeof source.cancel === 'function') await source.cancel();
+  }
+}
+
+async function verifyPreparedMedia(prepared) {
+  const hash = createHash('sha256');
+  let byteSize = 0;
+  await pipeline(
+    fs.createReadStream(prepared.filePath),
+    new Transform({
+      transform(chunk, encoding, callback) {
+        byteSize += chunk.length;
+        hash.update(chunk);
+        callback(null, chunk);
+      }
+    }),
+    new Transform({ transform(chunk, encoding, callback) { callback(); } })
+  );
+  return byteSize === prepared.fileSize && hash.digest('hex') === prepared.mediaSha256;
 }
 
 // ── Resumable upload ───────────────────────────────────────────────────────
@@ -517,7 +645,113 @@ function validateYouTubeMetadata(metadata = {}) {
  *   ok:false, outcomeUnknown       — bytes may have arrived, no definitive
  *                                    answer (NEVER blind-retry)
  */
-async function uploadVideo({ accessToken, media, metadata }) {
+function acceptedOffsetFromRange(value, mediaByteSize = Number.MAX_SAFE_INTEGER) {
+  const match = /^bytes=0-(\d+)$/.exec(String(value || '').trim());
+  if (!match) return null;
+  const lastByte = Number(match[1]);
+  const offset = Number.isSafeInteger(lastByte) && lastByte >= 0 ? lastByte + 1 : null;
+  return offset !== null && offset <= mediaByteSize ? offset : null;
+}
+
+async function putResumableBytes({
+  sessionUrl,
+  media,
+  contentType,
+  startOffset = 0,
+  onUploadAttempt
+}) {
+  if (!Number.isSafeInteger(startOffset) || startOffset < 0 || startOffset > media.fileSize) {
+    return { ok: false, sessionCreated: true, outcomeUnknown: true, reason: 'The provider resume offset was invalid.' };
+  }
+  if (startOffset === media.fileSize) {
+    return { ok: false, sessionCreated: true, outcomeUnknown: true, fullSizeAmbiguous: true, reason: 'The provider accepted the full byte count without confirming completion.' };
+  }
+  try {
+    if (typeof onUploadAttempt === 'function') await onUploadAttempt({ acceptedByteOffset: startOffset });
+  } catch (error) {
+    return {
+      ok: false,
+      sessionCreated: true,
+      outcomeUnknown: true,
+      reason: 'The persisted YouTube session could not durably record the media write attempt; no further bytes were sent.'
+    };
+  }
+  const remaining = media.fileSize - startOffset;
+  let response;
+  try {
+    response = await fetch(sessionUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': String(remaining),
+        ...(startOffset > 0
+          ? { 'Content-Range': `bytes ${startOffset}-${media.fileSize - 1}/${media.fileSize}` }
+          : {})
+      },
+      body: media.createBody(startOffset),
+      duplex: 'half',
+      signal: requestSignal(config.youtube.uploadTimeoutMs)
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      sessionCreated: true,
+      outcomeUnknown: true,
+      reason: 'YouTube upload did not return a definitive result. A video may exist; reconcile the persisted session before retrying.'
+    };
+  }
+  const body = await parseResponseBody(response);
+  if (response.ok && body && body.id) {
+    const status = body.status || {};
+    return {
+      ok: true,
+      mode: 'api',
+      providerResponseSha256: canonicalSha256({
+        id: String(body.id),
+        channelId: String((body.snippet && body.snippet.channelId) || ''),
+        privacyStatus: String(status.privacyStatus || ''),
+        uploadStatus: String(status.uploadStatus || '')
+      }),
+      response: {
+        video_id: String(body.id),
+        privacy_status: String(status.privacyStatus || ''),
+        upload_status: String(status.uploadStatus || ''),
+        channel_id: String((body.snippet && body.snippet.channelId) || ''),
+        upload_method: UPLOAD_METHOD
+      }
+    };
+  }
+  if (response.status === 308) {
+    const acceptedByteOffset = acceptedOffsetFromRange(response.headers.get('range'), media.fileSize);
+    if (acceptedByteOffset === null || acceptedByteOffset < startOffset) {
+      return { ok: false, sessionCreated: true, outcomeUnknown: true, reason: 'YouTube returned an invalid or decreasing resumable offset.' };
+    }
+    return {
+      ok: false,
+      sessionCreated: true,
+      resumable: true,
+      acceptedByteOffset,
+      reason: 'YouTube accepted only part of the media; same-session reconciliation is required.'
+    };
+  }
+  if (response.status >= 400 && response.status < 500) {
+    return {
+      ok: false,
+      sessionCreated: true,
+      definitiveFailure: true,
+      reason: normalizeGoogleApiErrorMessage(body, response.status, 'YouTube video upload'),
+      providerErrorCategory: categorizeGoogleApiError(body, response.status)
+    };
+  }
+  return {
+    ok: false,
+    sessionCreated: true,
+    outcomeUnknown: true,
+    reason: `YouTube upload returned HTTP ${response.status} without a definitive video resource. Reconcile the persisted session before retrying.`
+  };
+}
+
+async function uploadVideo({ accessToken, media, metadata, onSessionCreated, onUploadAttempt }) {
   const meta = validateYouTubeMetadata(metadata);
   if (!meta.ok) return { ok: false, sessionCreated: false, reason: meta.reason };
 
@@ -549,7 +783,7 @@ async function uploadVideo({ accessToken, media, metadata }) {
       signal: requestSignal()
     });
   } catch (error) {
-    return { ok: false, sessionCreated: false, reason: `YouTube upload session request failed: ${error.message}` };
+    return { ok: false, sessionCreated: false, reason: safeDiagnosticText(`YouTube upload session request failed: ${error.message}`) };
   }
 
   if (!initResponse.ok) {
@@ -567,65 +801,45 @@ async function uploadVideo({ accessToken, media, metadata }) {
     return { ok: false, sessionCreated: false, reason: 'YouTube did not return a resumable upload session URL.' };
   }
 
-  // From here on an external session exists. The session URL is sensitive
-  // operational state: it is never returned, logged, or persisted in any
-  // caller-visible field.
-  let putResponse;
   try {
-    putResponse = await fetch(sessionUrl, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': contentType,
-        'Content-Length': String(media.fileSize)
-      },
-      body: media.createBody(),
-      duplex: 'half',
-      signal: requestSignal(config.youtube.uploadTimeoutMs)
-    });
+    if (typeof onSessionCreated === 'function') await onSessionCreated(sessionUrl);
   } catch (error) {
-    // Bytes may have reached YouTube; a video may or may not exist.
     return {
       ok: false,
       sessionCreated: true,
       outcomeUnknown: true,
-      reason: `YouTube upload did not return a definitive result (${error.message}). A video may exist; reconcile before retrying.`
+      sessionPersistenceFailed: true,
+      reason: 'YouTube created a resumable session, but durable encrypted session custody failed before any media byte was sent.'
     };
   }
+  return putResumableBytes({ sessionUrl, media, contentType, onUploadAttempt });
+}
 
-  const body = await parseResponseBody(putResponse);
-  if (putResponse.ok && body && body.id) {
-    const status = body.status || {};
-    return {
-      ok: true,
-      mode: 'api',
-      response: {
-        video_id: String(body.id),
-        privacy_status: String(status.privacyStatus || ''),
-        upload_status: String(status.uploadStatus || ''),
-        channel_id: String((body.snippet && body.snippet.channelId) || ''),
-        upload_method: UPLOAD_METHOD
-      }
-    };
+async function queryResumableSession({ sessionUrl, mediaByteSize }) {
+  let response;
+  try {
+    response = await fetch(sessionUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Length': '0',
+        'Content-Range': `bytes */${mediaByteSize}`
+      },
+      signal: requestSignal()
+    });
+  } catch (error) {
+    return { outcome: 'unknown', reason: 'The persisted YouTube session did not return a definitive status.' };
   }
-  if (putResponse.status >= 400 && putResponse.status < 500) {
-    // Definitive rejection: YouTube documents 4xx during a resumable
-    // session as a failed upload with no video created.
-    return {
-      ok: false,
-      sessionCreated: true,
-      definitiveFailure: true,
-      reason: normalizeGoogleApiErrorMessage(body, putResponse.status, 'YouTube video upload'),
-      providerErrorCategory: categorizeGoogleApiError(body, putResponse.status)
-    };
+  const body = await parseResponseBody(response);
+  if (response.ok && body && body.id) return { outcome: 'complete', body };
+  if (response.status === 308) {
+    const acceptedByteOffset = acceptedOffsetFromRange(response.headers.get('range'), mediaByteSize);
+    return acceptedByteOffset === null
+      ? { outcome: 'unknown', reason: 'The persisted YouTube session returned an invalid offset.' }
+      : { outcome: 'resumable', acceptedByteOffset };
   }
-  // 5xx or a 2xx without a video id: not provably created, not provably
-  // absent. Fail ambiguous, never blind-retry.
-  return {
-    ok: false,
-    sessionCreated: true,
-    outcomeUnknown: true,
-    reason: `YouTube upload returned HTTP ${putResponse.status} without a definitive video resource. Reconcile before retrying.`
-  };
+  if (response.status === 404 || response.status === 410) return { outcome: 'missing' };
+  if (response.status >= 400 && response.status < 500) return { outcome: 'terminal' };
+  return { outcome: 'unknown' };
 }
 
 // ── Status lookup (youtube.readonly) ───────────────────────────────────────
@@ -688,6 +902,70 @@ async function getUploadedVideoStatus({ userId, accountId, videoId, workspaceSco
   const credentials = await getActiveYouTubeCredentials(userId, accountId, workspaceScope);
   if (!credentials.ok) return { ok: false, code: credentials.code, reason: credentials.reason };
   return readUploadedVideo(credentials.accessToken, videoId);
+}
+
+async function buildProviderStatusReceipt({
+  accessToken,
+  operation,
+  expectedTitle,
+  videoId
+}) {
+  const cleanVideoId = String(videoId || operation.externalVideoId || '').trim();
+  const status = cleanVideoId
+    ? await readUploadedVideo(accessToken, cleanVideoId)
+    : { ok: false, code: 'video_not_found', reason: 'No provider video ID was established.' };
+  if (!status.ok && status.code !== 'video_not_found') {
+    return { ok: false, code: status.code || 'provider_status_unavailable', reason: status.reason };
+  }
+  let channel = null;
+  if (status.ok) {
+    let channels;
+    try {
+      channels = await listMyChannels(accessToken);
+    } catch (error) {
+      return { ok: false, code: error.code || 'provider_channel_verification_failed', reason: error.message };
+    }
+    channel = channels.find((entry) => entry.channelId === status.channelId) || null;
+  }
+  const providerFacts = {
+    videoId: status.ok ? status.videoId : '',
+    channelId: status.ok ? status.channelId : '',
+    channelOwnedByAuthenticatedIdentity: Boolean(channel),
+    title: status.ok ? status.title : '',
+    privacyStatus: status.ok ? status.privacyStatus : '',
+    uploadStatus: status.ok ? status.uploadStatus : '',
+    processingStatus: status.ok ? status.processingStatus : ''
+  };
+  const receipt = {
+    provider: 'youtube',
+    queueId: operation.queueId,
+    providerOperationId: operation.providerOperationId,
+    providerAttemptId: operation.providerAttemptId,
+    userId: operation.userId,
+    workspaceId: operation.workspaceId,
+    runtimeMissionId: operation.runtimeMissionId,
+    graphId: operation.graphId,
+    mediaSha256: operation.mediaSha256,
+    approvedMedia: operation.approvedMedia,
+    providerProofMode: operation.providerProofMode,
+    configuredAccountId: operation.accountId,
+    connectedAccountId: operation.connectedAccountId,
+    verifiedChannelId: status.ok ? status.channelId : '',
+    authenticatedChannelId: channel ? channel.channelId : '',
+    safeChannelTitle: channel ? channel.title : (status.channelTitle || ''),
+    safeChannelHandle: channel ? channel.handle : '',
+    externalVideoId: status.ok ? status.videoId : '',
+    expectedTitle,
+    exactTitleMatch: Boolean(status.ok && status.title === expectedTitle),
+    artifactExists: Boolean(status.ok),
+    privacyStatus: status.ok ? status.privacyStatus : '',
+    uploadStatus: status.ok ? status.uploadStatus : '',
+    processingStatus: status.ok ? status.processingStatus : '',
+    verificationMethod: RECEIPT_METHOD,
+    verificationTimestamp: new Date().toISOString(),
+    canonicalResponseSha256: canonicalSha256(providerFacts)
+  };
+  return { ok: true, receipt, receiptSha256: canonicalSha256(receipt) };
 }
 
 function verificationFailure(code, reason, status = null) {
@@ -796,19 +1074,6 @@ async function publishScheduledYouTubePost(post) {
   }
 
   const workspaceScope = post.workspaceId ? { workspaceId: post.workspaceId } : undefined;
-  const account = await storage.getYouTubeAccount(post.userId, accountId, workspaceScope);
-  if (!account) {
-    return preProviderUploadFailure(`YouTube channel ${accountId} is not connected for this owner; publishing was blocked.`);
-  }
-  if (!account.connected) {
-    return preProviderUploadFailure('YouTube channel is disconnected; reconnect it before publishing.');
-  }
-  if (account.reauthorizationRequired) {
-    return preProviderUploadFailure('YouTube channel requires reauthorization; reconnect it before publishing.', 'reauthorization_required');
-  }
-  if (account.grantedScopes && !scopeIncludesUpload(account.grantedScopes)) {
-    return preProviderUploadFailure('The stored YouTube authorization is missing the youtube.upload scope; reconnect the channel.');
-  }
 
   const youtubeMeta = (post.providerMetadata && post.providerMetadata.youtube) || {};
   const metadataCheck = validateYouTubeMetadata(youtubeMeta);
@@ -819,34 +1084,135 @@ async function publishScheduledYouTubePost(post) {
     return preProviderUploadFailure('YouTube publishing is video-only; this job has no video media.');
   }
 
-  const credentials = await getActiveYouTubeCredentials(post.userId, accountId, workspaceScope);
-  if (!credentials.ok) {
-    return preProviderUploadFailure(credentials.reason, credentials.code);
+  const operation = sanitizeProviderOperation(post.providerOperation);
+  if (!operation || operation.queueId !== post.id || operation.accountId !== accountId) {
+    return preProviderUploadFailure('The durable YouTube provider operation is missing or does not match this queue job.', 'PROVIDER_OPERATION_IDENTITY_MISMATCH');
   }
 
-  const media = await getVideoSource(post);
+  const operationInput = {
+    userId: post.userId,
+    postId: post.id,
+    accountId,
+    workspaceScope,
+    providerOperationId: operation.providerOperationId,
+    providerAttemptId: operation.providerAttemptId
+  };
+
+  const media = await materializeVideoSource(post);
   if (!media.ok) {
     return preProviderUploadFailure(media.reason);
   }
+  const approvedMedia = sanitizeApprovedMediaIdentity(operation.approvedMedia, { maxByteSize: config.youtube.maxVideoBytes });
+  const observedIdentity = {
+    sha256: media.mediaSha256,
+    byteSize: media.fileSize,
+    mimeType: media.mimeType,
+    fileName: approvedMedia ? approvedMedia.fileName : media.fileName,
+    container: media.container
+  };
+  if (operation.providerProofMode && (!approvedMedia || !approvedMediaMatches(approvedMedia, observedIdentity))) {
+    await removePreparedMedia(media);
+    await storage.recordYouTubeProviderOperationFailure({
+      ...operationInput,
+      operationState: 'terminal_failure',
+      errorCode: 'APPROVED_MEDIA_MISMATCH'
+    });
+    return preProviderUploadFailure('The materialized media bytes do not match the approved identity.', 'APPROVED_MEDIA_MISMATCH');
+  }
+
+  const account = await storage.getYouTubeAccount(post.userId, accountId, workspaceScope);
+  if (!account) {
+    await removePreparedMedia(media);
+    return preProviderUploadFailure(`YouTube channel ${accountId} is not connected for this owner; publishing was blocked.`);
+  }
+  if (!account.connected) {
+    await removePreparedMedia(media);
+    return preProviderUploadFailure('YouTube channel is disconnected; reconnect it before publishing.');
+  }
+  if (account.reauthorizationRequired) {
+    await removePreparedMedia(media);
+    return preProviderUploadFailure('YouTube channel requires reauthorization; reconnect it before publishing.', 'reauthorization_required');
+  }
+  if (account.grantedScopes && !scopeIncludesUpload(account.grantedScopes)) {
+    await removePreparedMedia(media);
+    return preProviderUploadFailure('The stored YouTube authorization is missing the youtube.upload scope; reconnect the channel.');
+  }
 
   try {
+    const mediaBinding = await storage.bindYouTubeProviderOperationMedia({
+      ...operationInput,
+      mediaSha256: media.mediaSha256,
+      mediaByteSize: media.fileSize,
+      mediaMimeType: media.mimeType,
+      mediaContainer: media.container,
+      mediaFileName: media.fileName,
+      mediaSourceId: media.sourceId
+    });
+    if (!['bound', 'already_bound'].includes(mediaBinding.outcome)) {
+      return preProviderUploadFailure('The exact YouTube media identity could not be bound to this provider operation.', 'MEDIA_IDENTITY_DRIFT');
+    }
+    if (mediaBinding.safeOperation && mediaBinding.safeOperation.sessionCreatedAt) {
+      return preProviderUploadFailure('This provider operation already owns a resumable session; reconcile that exact session instead of creating another.', 'PROVIDER_OPERATION_UNRESOLVED');
+    }
+    if (!(await verifyPreparedMedia(media))) {
+      await storage.recordYouTubeProviderOperationFailure({
+        ...operationInput,
+        operationState: 'terminal_failure',
+        errorCode: 'MEDIA_IDENTITY_DRIFT'
+      });
+      return preProviderUploadFailure('The prepared media changed before session creation; YouTube upload was blocked.', 'MEDIA_IDENTITY_DRIFT');
+    }
+    const credentials = await getActiveYouTubeCredentials(post.userId, accountId, workspaceScope);
+    if (!credentials.ok) {
+      return preProviderUploadFailure(credentials.reason, credentials.code);
+    }
     const result = await uploadVideo({
       accessToken: credentials.accessToken,
       media,
       metadata: {
         title: youtubeMeta.title,
         description: youtubeMeta.description,
-        mimeType: post.mimeType || 'video/mp4'
+        mimeType: media.mimeType
+      },
+      onSessionCreated: async (sessionUrl) => {
+        const sessionLocatorEnvelope = tokenVault.encryptCredentials({
+          kind: 'youtube_resumable_session',
+          sessionUrl
+        });
+        const persisted = await storage.persistYouTubeSessionLocator({
+          ...operationInput,
+          sessionLocatorEnvelope
+        });
+        if (persisted.outcome !== 'session_persisted') {
+          throw new Error('Durable session custody failed.');
+        }
+      },
+      onUploadAttempt: async ({ acceptedByteOffset }) => {
+        const recorded = await storage.recordYouTubeUploadAttempt({
+          ...operationInput,
+          acceptedByteOffset
+        });
+        if (recorded.outcome !== 'recorded') throw new Error('Durable upload-attempt recording failed.');
       }
     });
     if (result.ok) {
-      const verification = await verifyUploadedVideo({
+      await storage.recordYouTubeProviderResponse({
+        ...operationInput,
+        providerResponseSha256: result.providerResponseSha256,
+        externalVideoId: result.response.video_id
+      });
+      const receiptResult = await buildProviderStatusReceipt({
         accessToken: credentials.accessToken,
-        accountId,
+        operation: { ...operation, mediaSha256: media.mediaSha256 },
         videoId: result.response.video_id,
         expectedTitle: metadataCheck.title
       });
-      if (!verification.ok) {
+      if (!receiptResult.ok) {
+        await storage.recordYouTubeProviderOperationFailure({
+          ...operationInput,
+          operationState: 'outcome_unknown',
+          errorCode: 'PROVIDER_STATUS_UNAVAILABLE'
+        });
         return {
           ok: false,
           mode: 'api',
@@ -857,15 +1223,68 @@ async function publishScheduledYouTubePost(post) {
           failureBoundary: 'provider_read_back',
           providerStatus: 'provider_verification_required',
           response: result.response,
-          reason: verification.reason
+          reason: receiptResult.reason
         };
       }
+      const recordedReceipt = await storage.recordYouTubeProviderStatusReceipt({
+        ...operationInput,
+        providerStatusReceipt: receiptResult.receipt,
+        providerStatusReceiptSha256: receiptResult.receiptSha256
+      });
+      const verifiedOperation = recordedReceipt.safeOperation;
+      if (!verifiedOperation || verifiedOperation.operationState !== 'completed_private') {
+        return {
+          ok: false,
+          mode: 'api',
+          code: verifiedOperation && verifiedOperation.operationState === 'contradictory_public'
+            ? 'PROVIDER_VISIBILITY_CONTRADICTION'
+            : 'PROVIDER_VERIFICATION_FAILED',
+          outcomeUnknown: true,
+          sessionCreated: true,
+          providerMutationStarted: true,
+          failureBoundary: 'provider_read_back',
+          providerStatus: verifiedOperation ? verifiedOperation.operationState : 'provider_verification_required',
+          response: result.response,
+          reason: 'YouTube read-back did not prove one exact private artifact for the configured channel.'
+        };
+      }
+      const receipt = verifiedOperation.providerStatusReceipt;
+      const verification = {
+        ok: true,
+        provider: 'youtube',
+        externalVideoId: receipt.externalVideoId,
+        channelId: receipt.verifiedChannelId,
+        channelTitle: receipt.safeChannelTitle,
+        channelHandle: receipt.safeChannelHandle,
+        title: receipt.expectedTitle,
+        privacyStatus: receipt.privacyStatus,
+        uploadStatus: receipt.uploadStatus,
+        processingStatus: receipt.processingStatus,
+        verifiedAt: receipt.verificationTimestamp,
+        uploadMethod: UPLOAD_METHOD
+      };
       return {
-        ...result,
+        ok: true,
+        mode: result.mode,
+        response: result.response,
         providerMutationStarted: true,
         providerStatus: 'uploaded_private',
         providerVerification: verification
       };
+    }
+    if (result.resumable) {
+      await storage.recordYouTubeAcceptedByteOffset({
+        ...operationInput,
+        acceptedByteOffset: result.acceptedByteOffset
+      });
+    } else {
+      await storage.recordYouTubeProviderOperationFailure({
+        ...operationInput,
+        operationState: result.definitiveFailure ? 'terminal_failure' : 'outcome_unknown',
+        errorCode: result.sessionPersistenceFailed
+          ? 'SESSION_PERSISTENCE_FAILED'
+          : (result.definitiveFailure ? 'PROVIDER_UPLOAD_REJECTED' : 'PROVIDER_OUTCOME_UNKNOWN')
+      });
     }
     return {
       ok: false,
@@ -875,15 +1294,196 @@ async function publishScheduledYouTubePost(post) {
       failureBoundary: result.sessionCreated === true
         ? 'provider_upload_session'
         : 'before_provider_upload_session',
+      ...(result.resumable ? { outcomeUnknown: true, code: 'PROVIDER_RECONCILIATION_REQUIRED' } : {}),
       ...(result.outcomeUnknown ? { outcomeUnknown: true, code: 'PROVIDER_RECONCILIATION_REQUIRED' } : {}),
       ...(result.providerErrorCategory ? { providerErrorCategory: result.providerErrorCategory } : {})
     };
   } finally {
-    if (typeof media.cancel === 'function') await media.cancel();
+    await removePreparedMedia(media);
   }
 }
 
 // ── Error normalization ────────────────────────────────────────────────────
+
+function safeUploadResponseHash(body) {
+  const status = body && body.status && typeof body.status === 'object' ? body.status : {};
+  const snippet = body && body.snippet && typeof body.snippet === 'object' ? body.snippet : {};
+  return canonicalSha256({
+    id: String((body && body.id) || ''),
+    channelId: String(snippet.channelId || ''),
+    privacyStatus: String(status.privacyStatus || ''),
+    uploadStatus: String(status.uploadStatus || '')
+  });
+}
+
+function isExpectedSessionLocator(value) {
+  if (!value || value.kind !== 'youtube_resumable_session' || typeof value.sessionUrl !== 'string') return false;
+  try {
+    const session = new URL(value.sessionUrl);
+    const configuredOrigin = new URL(config.youtube.uploadBaseUrl).origin;
+    return session.origin === configuredOrigin
+      || (session.protocol === 'https:' && /(^|\.)googleapis\.com$/i.test(session.hostname));
+  } catch (error) {
+    return false;
+  }
+}
+
+function mediaMatchesOperation(media, operation) {
+  return media.mediaSha256 === operation.mediaSha256
+    && media.fileSize === operation.mediaByteSize
+    && media.mimeType === operation.mediaMimeType
+    && media.fileName === operation.mediaFileName
+    && media.sourceId === operation.mediaSourceId;
+}
+
+async function reconcileYouTubeProviderOperation({ userId, postId, accountId, workspaceScope }) {
+  const internal = await storage.getYouTubeProviderOperationInternal(
+    userId,
+    postId,
+    accountId,
+    workspaceScope
+  );
+  if (!internal) return { classification: 'provider_operation_not_found' };
+  const operation = sanitizeProviderOperation(internal.operation);
+  if (!operation || operation.queueId !== postId || operation.accountId !== accountId) {
+    return { classification: 'provider_operation_identity_mismatch' };
+  }
+  if (['completed_private', 'contradictory_public', 'provider_missing', 'terminal_failure'].includes(operation.operationState)) {
+    return { classification: operation.operationState };
+  }
+  const operationInput = {
+    userId,
+    postId,
+    accountId,
+    workspaceScope,
+    providerOperationId: operation.providerOperationId,
+    providerAttemptId: operation.providerAttemptId
+  };
+  const ownerId = `ytrec_${randomUUID()}`;
+  const claimed = await storage.claimYouTubeReconciliationAttempt({ ...operationInput, ownerId });
+  if (claimed.outcome !== 'claimed') return { classification: claimed.outcome };
+  operationInput.leaseOwnerId = ownerId;
+  operationInput.fencingToken = claimed.lease.fencingToken;
+  try {
+
+  let locator;
+  try {
+    locator = tokenVault.decryptCredentials(internal.operation.sessionLocatorEnvelope);
+  } catch (error) {
+    await storage.recordYouTubeProviderOperationFailure({
+      ...operationInput,
+      operationState: 'outcome_unknown',
+      errorCode: 'SESSION_LOCATOR_DECRYPT_FAILED',
+      reconciled: true
+    });
+    return { classification: 'session_locator_decrypt_failed' };
+  }
+  if (!isExpectedSessionLocator(locator)) {
+    await storage.recordYouTubeProviderOperationFailure({
+      ...operationInput,
+      operationState: 'outcome_unknown',
+      errorCode: 'SESSION_LOCATOR_INVALID',
+      reconciled: true
+    });
+    return { classification: 'session_locator_invalid' };
+  }
+
+  const credentials = await getActiveYouTubeCredentials(userId, accountId, workspaceScope);
+  if (!credentials.ok) return { classification: credentials.code || 'provider_credentials_unavailable' };
+  let videoId = operation.externalVideoId || '';
+  if (!videoId) {
+    const session = await queryResumableSession({
+      sessionUrl: locator.sessionUrl,
+      mediaByteSize: operation.mediaByteSize
+    });
+    if (session.outcome === 'missing') {
+      await storage.recordYouTubeProviderOperationFailure({ ...operationInput, operationState: 'provider_missing', errorCode: 'PROVIDER_SESSION_MISSING', reconciled: true });
+      return { classification: 'provider_missing' };
+    }
+    if (session.outcome === 'terminal') {
+      await storage.recordYouTubeProviderOperationFailure({ ...operationInput, operationState: 'terminal_failure', errorCode: 'PROVIDER_SESSION_TERMINAL', reconciled: true });
+      return { classification: 'terminal_failure' };
+    }
+    if (session.outcome === 'unknown') {
+      await storage.recordYouTubeProviderOperationFailure({ ...operationInput, operationState: 'outcome_unknown', errorCode: 'PROVIDER_SESSION_OUTCOME_UNKNOWN', reconciled: true });
+      return { classification: 'outcome_unknown' };
+    }
+    if (session.outcome === 'complete') {
+      videoId = String(session.body.id || '').trim();
+      await storage.recordYouTubeProviderResponse({
+        ...operationInput,
+        providerResponseSha256: safeUploadResponseHash(session.body),
+        externalVideoId: videoId
+      });
+    } else {
+      await storage.recordYouTubeAcceptedByteOffset({ ...operationInput, acceptedByteOffset: session.acceptedByteOffset });
+      const media = await materializeVideoSource(internal.post);
+      if (!media.ok) {
+        await storage.recordYouTubeProviderOperationFailure({ ...operationInput, operationState: 'outcome_unknown', errorCode: 'MEDIA_UNAVAILABLE_FOR_RECONCILIATION', reconciled: true });
+        return { classification: 'media_unavailable' };
+      }
+      try {
+        if (!mediaMatchesOperation(media, operation) || !(await verifyPreparedMedia(media))) {
+          await storage.recordYouTubeProviderOperationFailure({ ...operationInput, operationState: 'terminal_failure', errorCode: 'MEDIA_IDENTITY_DRIFT', reconciled: true });
+          return { classification: 'media_identity_drift' };
+        }
+        const resumed = await putResumableBytes({
+          sessionUrl: locator.sessionUrl,
+          media,
+          contentType: operation.mediaMimeType,
+          startOffset: session.acceptedByteOffset,
+          onUploadAttempt: async ({ acceptedByteOffset }) => {
+            const recorded = await storage.recordYouTubeUploadAttempt({ ...operationInput, acceptedByteOffset });
+            if (recorded.outcome !== 'recorded') throw new Error('Durable resume-attempt recording failed.');
+          }
+        });
+        if (!resumed.ok) {
+          if (resumed.resumable) {
+            await storage.recordYouTubeAcceptedByteOffset({ ...operationInput, acceptedByteOffset: resumed.acceptedByteOffset });
+            return { classification: 'resumable' };
+          }
+          await storage.recordYouTubeProviderOperationFailure({
+            ...operationInput,
+            operationState: resumed.definitiveFailure ? 'terminal_failure' : 'outcome_unknown',
+            errorCode: resumed.definitiveFailure ? 'PROVIDER_UPLOAD_REJECTED' : 'PROVIDER_OUTCOME_UNKNOWN',
+            reconciled: true
+          });
+          return { classification: resumed.definitiveFailure ? 'terminal_failure' : 'outcome_unknown' };
+        }
+        videoId = resumed.response.video_id;
+        await storage.recordYouTubeProviderResponse({
+          ...operationInput,
+          providerResponseSha256: resumed.providerResponseSha256,
+          externalVideoId: videoId
+        });
+      } finally {
+        await removePreparedMedia(media);
+      }
+    }
+  }
+
+  const receiptResult = await buildProviderStatusReceipt({
+    accessToken: credentials.accessToken,
+    operation,
+    expectedTitle: String((internal.post.providerMetadata?.youtube?.title) || '').trim(),
+    videoId
+  });
+  if (!receiptResult.ok) {
+    await storage.recordYouTubeProviderOperationFailure({ ...operationInput, operationState: 'outcome_unknown', errorCode: 'PROVIDER_STATUS_UNAVAILABLE', reconciled: true });
+    return { classification: 'provider_status_unavailable' };
+  }
+  const recorded = await storage.recordYouTubeProviderStatusReceipt({
+    ...operationInput,
+    providerStatusReceipt: receiptResult.receipt,
+    providerStatusReceiptSha256: receiptResult.receiptSha256
+  });
+  if (!recorded.safeOperation) return { classification: recorded.outcome || 'provider_receipt_rejected' };
+  await storage.applyYouTubeProviderReconciliationResult(operationInput);
+  return { classification: recorded.safeOperation.operationState };
+  } finally {
+    await storage.releaseYouTubeReconciliationLease(operationInput);
+  }
+}
 
 function isInvalidGrant(body) {
   return Boolean(body && typeof body === 'object' && String(body.error || '') === 'invalid_grant');
@@ -907,7 +1507,7 @@ function normalizeGoogleApiErrorMessage(body, httpStatus, operation) {
     const reason = Array.isArray(error.errors) && error.errors[0] && error.errors[0].reason
       ? String(error.errors[0].reason)
       : '';
-    const message = String(error.message || '').slice(0, 200);
+    const message = safeDiagnosticText(String(error.message || '').slice(0, 200));
     return `${operation} failed (HTTP ${httpStatus}${reason ? `, ${reason}` : ''})${message ? `: ${message}` : ''}`;
   }
   return `${operation} returned HTTP ${httpStatus}`;
@@ -948,10 +1548,16 @@ module.exports = {
   validateYouTubeMetadata,
   isTrustedRemoteMediaUrl,
   getVideoSource,
+  materializeVideoSource,
+  verifyPreparedMedia,
+  removePreparedMedia,
+  acceptedOffsetFromRange,
   uploadVideo,
+  queryResumableSession,
   readUploadedVideo,
   getUploadedVideoStatus,
   verifyUploadedVideo,
   publishScheduledYouTubePost,
+  reconcileYouTubeProviderOperation,
   redactSensitive
 };

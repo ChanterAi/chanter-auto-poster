@@ -16,6 +16,7 @@ const config = require('../src/config');
 const storage = require('../src/storage');
 const applicationService = require('../src/autoposterApplicationService');
 const { defaultWorkspaceId } = require('../src/workspaceService');
+const { createInitialYouTubeProviderOperation, sanitizeProviderOperation } = require('../src/youtubeProviderOperation');
 
 const TOKEN = 'test-runtime-token-1234567890';
 
@@ -640,7 +641,7 @@ test('runtime post status exposes the bounded Phase 2E-B lifecycle contract trut
     'accountId', 'approvalState', 'approved', 'approvedAt', 'approvedBy', 'attemptBudgetExhausted',
     'captionSummary', 'claimAttempts', 'connectedAccountId', 'createdAt',
     'history', 'id', 'lastErrorMessage', 'lastResult', 'lockedAt',
-    'mediaType', 'postedAt', 'provider', 'providerMetadata', 'providerStatus',
+    'mediaType', 'postedAt', 'provider', 'providerOperation', 'providerStatus',
     'providerVerification', 'publishAttemptBudget', 'publishId', 'runtimeAction', 'runtimeIdempotencyKey', 'runtimeMissionId',
     'runtimePayloadHash', 'scheduledAt', 'status', 'updatedAt', 'username',
     'workspaceId'
@@ -667,6 +668,7 @@ test('runtime post status exposes the bounded Phase 2E-B lifecycle contract trut
   assert.equal(draft.runtimePayloadHash, 'c'.repeat(64));
   assert.equal(draft.lockedAt, null);
   assert.equal(draft.lastResult, null);
+  assert.equal(draft.providerOperation, null, 'legacy and pre-provider rows stay backward compatible');
   assert.deepEqual(draft.history, [{
     at: '2026-07-10T08:00:00.000Z',
     event: 'runtime_scheduled',
@@ -749,7 +751,7 @@ test('runtime post status exposes the bounded Phase 2E-B lifecycle contract trut
   assert.equal(youtube.status, 'posted');
   assert.equal(youtube.providerStatus, 'uploaded_private');
   assert.equal(youtube.publishId, 'yt-video-123');
-  assert.equal(youtube.providerMetadata.youtube.privacyStatus, 'private');
+  assert.equal('providerMetadata' in youtube, false, 'legacy provider metadata is not part of the strict Runtime wire contract');
   assert.equal(youtube.lastResult.completedAt, '2026-07-11T09:02:00.000Z');
 
   // ── TikTok provider accepted (API acceptance, visibility unverified) ────
@@ -878,4 +880,64 @@ test('runtime post status exposes the bounded Phase 2E-B lifecycle contract trut
   }
   assert.equal('mediaUrl' in hostile, false, 'raw media URLs are not exposed');
   assert.equal('caption' in hostile, false, 'full captions are not exposed');
+});
+
+test('runtime provider reconciliation invokes one exact application operation and returns only the safe projection', async (t) => {
+  const original = applicationService.reconcileProviderOperation;
+  const calls = [];
+  const base = makePost({
+    id: 'youtube-operation-1',
+    provider: 'youtube',
+    accountId: 'UC-exact',
+    connectedAccountId: 'youtube:UC-exact',
+    userId: 'owner',
+    workspaceId: 'workspace-a',
+    runtimeMissionId: 'graph:g:node:n',
+    runtimeGraphId: 'graph:g',
+    runtimeAction: 'autoposter.post.schedule',
+    runtimePayloadHash: 'a'.repeat(64),
+    approvedBy: 'founder',
+    approvedAt: '2026-07-19T11:59:00.000Z'
+  });
+  const rawOperation = createInitialYouTubeProviderOperation({ queueId: base.id, post: base, attemptNumber: 1 });
+  rawOperation.sessionLocatorEnvelope = {
+    v: 1, alg: 'aes-256-gcm', iv: 'CANARY-IV', ct: 'CANARY-CIPHERTEXT', tag: 'CANARY-TAG'
+  };
+  const safeOperation = sanitizeProviderOperation(rawOperation);
+  applicationService.reconcileProviderOperation = async (context, input) => {
+    calls.push({ context, input });
+    return {
+      classification: 'outcome_unknown',
+      post: { ...base, providerOperation: safeOperation }
+    };
+  };
+  t.after(() => { applicationService.reconcileProviderOperation = original; });
+
+  const app = express();
+  app.use('/api/runtime', runtimeControlRoutes);
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const response = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/runtime/posts/${base.id}/provider/reconcile`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-chanter-runtime-token': TOKEN,
+        'x-chanter-workspace-id': 'workspace-owner'
+      },
+      body: JSON.stringify({ accountId: 'UC-exact' })
+    }
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].input, { postId: base.id, accountId: 'UC-exact' });
+  assert.equal(body.classification, 'outcome_unknown');
+  assert.equal(body.post.providerOperation.providerOperationId, safeOperation.providerOperationId);
+  const serialized = JSON.stringify(body);
+  assert.equal(serialized.includes('sessionLocator'), false);
+  assert.equal(serialized.includes('CANARY-CIPHERTEXT'), false);
 });

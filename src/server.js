@@ -10,6 +10,7 @@ const { attachUser, csrfOriginCheck, requireAdminPage, validateAdminConfig } = r
 const { attachClientSession } = require('./clientAuth');
 const { validateFirebaseConfig } = require('./firestore');
 const { configureCloudinary } = require('./cloudinary');
+const { safeDiagnosticText } = require('./forbiddenMaterial');
 
 const app = express();
 
@@ -43,9 +44,11 @@ app.use((error, req, res, next) => {
     return;
   }
 
-  console.error('[server] request error', error);
+  console.error('[server] request error', String(error.code || 'UNEXPECTED_REQUEST_ERROR'));
 
-  const message = error.message || 'Unexpected server error';
+  const message = safeDiagnosticText(error.message || 'Unexpected server error', {
+    protectedValues: [config.runtimeControl && config.runtimeControl.token]
+  });
   const wantsJson =
     String(req.path || '').startsWith('/api/') ||
     String(req.headers.accept || '').toLowerCase().includes('application/json') ||

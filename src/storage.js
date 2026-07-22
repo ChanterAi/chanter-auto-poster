@@ -21,6 +21,19 @@ const {
   isVideoMediaUrl
 } = require('./mediaPolicy');
 const providers = require('./providers');
+const tokenVault = require('./tokenVault');
+const {
+  appendProviderOperationEvent,
+  canonicalSha256,
+  claimReconciliationLease,
+  operationMediaBinding,
+  reconciliationLeaseAuthorizes,
+  sanitizeProviderOperation,
+  sanitizeProviderStatusReceipt,
+  TERMINAL_OPERATION_STATES,
+  transitionProviderOperation
+} = require('./youtubeProviderOperation');
+const { sanitizeApprovedMediaIdentity } = require('./approvedMediaIdentity');
 const {
   DEFAULT_USER_ID,
   postFromDoc,
@@ -1544,8 +1557,13 @@ async function addUploadedPosts(userId, files, defaults = {}) {
           runtimeIdempotencyKey: String(defaults.runtimeIdempotencyKey || '').trim(),
           runtimeScheduledBy: String(defaults.runtimeScheduledBy || '').trim(),
           runtimeMissionId: String(defaults.runtimeMissionId || ''),
+          runtimeGraphId: String(defaults.runtimeGraphId || ''),
           runtimeAction: String(defaults.runtimeAction || ''),
           runtimePayloadHash: String(defaults.runtimePayloadHash || ''),
+          providerProofMode: defaults.providerProofMode === true,
+          approvedMedia: sanitizeApprovedMediaIdentity(defaults.approvedMedia, {
+            maxByteSize: config.youtube.maxVideoBytes
+          }),
           accountId: target.accountId,
           tiktokOpenId: providerId === 'tiktok' ? target.tiktokOpenId : '',
           username: target.username,
@@ -1618,7 +1636,10 @@ async function addUploadedPosts(userId, files, defaults = {}) {
           // from the current durable claim count.
           publishAttemptBudget: providerId === providers.PROVIDER_YOUTUBE
             ? (selfApprove ? 1 : 0)
-            : null
+            : null,
+          // Additive provider-operation authority. It stays null until a
+          // YouTube worker transaction claims this exact queue row.
+          providerOperation: null
         };
 
         if (!defaults.usageReservation) {
@@ -1688,6 +1709,468 @@ async function addUploadedPosts(userId, files, defaults = {}) {
       ));
     }
   }
+}
+
+// ── YouTube provider-operation custody ─────────────────────────────────────
+
+function providerOperationMatches(data, operationId, attemptId) {
+  const operation = data && data.providerOperation;
+  return Boolean(
+    operation
+    && typeof operation === 'object'
+    && !Array.isArray(operation)
+    && operation.provider === providers.PROVIDER_YOUTUBE
+    && operation.providerOperationId === operationId
+    && operation.providerAttemptId === attemptId
+    && operation.queueId
+  );
+}
+
+function providerOperationScopeMatches(data, {
+  userId,
+  accountId,
+  workspaceScope
+} = {}) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  if ((data.userId || DEFAULT_USER_ID) !== ownerId) return false;
+  if (!recordMatchesWorkspace(data, ownerId, workspaceScope)) return false;
+  if (accountId && String(data.accountId || '') !== String(accountId)) return false;
+  return String(data.provider || data.platform || '').trim().toLowerCase() === providers.PROVIDER_YOUTUBE;
+}
+
+async function mutateYouTubeProviderOperation(input, mutator) {
+  const ref = postsCollection().doc(String(input.postId || '').trim());
+  return getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return { outcome: 'not_found' };
+    const data = snap.data() || {};
+    if (!providerOperationScopeMatches(data, input)) return { outcome: 'not_found' };
+    if (!providerOperationMatches(data, input.providerOperationId, input.providerAttemptId)) {
+      return { outcome: 'identity_mismatch' };
+    }
+    if (String(data.providerOperation.queueId || '') !== ref.id) {
+      return { outcome: 'identity_mismatch' };
+    }
+    if (input.leaseOwnerId || input.fencingToken) {
+      if (!reconciliationLeaseAuthorizes(data.providerOperation, input)) {
+        return { outcome: 'stale_reconciliation_owner' };
+      }
+    }
+    const result = await mutator({ tx, ref, data, operation: data.providerOperation });
+    if (!result || !result.operation) return result || { outcome: 'unchanged' };
+    tx.update(ref, {
+      providerOperation: result.operation,
+      ...(result.queuePatch || {}),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    return {
+      ...result,
+      outcome: result.outcome || 'updated',
+      operation: result.operation,
+      safeOperation: sanitizeProviderOperation(result.operation)
+    };
+  });
+}
+
+async function bindYouTubeProviderOperationMedia(input) {
+  const media = {
+    mediaSha256: String(input.mediaSha256 || '').trim().toLowerCase(),
+    mediaByteSize: Number(input.mediaByteSize),
+    mediaMimeType: String(input.mediaMimeType || '').trim().toLowerCase(),
+    mediaContainer: String(input.mediaContainer || '').trim().toLowerCase(),
+    mediaFileName: String(input.mediaFileName || '').trim(),
+    mediaSourceId: String(input.mediaSourceId || '').trim()
+  };
+  if (
+    !/^[a-f0-9]{64}$/.test(media.mediaSha256)
+    || !Number.isSafeInteger(media.mediaByteSize)
+    || media.mediaByteSize <= 0
+    || !media.mediaMimeType.startsWith('video/')
+    || media.mediaContainer !== 'mp4'
+    || !media.mediaFileName
+    || media.mediaFileName.length > 255
+    || !media.mediaSourceId
+    || media.mediaSourceId.length > 512
+  ) throw new Error('YouTube media identity is incomplete.');
+
+  return mutateYouTubeProviderOperation(input, ({ operation }) => {
+    if (TERMINAL_OPERATION_STATES.has(operation.operationState)) return { outcome: 'terminal_operation', operation };
+    const approvedMedia = sanitizeApprovedMediaIdentity(operation.approvedMedia);
+    if (operation.providerProofMode === true && (
+      !approvedMedia
+      || approvedMedia.sha256 !== media.mediaSha256
+      || approvedMedia.byteSize !== media.mediaByteSize
+      || approvedMedia.mimeType !== media.mediaMimeType
+      || approvedMedia.container !== media.mediaContainer
+    )) {
+      const failed = appendProviderOperationEvent(
+        transitionProviderOperation(operation, 'terminal_failure'),
+        'media_drift_rejected',
+        { errorCode: 'APPROVED_MEDIA_MISMATCH' }
+      );
+      return { outcome: 'approved_media_mismatch', operation: { ...failed, lastOperationErrorCode: 'APPROVED_MEDIA_MISMATCH' } };
+    }
+    const bindingSha256 = canonicalSha256(operationMediaBinding(operation, media));
+    if (operation.sessionLocatorEnvelope) {
+      const same = operation.mediaSha256 === media.mediaSha256
+        && Number(operation.mediaByteSize) === media.mediaByteSize
+        && operation.mediaMimeType === media.mediaMimeType
+        && operation.mediaContainer === media.mediaContainer
+        && operation.mediaFileName === media.mediaFileName
+        && operation.mediaSourceId === media.mediaSourceId
+        && operation.bindingSha256 === bindingSha256;
+      return { outcome: same ? 'already_bound' : 'media_drift', operation };
+    }
+    const alreadyBound = operation.bindingSha256 !== null && operation.bindingSha256 !== undefined;
+    const same = !alreadyBound || (
+      operation.mediaSha256 === media.mediaSha256
+      && Number(operation.mediaByteSize) === media.mediaByteSize
+      && operation.mediaMimeType === media.mediaMimeType
+      && operation.mediaContainer === media.mediaContainer
+      && operation.mediaFileName === media.mediaFileName
+      && operation.mediaSourceId === media.mediaSourceId
+      && operation.bindingSha256 === bindingSha256
+    );
+    if (!same) {
+      const drifted = appendProviderOperationEvent(
+        { ...transitionProviderOperation(operation, 'terminal_failure'), lastOperationErrorCode: 'MEDIA_IDENTITY_DRIFT' },
+        'media_drift_rejected',
+        { errorCode: 'MEDIA_IDENTITY_DRIFT' }
+      );
+      return { outcome: 'media_drift', operation: drifted };
+    }
+    if (alreadyBound) return { outcome: 'already_bound', operation };
+    const next = appendProviderOperationEvent({
+      ...transitionProviderOperation(operation, 'media_preflighted'),
+      ...media,
+      bindingSha256,
+      lastOperationErrorCode: null
+    }, 'media_preflight_bound');
+    return { outcome: 'bound', operation: next };
+  });
+}
+
+async function persistYouTubeSessionLocator(input) {
+  if (!tokenVault.isCredentialEnvelope(input.sessionLocatorEnvelope)) {
+    throw new Error('YouTube session locator must use the configured authenticated-encryption vault.');
+  }
+  return mutateYouTubeProviderOperation(input, ({ operation }) => {
+    if (TERMINAL_OPERATION_STATES.has(operation.operationState)) return { outcome: 'terminal_operation', operation };
+    if (operation.sessionLocatorEnvelope) {
+      return { outcome: 'session_already_exists', operation };
+    }
+    if (!operation.bindingSha256 || !operation.mediaSha256) {
+      return { outcome: 'media_not_bound', operation };
+    }
+    const createdAt = new Date().toISOString();
+    const next = appendProviderOperationEvent({
+      ...transitionProviderOperation(operation, 'session_persisted'),
+      sessionLocatorEnvelope: input.sessionLocatorEnvelope,
+      sessionCreatedAt: createdAt,
+      lastOperationErrorCode: null
+    }, 'session_initiated', {}, createdAt);
+    return { outcome: 'session_persisted', operation: next };
+  });
+}
+
+async function recordYouTubeUploadAttempt(input) {
+  return mutateYouTubeProviderOperation(input, ({ operation }) => {
+    if (TERMINAL_OPERATION_STATES.has(operation.operationState)) return { outcome: 'terminal_operation', operation };
+    if (!operation.sessionLocatorEnvelope) return { outcome: 'session_missing', operation };
+    const startedAt = new Date().toISOString();
+    const next = appendProviderOperationEvent({
+      ...transitionProviderOperation(operation, 'uploading'),
+      uploadStartedAt: operation.uploadStartedAt || startedAt
+    }, 'upload_put_attempted', {
+      acceptedByteOffset: Number(input.acceptedByteOffset || 0)
+    }, startedAt);
+    return { outcome: 'recorded', operation: next };
+  });
+}
+
+async function recordYouTubeAcceptedByteOffset(input) {
+  return mutateYouTubeProviderOperation(input, ({ operation }) => {
+    if (TERMINAL_OPERATION_STATES.has(operation.operationState)) return { outcome: 'terminal_operation', operation };
+    const acceptedByteOffset = Number(input.acceptedByteOffset);
+    const mediaByteSize = Number(operation.mediaByteSize);
+    const previousOffset = Number(operation.acceptedByteOffset || 0);
+    if (!Number.isSafeInteger(acceptedByteOffset) || acceptedByteOffset < 0 || acceptedByteOffset > mediaByteSize) {
+      return { outcome: 'invalid_offset', operation };
+    }
+    if (acceptedByteOffset < previousOffset) return { outcome: 'decreasing_offset', operation };
+    const nextState = acceptedByteOffset === mediaByteSize ? 'outcome_unknown' : 'resumable';
+    const next = appendProviderOperationEvent({
+      ...transitionProviderOperation(operation, nextState),
+      acceptedByteOffset,
+      lastOperationErrorCode: acceptedByteOffset === mediaByteSize ? 'FULL_SIZE_WITHOUT_COMPLETION' : operation.lastOperationErrorCode,
+      lastReconciledAt: new Date().toISOString()
+    }, 'accepted_byte_offset', { acceptedByteOffset });
+    return { outcome: acceptedByteOffset === mediaByteSize ? 'full_size_ambiguous' : 'recorded', operation: next };
+  });
+}
+
+async function recordYouTubeProviderResponse(input) {
+  const responseSha256 = String(input.providerResponseSha256 || '').trim().toLowerCase();
+  const externalVideoId = String(input.externalVideoId || '').trim();
+  if (!/^[a-f0-9]{64}$/.test(responseSha256)) throw new Error('Provider response hash is required.');
+  return mutateYouTubeProviderOperation(input, ({ operation }) => {
+    if (TERMINAL_OPERATION_STATES.has(operation.operationState)) {
+      return { outcome: 'terminal_operation', operation };
+    }
+    if (
+      (operation.externalVideoId && operation.externalVideoId !== externalVideoId)
+      || (operation.providerResponseSha256 && operation.providerResponseSha256 !== responseSha256)
+    ) {
+      return { outcome: 'conflicting_provider_response', operation };
+    }
+    if (
+      operation.externalVideoId === externalVideoId
+      && operation.providerResponseSha256 === responseSha256
+    ) {
+      return { outcome: 'already_recorded', operation };
+    }
+    const completedAt = new Date().toISOString();
+    let next = appendProviderOperationEvent({
+      ...operation,
+      providerResponseSha256: responseSha256,
+      uploadCompletedAt: externalVideoId ? completedAt : operation.uploadCompletedAt,
+      acceptedByteOffset: externalVideoId ? Number(operation.mediaByteSize || 0) : operation.acceptedByteOffset,
+      externalVideoId: externalVideoId || operation.externalVideoId || null
+    }, 'provider_response_recorded', {
+      responseSha256,
+      externalVideoId
+    }, completedAt);
+    if (externalVideoId && !next.events.some((event) => (
+      event.type === 'artifact_confirmed' && event.externalVideoId === externalVideoId
+    ))) {
+      next = appendProviderOperationEvent(next, 'artifact_confirmed', { externalVideoId }, completedAt);
+    }
+    return { outcome: 'recorded', operation: next };
+  });
+}
+
+async function claimYouTubeReconciliationAttempt(input) {
+  return mutateYouTubeProviderOperation(input, ({ operation }) =>
+    claimReconciliationLease(operation, input));
+}
+
+async function releaseYouTubeReconciliationLease(input) {
+  return mutateYouTubeProviderOperation(input, ({ operation }) => {
+    const lease = operation.reconciliationLease;
+    if (!lease) return { outcome: 'already_released', operation };
+    const at = new Date().toISOString();
+    const next = appendProviderOperationEvent({ ...operation, reconciliationLease: null }, 'reconciliation_lease_released', {}, at);
+    return { outcome: 'released', operation: next };
+  });
+}
+
+async function recordYouTubeProviderStatusReceipt(input) {
+  const receipt = sanitizeProviderStatusReceipt(input.providerStatusReceipt);
+  if (!receipt) {
+    throw new Error('Safe YouTube provider status receipt is invalid.');
+  }
+  const receiptSha256 = canonicalSha256(receipt);
+  return mutateYouTubeProviderOperation(input, ({ operation }) => {
+    if (TERMINAL_OPERATION_STATES.has(operation.operationState)) {
+      const safe = sanitizeProviderOperation(operation);
+      if (
+        operation.operationState === 'completed_private'
+        && safe?.providerStatusReceiptSha256 === receiptSha256
+        && canonicalSha256(safe.providerStatusReceipt) === receiptSha256
+      ) return { outcome: 'completed_private', operation };
+      return { outcome: 'conflicting_terminal_completion', operation };
+    }
+    if (
+      receipt.queueId !== operation.queueId
+      || receipt.providerOperationId !== operation.providerOperationId
+      || receipt.providerAttemptId !== operation.providerAttemptId
+      || receipt.configuredAccountId !== operation.accountId
+      || receipt.connectedAccountId !== operation.connectedAccountId
+      || receipt.mediaSha256 !== operation.mediaSha256
+      || receipt.userId !== operation.userId
+      || receipt.workspaceId !== operation.workspaceId
+      || receipt.runtimeMissionId !== operation.runtimeMissionId
+      || receipt.graphId !== operation.graphId
+      || (receipt.externalVideoId || null) !== (operation.externalVideoId || null)
+      || receipt.authenticatedChannelId !== receipt.verifiedChannelId
+      || canonicalSha256(receipt.approvedMedia) !== canonicalSha256(operation.approvedMedia)
+    ) return { outcome: 'identity_mismatch', operation };
+    let operationState = 'outcome_unknown';
+    if (!receipt.artifactExists) operationState = 'provider_missing';
+    else if (
+      receipt.privacyStatus === 'private'
+      && receipt.exactTitleMatch
+      && receipt.verifiedChannelId === receipt.configuredAccountId
+      && receipt.authenticatedChannelId === receipt.configuredAccountId
+      && !['rejected', 'deleted', 'failed'].includes(receipt.uploadStatus.toLowerCase())
+    ) operationState = 'completed_private';
+    else if (receipt.privacyStatus === 'public' || receipt.privacyStatus === 'unlisted') {
+      operationState = 'contradictory_public';
+    }
+    const at = receipt.verificationTimestamp;
+    let next = appendProviderOperationEvent({
+      ...transitionProviderOperation(operation, operationState),
+      providerStatusReceipt: receipt,
+      providerStatusReceiptSha256: receiptSha256,
+      externalVideoId: receipt.externalVideoId || operation.externalVideoId || null,
+      lastReconciledAt: at,
+      lastOperationErrorCode: operationState === 'completed_private'
+        ? null
+        : operationState.toUpperCase()
+    }, 'provider_status_read', {
+      externalVideoId: receipt.externalVideoId,
+      receiptSha256
+    }, at);
+    next = appendProviderOperationEvent(next, 'provider_receipt_recorded', {
+      externalVideoId: receipt.externalVideoId,
+      receiptSha256
+    }, at);
+    if (receipt.artifactExists && receipt.externalVideoId && !next.events.some((event) => (
+      event.type === 'artifact_confirmed' && event.externalVideoId === receipt.externalVideoId
+    ))) {
+      next = appendProviderOperationEvent(next, 'artifact_confirmed', {
+        externalVideoId: receipt.externalVideoId
+      }, at);
+    }
+    return { outcome: operationState, operation: next };
+  });
+}
+
+async function recordYouTubeProviderOperationFailure(input) {
+  const errorCode = String(input.errorCode || 'PROVIDER_OUTCOME_UNKNOWN').trim().slice(0, 120);
+  const operationState = ['terminal_failure', 'outcome_unknown', 'provider_missing', 'resumable']
+    .includes(input.operationState)
+    ? input.operationState
+    : 'outcome_unknown';
+  return mutateYouTubeProviderOperation(input, ({ operation }) => {
+    if (TERMINAL_OPERATION_STATES.has(operation.operationState)) return { outcome: 'terminal_operation', operation };
+    const eventType = errorCode === 'SESSION_PERSISTENCE_FAILED'
+      ? 'session_persistence_failed'
+      : (operationState === 'terminal_failure' ? 'terminal_failure' : 'outcome_unknown');
+    const next = appendProviderOperationEvent({
+      ...transitionProviderOperation(operation, operationState),
+      lastOperationErrorCode: errorCode,
+      lastReconciledAt: input.reconciled === true ? new Date().toISOString() : operation.lastReconciledAt
+    }, eventType, { errorCode });
+    return { outcome: operationState, operation: next };
+  });
+}
+
+async function getYouTubeProviderOperationInternal(userId, postId, accountId, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const ref = postsCollection().doc(String(postId || '').trim());
+  const snap = await ref.get();
+  if (!snap.exists) return null;
+  const data = snap.data() || {};
+  if (!providerOperationScopeMatches(data, { userId: ownerId, accountId, workspaceScope })) return null;
+  const safe = sanitizeProviderOperation(data.providerOperation);
+  if (!safe || safe.queueId !== ref.id) return null;
+  return { post: postFromDoc(snap), operation: data.providerOperation };
+}
+
+async function applyYouTubeProviderReconciliationResult(input) {
+  return mutateYouTubeProviderOperation(input, async ({ tx, ref, data, operation }) => {
+    const safe = sanitizeProviderOperation(operation);
+    if (!safe || !safe.providerStatusReceipt) return { outcome: 'receipt_missing', operation };
+    const receipt = safe.providerStatusReceipt;
+    const now = Timestamp.now();
+    if (safe.operationState === 'completed_private') {
+      const verification = {
+        provider: 'youtube',
+        externalVideoId: receipt.externalVideoId,
+        channelId: receipt.verifiedChannelId,
+        channelTitle: receipt.safeChannelTitle,
+        channelHandle: receipt.safeChannelHandle,
+        title: receipt.expectedTitle,
+        privacyStatus: 'private',
+        uploadStatus: receipt.uploadStatus,
+        processingStatus: receipt.processingStatus,
+        verifiedAt: receipt.verificationTimestamp,
+        uploadMethod: 'resumable'
+      };
+      let usageState = data.usageState || '';
+      let usageReconciliationRequired = Boolean(data.usageReconciliationRequired);
+      if (data.usageLedgerId && data.workspaceId && data.usageCycleId) {
+        try {
+          const transition = await getUsageService().transaction.consumeReservation(tx, {
+            workspaceId: data.workspaceId,
+            usageCycleId: data.usageCycleId,
+            metric: data.usageMetric || USAGE_METRIC_SCHEDULED_POSTS,
+            ledgerId: data.usageLedgerId,
+            relatedResourceId: ref.id
+          });
+          usageState = transition.state;
+          usageReconciliationRequired = false;
+        } catch {
+          usageReconciliationRequired = true;
+        }
+      }
+      return {
+        outcome: 'completed_private',
+        operation,
+        queuePatch: {
+          status: 'posted',
+          postedAt: data.postedAt || now,
+          failedAt: null,
+          errorMessage: null,
+          lockedAt: null,
+          lockedBy: null,
+          publishId: receipt.externalVideoId,
+          providerStatus: 'uploaded_private',
+          providerVerification: verification,
+          usageState,
+          usageReconciliationRequired,
+          lastResult: {
+            ok: true,
+            mode: 'api_reconciliation',
+            completedAt: receipt.verificationTimestamp,
+            providerStatus: 'uploaded_private',
+            response: {
+              video_id: receipt.externalVideoId,
+              privacy_status: receipt.privacyStatus,
+              upload_status: receipt.uploadStatus,
+              channel_id: receipt.verifiedChannelId,
+              upload_method: 'resumable'
+            }
+          },
+          history: appendHistoryEntry(data.history, 'provider_reconciled', 'The persisted YouTube session reconciled to one verified private video.')
+        }
+      };
+    }
+    const contradiction = safe.operationState === 'contradictory_public';
+    return {
+      outcome: safe.operationState,
+      operation,
+      queuePatch: {
+        status: 'outcome_unknown',
+        failedAt: null,
+        errorMessage: contradiction
+          ? 'YouTube reported a public or unlisted artifact; critical reconciliation is required.'
+          : 'The persisted YouTube provider operation remains unresolved.',
+        lockedAt: null,
+        lockedBy: null,
+        providerStatus: contradiction ? 'provider_visibility_contradiction' : safe.operationState,
+        lastResult: {
+          ok: false,
+          mode: 'api_reconciliation',
+          code: contradiction ? 'PROVIDER_VISIBILITY_CONTRADICTION' : 'PROVIDER_RECONCILIATION_REQUIRED',
+          outcomeUnknown: true,
+          providerMutationStarted: safe.mutationSummary.providerSessionInitiationCount > 0,
+          reason: contradiction
+            ? 'YouTube reported a public or unlisted artifact.'
+            : 'The persisted YouTube provider operation remains unresolved.',
+          completedAt: new Date().toISOString()
+        },
+        history: appendHistoryEntry(
+          data.history,
+          contradiction ? 'provider_visibility_contradiction' : 'provider_reconciliation_required',
+          contradiction
+            ? 'Provider read-back contradicted the private-only policy.'
+            : 'Same-session reconciliation did not establish one private artifact.'
+        )
+      }
+    };
+  });
 }
 
 async function updatePost(userId, id, patch, accountId, historyEvent, workspaceScope) {
@@ -2287,6 +2770,17 @@ module.exports = {
   clearInstagramAuth,
   addUploadedPosts,
   updatePost,
+  bindYouTubeProviderOperationMedia,
+  persistYouTubeSessionLocator,
+  recordYouTubeUploadAttempt,
+  recordYouTubeAcceptedByteOffset,
+  recordYouTubeProviderResponse,
+  claimYouTubeReconciliationAttempt,
+  releaseYouTubeReconciliationLease,
+  recordYouTubeProviderStatusReceipt,
+  recordYouTubeProviderOperationFailure,
+  getYouTubeProviderOperationInternal,
+  applyYouTubeProviderReconciliationResult,
   retryFailedPost,
   approvePost,
   revokePostApproval,

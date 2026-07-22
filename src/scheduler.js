@@ -15,6 +15,11 @@ const { publishPhotoPost } = require('./tiktok');
 const instagram = require('./instagram');
 const youtube = require('./youtube');
 const providers = require('./providers');
+const { safeDiagnosticText } = require('./forbiddenMaterial');
+const {
+  createInitialYouTubeProviderOperation,
+  sanitizeProviderOperation
+} = require('./youtubeProviderOperation');
 const {
   USAGE_METRIC_SCHEDULED_POSTS,
   createUsageService
@@ -118,6 +123,7 @@ const APPROVAL_BLOCKED_REASON =
 // the TikTok publish path.
 const PROVIDER_UNSUPPORTED = 'PROVIDER_UNSUPPORTED';
 const PUBLISH_ATTEMPT_BUDGET_EXHAUSTED = 'PUBLISH_ATTEMPT_BUDGET_EXHAUSTED';
+const PROVIDER_OPERATION_UNRESOLVED = 'PROVIDER_OPERATION_UNRESOLVED';
 const ATTEMPT_BUDGET_BLOCKED_REASON =
   'The durable publish-attempt budget for this approval is exhausted; a new human approval is required.';
 
@@ -177,7 +183,7 @@ async function getSchedulerHealth() {
     stuckPendingCount = pendingSnap.size;
   } catch (error) {
     // Firestore might not be available during health check — don't crash
-    console.warn('[scheduler] health check query failed:', error.message);
+    console.warn('[scheduler] health check query failed:', safeDiagnosticText(error.message || String(error)));
   }
 
   return {
@@ -221,7 +227,7 @@ async function runSchedulerTick({ now = new Date() } = {}) {
   try {
     await reclaimStaleLocks(nowDate);
   } catch (error) {
-    const message = error.message || String(error);
+    const message = safeDiagnosticText(error.message || String(error));
     summary.errors.push({ error: `Stale lock recovery failed: ${message}` });
     console.error(`[LOCK_RECOVERY_FAILED] error=${message}`);
   }
@@ -254,10 +260,10 @@ async function runSchedulerTick({ now = new Date() } = {}) {
         summary.blockedUnapproved += 1;
       } else if (result.mode !== 'skipped') {
         summary.failed += 1;
-        summary.errors.push({ id: job.id, error: result.reason || 'Unknown publish error' });
+        summary.errors.push({ id: job.id, error: safeDiagnosticText(result.reason || 'Unknown publish error') });
       }
     } catch (error) {
-      const message = error.message || String(error);
+      const message = safeDiagnosticText(error.message || String(error));
       summary.failed += 1;
       summary.errors.push({ id: job.id, error: message });
       console.error(`[POST_FAILED] id=${job.id} error=${message}`);
@@ -365,7 +371,7 @@ async function reclaimOne(ref) {
       });
     });
   } catch (error) {
-    console.error(`[LOCK_RECOVERY_FAILED] id=${ref.id} error=${error.message || error}`);
+    console.error(`[LOCK_RECOVERY_FAILED] id=${ref.id} error=${safeDiagnosticText(error.message || String(error))}`);
   }
 }
 
@@ -449,11 +455,33 @@ async function claimPost(id, { force, workerId, now = new Date() }) {
       };
     }
 
+    const providerId = String(data.provider || data.platform || providers.PROVIDER_TIKTOK)
+      .trim()
+      .toLowerCase();
+    if (providerId === providers.PROVIDER_YOUTUBE && data.providerOperation) {
+      // The exact provider operation survives every queue-state transition.
+      // No later claim may create another resumable session on this row;
+      // reconciliation must use the already-persisted operation instead.
+      return {
+        blocked: PROVIDER_OPERATION_UNRESOLVED,
+        reason: 'This YouTube queue job already owns a provider operation. Reconcile that exact operation instead of creating another session.'
+      };
+    }
+
+    const providerOperation = providerId === providers.PROVIDER_YOUTUBE
+      ? createInitialYouTubeProviderOperation({
+          queueId: id,
+          post: postFromDoc(snap),
+          attemptNumber: attempts + 1
+        })
+      : null;
+
     tx.update(ref, {
       status: 'processing',
       lockedAt: FieldValue.serverTimestamp(),
       lockedBy: workerId,
       claimAttempts: FieldValue.increment(1),
+      ...(providerOperation ? { providerOperation } : {}),
       history: appendHistoryEntry(data.history, 'publish_attempt', `Claimed by worker for publishing (attempt ${attempts + 1} of ${attemptBudget} authorized claims).`),
       updatedAt: FieldValue.serverTimestamp()
     });
@@ -461,6 +489,7 @@ async function claimPost(id, { force, workerId, now = new Date() }) {
     const claimed = postFromDoc(snap);
     claimed.status = 'processing';
     claimed.claimAttempts = attempts + 1;
+    if (providerOperation) claimed.providerOperation = sanitizeProviderOperation(providerOperation);
     return claimed;
   });
 }
@@ -489,6 +518,16 @@ async function processPost(id, {
       code: PUBLISH_ATTEMPT_BUDGET_EXHAUSTED,
       postId: id,
       reason: claimed.reason || ATTEMPT_BUDGET_BLOCKED_REASON
+    };
+  }
+  if (claimed && claimed.blocked === PROVIDER_OPERATION_UNRESOLVED) {
+    console.warn(`[JOB_BLOCKED_PROVIDER_OPERATION] id=${id}`);
+    return {
+      ok: false,
+      mode: 'blocked',
+      code: PROVIDER_OPERATION_UNRESOLVED,
+      postId: id,
+      reason: claimed.reason
     };
   }
   if (!claimed) {
@@ -552,7 +591,7 @@ async function processPost(id, {
   if (finalized.ok) {
     console.log(`[POST_SUCCESS] id=${id} providerResponse=${JSON.stringify(safeTikTokSummary(result))}`);
   } else {
-    console.error(`[POST_FAILED] id=${id} error=${finalized.reason || 'Unknown publish error'}`);
+    console.error(`[POST_FAILED] id=${id} error=${safeDiagnosticText(finalized.reason || 'Unknown publish error')}`);
   }
   return finalized;
 }
@@ -604,7 +643,7 @@ async function finalize(id, workerId, result) {
     publishId = extractPublishId(result.response);
     providerVerification = sanitizeProviderVerification(result.providerVerification);
   }
-  const reason = result.reason || 'TikTok publish failed';
+  const reason = safeDiagnosticText(result.reason || 'Publishing failed', { maxLength: 500 });
   let applied = false;
   let retryScheduled = false;
   let usageReconciliationRequired = false;
@@ -784,11 +823,11 @@ async function finalize(id, workerId, result) {
     return { ok: true, mode: result.mode || 'api', postId: id, usageReconciliationRequired };
   }
   if (retryScheduled) {
-    console.warn(`[POST_RETRY_SCHEDULED] id=${id} reason=${reason}`);
+    console.warn(`[POST_RETRY_SCHEDULED] id=${id} reason=${safeDiagnosticText(reason)}`);
     return { ok: false, mode: result.mode || 'api', postId: id, reason, retryScheduled: true };
   }
   if (result.outcomeUnknown) {
-    console.warn(`[POST_OUTCOME_UNKNOWN] id=${id} reason=${reason}`);
+    console.warn(`[POST_OUTCOME_UNKNOWN] id=${id} reason=${safeDiagnosticText(reason)}`);
     return {
       ok: false,
       mode: result.mode || 'api',
@@ -850,9 +889,9 @@ function findSafeValue(value, keys) {
 }
 
 function describeQueryError(error) {
-  const message = error && error.message ? error.message : String(error);
-  const match = message.match(/https:\/\/console\.firebase\.google\.com\/[^\s)]+/);
-  return { message, indexUrl: match ? match[0] : null };
+  const rawMessage = error && error.message ? error.message : String(error);
+  const match = rawMessage.match(/https:\/\/console\.firebase\.google\.com\/[^\s)]+/);
+  return { message: safeDiagnosticText(rawMessage), indexUrl: match ? match[0] : null };
 }
 
 module.exports = {

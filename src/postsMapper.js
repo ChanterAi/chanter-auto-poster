@@ -2,6 +2,9 @@
 
 const config = require('./config');
 const { Timestamp } = require('./firestore');
+const { sanitizeProviderOperation } = require('./youtubeProviderOperation');
+const { sanitizeApprovedMediaIdentity } = require('./approvedMediaIdentity');
+const { safeDiagnosticText } = require('./forbiddenMaterial');
 
 const DEFAULT_USER_ID = config.defaultUserId;
 const YOUTUBE_APPROVAL_ATTEMPT_GRANT = 1;
@@ -39,7 +42,7 @@ const SAFE_RESPONSE_FIELDS = new Set([
 const SAFE_RESPONSE_CONTAINERS = new Set(['data', 'result', 'video']);
 
 function scrubEvidenceText(value, maxLength = 500) {
-  return String(value || '')
+  const scrubbed = String(value || '')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
     .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[redacted]')
     .replace(/\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_-]{12,})\b/g, '[redacted]')
@@ -49,6 +52,7 @@ function scrubEvidenceText(value, maxLength = 500) {
     )
     .replace(/\b(?:ya29\.[A-Za-z0-9._-]+|sk_(?:live|test)_[A-Za-z0-9_-]+|cus_[A-Za-z0-9_-]+|sub_[A-Za-z0-9_-]+)\b/g, '[redacted]')
     .slice(0, maxLength);
+  return safeDiagnosticText(scrubbed, { maxLength });
 }
 
 function safeResponseScalar(key, value) {
@@ -339,6 +343,10 @@ function postFromDoc(doc) {
     // 'uploaded_private'). '' means the provider reported nothing.
     providerStatus: data.providerStatus || '',
     providerVerification: sanitizeProviderVerification(data.providerVerification),
+    // Safe provider-operation projection. The raw Firestore envelope may
+    // contain the encrypted resumable-session locator; this mapper delegates
+    // to a closed allowlist that never returns that field.
+    providerOperation: sanitizeProviderOperation(data.providerOperation),
     // Bounded provider-specific metadata (Part 3: YouTube). Explicit
     // allowlist copy — whatever lands in the document, only these safe
     // fields reach the app/UI/Runtime, never anything credential-shaped.
@@ -371,8 +379,11 @@ function postFromDoc(doc) {
     runtimeIdempotencyKey: data.runtimeIdempotencyKey || data.idempotencyKey || '',
     runtimeScheduledBy: data.runtimeScheduledBy || '',
     runtimeMissionId: data.runtimeMissionId || '',
+    runtimeGraphId: data.runtimeGraphId || '',
     runtimeAction: data.runtimeAction || '',
     runtimePayloadHash: data.runtimePayloadHash || '',
+    providerProofMode: data.providerProofMode === true,
+    approvedMedia: sanitizeApprovedMediaIdentity(data.approvedMedia),
     // Usage linkage contains identifiers and lifecycle state only. Counter
     // documents, subscription overrides, and billing identifiers never ride
     // on queue/API projections.
@@ -397,6 +408,11 @@ function postFromDoc(doc) {
  */
 function mapPatchToFirestore(patch) {
   const result = { ...patch };
+
+  // Provider-operation state is worker-owned and transactionally maintained
+  // by storage.js. Generic website edits must never replace it or smuggle a
+  // raw/encrypted session locator through a public patch surface.
+  delete result.providerOperation;
 
   if ('lastResult' in result) result.lastResult = sanitizePostResult(result.lastResult);
   if ('lastInstagramResult' in result) result.lastInstagramResult = sanitizePostResult(result.lastInstagramResult);

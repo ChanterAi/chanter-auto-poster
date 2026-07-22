@@ -9,6 +9,7 @@ const { createHash, timingSafeEqual } = require('crypto');
 const config = require('./config');
 const applicationService = require('./autoposterApplicationService');
 const { normalizeQueueStatus, sanitizeHistory, sanitizePostResult } = require('./postsMapper');
+const { safeDiagnosticText, sanitizeProviderMaterial } = require('./forbiddenMaterial');
 
 const router = express.Router();
 const QUEUE_LIST_DEFAULT_LIMIT = 25;
@@ -24,7 +25,12 @@ function asyncRoute(handler) {
 }
 
 function fail(res, status, code, reason, extra = {}) {
-  res.status(status).json({ ok: false, code, reason, ...extra });
+  res.status(status).json(sanitizeProviderMaterial({
+    ok: false,
+    code: String(code || 'failure').slice(0, 120),
+    reason: safeDiagnosticText(reason, { protectedValues: [config.runtimeControl.token] }),
+    ...extra
+  }, { protectedValues: [config.runtimeControl.token] }));
 }
 
 function applicationRoute(handler) {
@@ -112,7 +118,7 @@ function queueItemView(post) {
 function lastErrorMessage(post) {
   const lastResult = post.lastResult || null;
   const reason = lastResult && (lastResult.reason || lastResult.error || lastResult.message);
-  return String(reason || '').slice(0, 300);
+  return safeDiagnosticText(reason, { maxLength: 300, protectedValues: [config.runtimeControl.token] });
 }
 
 // Phase 2E-B bounded lastResult wire subset. Re-sanitizes through the
@@ -169,12 +175,14 @@ function postStatusView(post) {
     // Provider-reported state and bounded provider metadata (postsMapper
     // allowlist — titles/privacy flags only, never credentials).
     providerStatus: post.providerStatus || '',
-    providerMetadata: post.providerMetadata || null,
     // Provider read-back proof is a strict allowlisted mapper projection:
     // external artifact identity, channel/title, private status, processing
     // state, and verification time only. No provider response or credential
     // material crosses the Runtime boundary.
     providerVerification: post.providerVerification || null,
+    // Durable provider operation is already a closed safe projection from
+    // postsMapper. The encrypted resumable-session locator is never present.
+    providerOperation: post.providerOperation || null,
     // Scheduler lifecycle evidence. lockedAt is safe timing evidence;
     // lockedBy (worker identity) is deliberately never exposed.
     lockedAt: post.lockedAt || null,
@@ -285,6 +293,24 @@ router.get('/posts/:id/status', applicationRoute(async (req, res) => {
   res.json({ ok: true, post: postStatusView(post) });
 }));
 
+router.post('/posts/:id/provider/reconcile', applicationRoute(async (req, res) => {
+  const body = req.body || {};
+  const accountId = String(body.accountId || req.query.accountId || '').trim();
+  const workspaceId = String(
+    body.workspaceId || req.query.workspaceId || req.get('x-chanter-workspace-id') || ''
+  ).trim();
+  if (!accountId) { fail(res, 400, 'validation_failed', 'accountId is required.'); return; }
+  const result = await applicationService.reconcileProviderOperation(
+    runtimeContext(req, { accountId, workspaceId }),
+    { postId: req.params.id, accountId }
+  );
+  res.json({
+    ok: true,
+    classification: result.classification,
+    post: postStatusView(result.post)
+  });
+}));
+
 router.post('/media/validate', applicationRoute(async (req, res) => {
   const validation = applicationService.validateMedia(runtimeContext(req), req.body || {});
   res.json({ ok: true, ...validation });
@@ -347,8 +373,11 @@ router.post('/schedule', applicationRoute(async (req, res) => {
         : undefined,
       requestedBy,
       runtimeMissionId: body.missionId,
+      runtimeGraphId: body.graphId,
       runtimeAction: body.action,
       runtimePayloadHash: body.missionPayloadHash,
+      providerProofMode: body.providerProofMode === true,
+      approvedMedia: body.approvedMedia,
       requireSingle: true,
       schedule: {
         mode: 'explicit',

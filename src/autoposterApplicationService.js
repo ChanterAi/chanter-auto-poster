@@ -5,6 +5,7 @@
 // operations; Firestore/media/provider details stay in their existing modules.
 
 const { createHash } = require('crypto');
+const config = require('./config');
 const storage = require('./storage');
 const mediaPolicy = require('./mediaPolicy');
 const providers = require('./providers');
@@ -13,7 +14,9 @@ const commercialService = require('./commercialService');
 const { sanitizePostResult, sanitizeHistory } = require('./postsMapper');
 const { parseDateTimeLocal } = require('./timeUtil');
 const { computeMaxSchedulePlan, computeDailySchedulePlan } = require('./maxScheduler');
-const { validateYouTubeMetadata } = require('./youtube');
+const youtube = require('./youtube');
+const { sanitizeApprovedMediaIdentity } = require('./approvedMediaIdentity');
+const { validateYouTubeMetadata } = youtube;
 
 const PROVIDER_TIKTOK = providers.PROVIDER_TIKTOK;
 const PROVIDER_YOUTUBE = providers.PROVIDER_YOUTUBE;
@@ -272,6 +275,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
   const maxSchedulePlanner = dependencies.computeMaxSchedulePlan || computeMaxSchedulePlan;
   const dailySchedulePlanner = dependencies.computeDailySchedulePlan || computeDailySchedulePlan;
   const commercialAdapter = dependencies.commercialService || commercialService;
+  const youtubeAdapter = dependencies.youtube || youtube;
   const injectFailure = typeof dependencies.failureInjector === 'function'
     ? dependencies.failureInjector
     : () => {};
@@ -1043,6 +1047,16 @@ function createAutoPosterApplicationService(dependencies = {}) {
       mediaUrl: input.mediaUrl || input.publicMediaUrl
     });
     if (!media.valid) throw new AutoPosterApplicationError(media.reason);
+    const providerProofMode = provider === PROVIDER_YOUTUBE && input.providerProofMode === true;
+    const approvedMedia = sanitizeApprovedMediaIdentity(input.approvedMedia, {
+      maxByteSize: config.youtube.maxVideoBytes
+    });
+    if (providerProofMode && !approvedMedia) {
+      throw new AutoPosterApplicationError('Provider-proof scheduling requires one complete approved-media identity.', {
+        status: 400,
+        code: 'approved_media_invalid'
+      });
+    }
 
     const firstAccount = accounts[0];
     const selfApprove = context.source === 'website' && context.approval
@@ -1075,8 +1089,11 @@ function createAutoPosterApplicationService(dependencies = {}) {
       runtimeIdempotencyKey: context.source === 'runtime' ? idempotencyKey : '',
       runtimeScheduledBy: context.source === 'runtime' ? requestedBy : '',
       runtimeMissionId: context.source === 'runtime' ? runtimeMetadata.missionId : '',
+      runtimeGraphId: context.source === 'runtime' ? String(input.runtimeGraphId || '') : '',
       runtimeAction: context.source === 'runtime' ? runtimeMetadata.action : '',
       runtimePayloadHash: context.source === 'runtime' ? runtimeMetadata.missionPayloadHash : '',
+      providerProofMode,
+      approvedMedia: providerProofMode ? approvedMedia : null,
       scheduledAt: schedule.mode === 'explicit' ? schedule.scheduledAt : '',
       scheduleEntries: schedule.mode === 'recurring_daily' ? schedule.plan.jobs : undefined,
       scheduleSeries: schedule.mode === 'recurring_daily' ? schedule.plan.series : undefined,
@@ -1439,6 +1456,56 @@ function createAutoPosterApplicationService(dependencies = {}) {
     return { ok: true, post: transition.post };
   }
 
+  async function reconcileProviderOperation(contextInput, input = {}) {
+    const context = createExecutionContext(contextInput);
+    if (context.source !== 'runtime') {
+      throw new AutoPosterApplicationError('Provider reconciliation is restricted to the authenticated Runtime control surface.', {
+        status: 403,
+        code: 'forbidden'
+      });
+    }
+    const commercialContext = await resolveCommercialContext(context);
+    const postId = String(input.postId || input.id || '').trim();
+    const accountId = String(input.accountId || context.accountId || '').trim();
+    if (!postId || !accountId) throw new AutoPosterApplicationError('postId and accountId are required.');
+    const current = await storageAdapter.getPost(
+      context.userId,
+      postId,
+      accountId,
+      commercialContext.workspaceScope
+    );
+    if (!current) {
+      throw new AutoPosterApplicationError('Post not found for this tenant/account scope.', { status: 404, code: 'not_found' });
+    }
+    if (current.provider !== PROVIDER_YOUTUBE || !current.providerOperation) {
+      throw new AutoPosterApplicationError('This queue job has no YouTube provider operation to reconcile.', {
+        status: 409,
+        code: 'provider_operation_not_available'
+      });
+    }
+    const result = await youtubeAdapter.reconcileYouTubeProviderOperation({
+      userId: context.userId,
+      postId,
+      accountId,
+      workspaceScope: commercialContext.workspaceScope
+    });
+    const refreshed = await storageAdapter.getPost(
+      context.userId,
+      postId,
+      accountId,
+      commercialContext.workspaceScope
+    );
+    if (!refreshed) {
+      throw new AutoPosterApplicationError('Post disappeared during provider reconciliation.', { status: 409, code: 'provider_operation_conflict' });
+    }
+    return {
+      classification: String(result.classification || 'outcome_unknown'),
+      post: sanitizePostView(refreshed, {
+        advancedEvidence: commercialContext.entitlements.advancedEvidence === true
+      })
+    };
+  }
+
   async function updatePost(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
     const commercialContext = await resolveCommercialContext(context);
@@ -1795,6 +1862,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
     listConnectedAccounts,
     listQueue,
     markPostManually,
+    reconcileProviderOperation,
     reconcileRuntimeSchedule,
     rescheduleQueue,
     retryPost,

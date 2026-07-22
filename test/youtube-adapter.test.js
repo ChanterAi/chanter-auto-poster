@@ -11,6 +11,13 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomBytes, createHash } = require('node:crypto');
+const {
+  appendProviderOperationEvent,
+  canonicalSha256,
+  createInitialYouTubeProviderOperation,
+  operationMediaBinding,
+  sanitizeProviderOperation
+} = require('../src/youtubeProviderOperation');
 
 const CANARY_CLIENT_SECRET = 'CANARY-YT-CLIENT-SECRET-77aa88bb';
 const CANARY_ACCESS = 'CANARY-YT-ACCESS-11cc22dd';
@@ -19,6 +26,14 @@ const CANARY_REFRESH = 'CANARY-YT-REFRESH-33ee44ff';
 // Controlled Google fake. Route behavior is driven by token/session values
 // so each test picks its scenario without shared mutable state.
 const requestsLog = [];
+const sessionRecords = new Map();
+function providerVideo(mode = '') {
+  return {
+    id: mode === 'public' ? 'yt-video-public' : 'yt-video-123',
+    status: { uploadStatus: 'uploaded', privacyStatus: mode === 'public' ? 'public' : 'private' },
+    snippet: { channelId: 'UC-chanter' }
+  };
+}
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   let body = '';
@@ -84,7 +99,9 @@ const server = http.createServer((req, res) => {
         return;
       }
       const session = randomBytes(8).toString('hex');
-      res.setHeader('Location', `http://localhost:${server.address().port}/upload-session/${session}${url.searchParams.get('mode') ? `?mode=${url.searchParams.get('mode')}` : ''}`);
+      const mode = url.searchParams.get('mode') || '';
+      sessionRecords.set(session, { mode, acceptedByteOffset: 0, complete: false });
+      res.setHeader('Location', `http://127.0.0.1:${server.address().port}/upload-session/${session}${mode ? `?mode=${mode}` : ''}`);
       res.statusCode = 200;
       res.end();
       return;
@@ -92,6 +109,21 @@ const server = http.createServer((req, res) => {
 
     if (req.method === 'PUT' && url.pathname.startsWith('/upload-session/')) {
       const mode = url.searchParams.get('mode') || '';
+      const sessionId = url.pathname.split('/').at(-1);
+      const session = sessionRecords.get(sessionId) || { mode, acceptedByteOffset: 0, complete: false };
+      const contentRange = String(req.headers['content-range'] || '');
+      if (contentRange.startsWith('bytes */')) {
+        if (mode === 'missing') { res.statusCode = 410; res.end(); return; }
+        if (session.complete) {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(providerVideo(mode)));
+          return;
+        }
+        res.statusCode = 308;
+        if (session.acceptedByteOffset > 0) res.setHeader('Range', `bytes=0-${session.acceptedByteOffset - 1}`);
+        res.end();
+        return;
+      }
       if (mode === 'reject') {
         res.statusCode = 400;
         res.setHeader('Content-Type', 'application/json');
@@ -102,22 +134,40 @@ const server = http.createServer((req, res) => {
         req.socket.destroy();
         return;
       }
+      if (mode === 'missing') {
+        req.socket.destroy();
+        return;
+      }
+      if (mode === 'ambiguous-once' && !session.complete) {
+        session.complete = true;
+        sessionRecords.set(sessionId, session);
+        req.socket.destroy();
+        return;
+      }
+      if (mode === 'partial' && !contentRange.startsWith('bytes ')) {
+        session.acceptedByteOffset = 1024;
+        sessionRecords.set(sessionId, session);
+        res.statusCode = 308;
+        res.setHeader('Range', 'bytes=0-1023');
+        res.end();
+        return;
+      }
+      session.complete = true;
+      sessionRecords.set(sessionId, session);
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({
-        id: 'yt-video-123',
-        status: { uploadStatus: 'uploaded', privacyStatus: 'private' },
-        snippet: { channelId: 'UC-chanter' }
-      }));
+      res.end(JSON.stringify(providerVideo(mode)));
       return;
     }
 
     if (req.method === 'GET' && url.pathname === '/api/videos') {
+      const requestedId = url.searchParams.get('id');
+      const isPublic = requestedId === 'yt-video-public';
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({
         items: [{
-          id: url.searchParams.get('id'),
+          id: requestedId,
           snippet: { channelId: 'UC-chanter', channelTitle: 'chanterCy', title: 'Test title' },
-          status: { uploadStatus: 'processed', privacyStatus: 'private' },
+          status: { uploadStatus: 'processed', privacyStatus: isPublic ? 'public' : 'private' },
           processingDetails: { processingStatus: 'succeeded' }
         }]
       }));
@@ -176,14 +226,22 @@ function installAccountFakes({ account, tokens }) {
     },
     tokens: { access_token: CANARY_ACCESS, refresh_token: CANARY_REFRESH, ...tokens },
     tokenStateUpdates: [],
-    reauthorizationMarks: []
+    reauthorizationMarks: [],
+    providerEvents: [],
+    sessionEnvelopes: [],
+    accountReads: 0,
+    credentialReads: 0
   };
-  storage.getYouTubeAccount = async (userId, accountId) =>
-    (userId === state.account.userId && accountId === state.account.accountId ? state.account : null);
-  storage.getYouTubeAccountCredential = async (userId, accountId) =>
-    (userId === state.account.userId && accountId === state.account.accountId
+  storage.getYouTubeAccount = async (userId, accountId) => {
+    state.accountReads += 1;
+    return userId === state.account.userId && accountId === state.account.accountId ? state.account : null;
+  };
+  storage.getYouTubeAccountCredential = async (userId, accountId) => {
+    state.credentialReads += 1;
+    return userId === state.account.userId && accountId === state.account.accountId
       ? tokenVault.encryptCredentials(state.tokens)
-      : null);
+      : null;
+  };
   storage.updateYouTubeAccountTokenState = async (userId, accountId, update) => {
     state.tokenStateUpdates.push(update);
     return state.account;
@@ -193,16 +251,136 @@ function installAccountFakes({ account, tokens }) {
     state.account.reauthorizationRequired = true;
     return true;
   };
+  storage.bindYouTubeProviderOperationMedia = async (input) => {
+    const operation = providerOperations.get(input.postId);
+    const media = {
+      mediaSha256: input.mediaSha256,
+      mediaByteSize: input.mediaByteSize,
+      mediaMimeType: input.mediaMimeType,
+      mediaContainer: input.mediaContainer,
+      mediaFileName: input.mediaFileName,
+      mediaSourceId: input.mediaSourceId
+    };
+    Object.assign(operation, media, {
+      bindingSha256: canonicalSha256(operationMediaBinding(operation, media)),
+      operationState: 'media_preflighted'
+    });
+    operation.events = appendProviderOperationEvent(operation, 'media_preflight_bound').events;
+    return { outcome: 'bound', safeOperation: sanitizeProviderOperation(operation) };
+  };
+  storage.persistYouTubeSessionLocator = async (input) => {
+    const operation = providerOperations.get(input.postId);
+    operation.sessionLocatorEnvelope = input.sessionLocatorEnvelope;
+    operation.sessionCreatedAt = new Date().toISOString();
+    operation.operationState = 'session_persisted';
+    operation.events = appendProviderOperationEvent(operation, 'session_initiated').events;
+    state.sessionEnvelopes.push(input.sessionLocatorEnvelope);
+    state.providerEvents.push('session_persisted');
+    return { outcome: 'session_persisted', safeOperation: sanitizeProviderOperation(operation) };
+  };
+  storage.recordYouTubeUploadAttempt = async (input) => {
+    const operation = providerOperations.get(input.postId);
+    operation.operationState = 'uploading';
+    operation.events = appendProviderOperationEvent(operation, 'upload_put_attempted', {
+      acceptedByteOffset: input.acceptedByteOffset
+    }).events;
+    state.providerEvents.push('upload_put_attempted');
+    return { outcome: 'recorded', safeOperation: sanitizeProviderOperation(operation) };
+  };
+  storage.recordYouTubeAcceptedByteOffset = async (input) => {
+    const operation = providerOperations.get(input.postId);
+    operation.acceptedByteOffset = input.acceptedByteOffset;
+    operation.operationState = 'resumable';
+    operation.events = appendProviderOperationEvent(operation, 'accepted_byte_offset', input).events;
+    return { outcome: 'recorded', safeOperation: sanitizeProviderOperation(operation) };
+  };
+  storage.recordYouTubeProviderResponse = async (input) => {
+    const operation = providerOperations.get(input.postId);
+    operation.externalVideoId = input.externalVideoId;
+    operation.providerResponseSha256 = input.providerResponseSha256;
+    operation.events = appendProviderOperationEvent(operation, 'provider_response_recorded', {
+      externalVideoId: input.externalVideoId,
+      responseSha256: input.providerResponseSha256
+    }).events;
+    operation.events = appendProviderOperationEvent(operation, 'artifact_confirmed', {
+      externalVideoId: input.externalVideoId
+    }).events;
+    return { outcome: 'recorded', safeOperation: sanitizeProviderOperation(operation) };
+  };
+  storage.recordYouTubeProviderStatusReceipt = async (input) => {
+    const operation = providerOperations.get(input.postId);
+    operation.providerStatusReceipt = input.providerStatusReceipt;
+    operation.providerStatusReceiptSha256 = input.providerStatusReceiptSha256;
+    operation.operationState = input.providerStatusReceipt.privacyStatus === 'private'
+      ? 'completed_private'
+      : 'contradictory_public';
+    operation.events = appendProviderOperationEvent(operation, 'provider_status_read', {
+      externalVideoId: input.providerStatusReceipt.externalVideoId,
+      receiptSha256: input.providerStatusReceiptSha256
+    }).events;
+    return { outcome: operation.operationState, safeOperation: sanitizeProviderOperation(operation) };
+  };
+  storage.recordYouTubeProviderOperationFailure = async (input) => {
+    const operation = providerOperations.get(input.postId);
+    operation.operationState = input.operationState;
+    operation.lastOperationErrorCode = input.errorCode;
+    return { outcome: input.operationState, safeOperation: sanitizeProviderOperation(operation) };
+  };
+  storage.getYouTubeProviderOperationInternal = async (userId, postId, accountId) => {
+    const operation = providerOperations.get(postId);
+    const post = providerPosts.get(postId);
+    return operation && post && userId === post.userId && accountId === post.accountId
+      ? { operation, post }
+      : null;
+  };
+  storage.claimYouTubeReconciliationAttempt = async (input) => {
+    const operation = providerOperations.get(input.postId);
+    if (operation.reconciliationAttemptCount >= operation.reconciliationAttemptBudget) {
+      return { outcome: 'budget_exhausted', safeOperation: sanitizeProviderOperation(operation) };
+    }
+    operation.reconciliationAttemptCount += 1;
+    operation.reconciliationFencingToken += 1;
+    const lease = {
+      ownerId: input.ownerId,
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      attemptNumber: operation.reconciliationAttemptCount,
+      operationId: operation.providerOperationId,
+      fencingToken: operation.reconciliationFencingToken
+    };
+    operation.reconciliationLease = lease;
+    operation.events = appendProviderOperationEvent(operation, 'reconciliation_lease_acquired').events;
+    return { outcome: 'claimed', lease, safeOperation: sanitizeProviderOperation(operation) };
+  };
+  storage.releaseYouTubeReconciliationLease = async (input) => {
+    const operation = providerOperations.get(input.postId);
+    operation.reconciliationLease = null;
+    return { outcome: 'released', safeOperation: sanitizeProviderOperation(operation) };
+  };
+  storage.applyYouTubeProviderReconciliationResult = async (input) => ({
+    outcome: providerOperations.get(input.postId).operationState
+  });
   return state;
 }
 
+const providerOperations = new Map();
+const providerPosts = new Map();
+
 function basePost(overrides = {}) {
-  return {
+  const post = {
     id: 'job-1',
     userId: 'owner',
     provider: 'youtube',
     platform: 'youtube',
     accountId: 'UC-chanter',
+    connectedAccountId: 'youtube:UC-chanter',
+    workspaceId: 'workspace-1',
+    runtimeMissionId: 'graph:g:node:n',
+    runtimeGraphId: 'graph:g',
+    runtimeAction: 'autoposter.post.schedule',
+    runtimePayloadHash: 'a'.repeat(64),
+    approvedBy: 'founder',
+    approvedAt: '2026-07-19T11:59:00.000Z',
     mediaType: 'video',
     mimeType: 'video/mp4',
     fileName: '',
@@ -211,12 +389,29 @@ function basePost(overrides = {}) {
     providerMetadata: { youtube: { title: 'Test title', description: 'Test description', privacyStatus: 'private', notifySubscribers: false } },
     ...overrides
   };
+  if (post.accountId !== 'legacy') {
+    const operation = createInitialYouTubeProviderOperation({ queueId: post.id, post, attemptNumber: 1 });
+    providerOperations.set(post.id, operation);
+    post.providerOperation = sanitizeProviderOperation(operation);
+  }
+  providerPosts.set(post.id, post);
+  return post;
 }
 
 function writeLocalVideo(name, bytes) {
   fs.mkdirSync(config.uploadsDir, { recursive: true });
   const filePath = path.join(config.uploadsDir, name);
-  fs.writeFileSync(filePath, randomBytes(bytes));
+  const size = Math.max(32, bytes);
+  const payload = randomBytes(size);
+  payload.writeUInt32BE(24, 0);
+  payload.write('ftyp', 4, 4, 'ascii');
+  payload.write('mp42', 8, 4, 'ascii');
+  payload.writeUInt32BE(0, 12);
+  payload.write('isom', 16, 4, 'ascii');
+  payload.write('mp42', 20, 4, 'ascii');
+  payload.writeUInt32BE(size - 24, 24);
+  payload.write('mdat', 28, 4, 'ascii');
+  fs.writeFileSync(filePath, payload);
   return filePath;
 }
 
@@ -293,6 +488,32 @@ test('remote media trust boundary rejects untrusted URLs', () => {
   assert.equal(youtube.isTrustedRemoteMediaUrl('not-a-url'), false);
 });
 
+test('ADV-03 approved-media byte mismatch fails before credentials or provider endpoints', async () => {
+  const filePath = writeLocalVideo('yt-approved-mismatch.mp4', 4096);
+  const state = installAccountFakes({});
+  const bytes = fs.readFileSync(filePath);
+  const post = basePost({
+    id: 'job-approved-mismatch',
+    fileName: 'yt-approved-mismatch.mp4',
+    providerProofMode: true,
+    approvedMedia: {
+      sha256: createHash('sha256').update(Buffer.concat([bytes, Buffer.from('changed')])).digest('hex'),
+      byteSize: bytes.length,
+      mimeType: 'video/mp4',
+      fileName: 'yt-approved-mismatch.mp4',
+      container: 'mp4'
+    }
+  });
+  const uploadCallsBefore = requestsLog.filter((entry) => entry.path === '/upload/videos').length;
+  const result = await youtube.publishScheduledYouTubePost(post);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'APPROVED_MEDIA_MISMATCH');
+  assert.equal(state.accountReads, 0, 'provider account metadata is not read before approved-byte comparison');
+  assert.equal(state.credentialReads, 0, 'credentials are not read before approved-byte comparison');
+  assert.equal(requestsLog.filter((entry) => entry.path === '/upload/videos').length, uploadCallsBefore);
+  assert.equal(providerOperations.get(post.id).operationState, 'terminal_failure');
+});
+
 test('successful upload streams a local file, forces private + notifySubscribers=false, and returns one video id', async () => {
   writeLocalVideo('yt-test-clip.mp4', 64 * 1024);
   const state = installAccountFakes({});
@@ -329,6 +550,11 @@ test('successful upload streams a local file, forces private + notifySubscribers
   const put = requestsLog.filter((entry) => entry.path.startsWith('/upload-session/')).at(-1);
   assert.equal(put.headers['content-length'], String(64 * 1024), 'bytes are streamed with an exact length, not re-buffered JSON');
   assert.equal(Buffer.byteLength(put.body, 'utf8') > 0, true);
+  assert.deepEqual(state.providerEvents.slice(0, 2), ['session_persisted', 'upload_put_attempted']);
+  assert.equal(state.sessionEnvelopes.length, 1);
+  assert.equal(tokenVault.isCredentialEnvelope(state.sessionEnvelopes[0]), true);
+  assert.equal(JSON.stringify(state.sessionEnvelopes[0]).includes('/upload-session/'), false, 'the locator is encrypted at rest');
+  assert.equal(JSON.stringify(result).includes('/upload-session/'), false, 'the locator never reaches the result');
   assert.equal(state.reauthorizationMarks.length, 0);
 });
 
@@ -397,6 +623,180 @@ test('ambiguous transport failure after the session exists becomes outcome_unkno
   } finally {
     global.fetch = originalFetch;
     config.youtube.uploadBaseUrl = original;
+  }
+});
+
+test('restart after partial bytes queries and resumes the same persisted session without a second initiation', async () => {
+  writeLocalVideo('yt-partial-clip.mp4', 8 * 1024);
+  installAccountFakes({});
+  const post = basePost({ id: 'job-partial', fileName: 'yt-partial-clip.mp4' });
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    const target = String(input);
+    return originalFetch(target.includes('/upload/videos') ? `${target}&mode=partial` : input, init);
+  };
+  try {
+    const first = await youtube.publishScheduledYouTubePost(post);
+    assert.equal(first.outcomeUnknown, true);
+    assert.equal(providerOperations.get(post.id).acceptedByteOffset, 1024);
+    const sessionPathsBefore = requestsLog
+      .filter((entry) => entry.path.startsWith('/upload-session/'))
+      .map((entry) => entry.path);
+    const reconciled = await youtube.reconcileYouTubeProviderOperation({
+      userId: post.userId,
+      postId: post.id,
+      accountId: post.accountId
+    });
+    assert.equal(reconciled.classification, 'completed_private');
+    const initCalls = requestsLog.filter((entry) => entry.path === '/upload/videos' && entry.query.mode === 'partial');
+    assert.equal(initCalls.length, 1, 'reconciliation never creates a second session');
+    const sessionRequests = requestsLog.filter((entry) => entry.path === sessionPathsBefore.at(-1));
+    assert.equal(sessionRequests.some((entry) => String(entry.headers['content-range']).startsWith('bytes */')), true, 'same-session status query ran');
+    assert.equal(sessionRequests.some((entry) => String(entry.headers['content-range']).startsWith('bytes 1024-')), true, 'same-session missing range resumed');
+    const safe = sanitizeProviderOperation(providerOperations.get(post.id));
+    assert.equal(safe.operationState, 'completed_private');
+    assert.equal(safe.mutationSummary.providerSessionInitiationCount, 1);
+    assert.equal(safe.mutationSummary.confirmedVideoArtifactCount, 1);
+    assert.equal(safe.mutationSummary.existingResourceUpdateCount, 0);
+    assert.equal(safe.mutationSummary.deleteCount, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('restart after an ambiguous completion recovers the video ID from the same completed session', async () => {
+  writeLocalVideo('yt-complete-recovery.mp4', 8 * 1024);
+  installAccountFakes({});
+  const post = basePost({ id: 'job-complete-recovery', fileName: 'yt-complete-recovery.mp4' });
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    const target = String(input);
+    return originalFetch(target.includes('/upload/videos') ? `${target}&mode=ambiguous-once` : input, init);
+  };
+  try {
+    const first = await youtube.publishScheduledYouTubePost(post);
+    assert.equal(first.outcomeUnknown, true);
+    const reconciled = await youtube.reconcileYouTubeProviderOperation({ userId: 'owner', postId: post.id, accountId: post.accountId });
+    assert.equal(reconciled.classification, 'completed_private');
+    assert.equal(providerOperations.get(post.id).externalVideoId, 'yt-video-123');
+    assert.equal(requestsLog.filter((entry) => entry.path === '/upload/videos' && entry.query.mode === 'ambiguous-once').length, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('missing same-session reconciliation fails closed without creating a replacement session', async () => {
+  writeLocalVideo('yt-missing-session.mp4', 8 * 1024);
+  installAccountFakes({});
+  const post = basePost({ id: 'job-missing-session', fileName: 'yt-missing-session.mp4' });
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    const target = String(input);
+    return originalFetch(target.includes('/upload/videos') ? `${target}&mode=missing` : input, init);
+  };
+  try {
+    const first = await youtube.publishScheduledYouTubePost(post);
+    assert.equal(first.outcomeUnknown, true);
+    const reconciled = await youtube.reconcileYouTubeProviderOperation({ userId: 'owner', postId: post.id, accountId: post.accountId });
+    assert.equal(reconciled.classification, 'provider_missing');
+    assert.equal(providerOperations.get(post.id).operationState, 'provider_missing');
+    assert.equal(
+      requestsLog.filter((entry) => entry.path === '/upload/videos' && entry.query.mode === 'missing').length,
+      1,
+      'a missing session is never replaced automatically'
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('tampered encrypted session locator fails closed before a provider status call', async () => {
+  writeLocalVideo('yt-tamper.mp4', 8 * 1024);
+  installAccountFakes({});
+  const post = basePost({ id: 'job-tamper', fileName: 'yt-tamper.mp4' });
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    const target = String(input);
+    return originalFetch(target.includes('/upload/videos') ? `${target}&mode=ambiguous` : input, init);
+  };
+  try {
+    await youtube.publishScheduledYouTubePost(post);
+    const raw = providerOperations.get(post.id);
+    raw.sessionLocatorEnvelope = { ...raw.sessionLocatorEnvelope, tag: 'AA' };
+    const before = requestsLog.length;
+    const result = await youtube.reconcileYouTubeProviderOperation({ userId: 'owner', postId: post.id, accountId: post.accountId });
+    assert.equal(result.classification, 'session_locator_decrypt_failed');
+    assert.equal(requestsLog.length, before);
+    assert.equal(JSON.stringify(result).includes('/upload-session/'), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('ambiguous same-session reconciliation remains fail-closed and obeys its durable budget', async () => {
+  writeLocalVideo('yt-still-ambiguous.mp4', 8 * 1024);
+  installAccountFakes({});
+  const post = basePost({ id: 'job-still-ambiguous', fileName: 'yt-still-ambiguous.mp4' });
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    const target = String(input);
+    return originalFetch(target.includes('/upload/videos') ? `${target}&mode=ambiguous` : input, init);
+  };
+  try {
+    await youtube.publishScheduledYouTubePost(post);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await youtube.reconcileYouTubeProviderOperation({ userId: 'owner', postId: post.id, accountId: post.accountId });
+      assert.equal(result.classification, 'outcome_unknown');
+    }
+    const before = requestsLog.length;
+    const exhausted = await youtube.reconcileYouTubeProviderOperation({ userId: 'owner', postId: post.id, accountId: post.accountId });
+    assert.equal(exhausted.classification, 'budget_exhausted');
+    assert.equal(requestsLog.length, before, 'exhausted budget performs no provider call');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('media identity drift blocks same-session resume without creating another session', async () => {
+  const initCountBefore = requestsLog.filter((entry) => entry.path === '/upload/videos' && entry.query.mode === 'partial').length;
+  const filePath = writeLocalVideo('yt-media-drift.mp4', 8 * 1024);
+  installAccountFakes({});
+  const post = basePost({ id: 'job-media-drift', fileName: 'yt-media-drift.mp4' });
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    const target = String(input);
+    return originalFetch(target.includes('/upload/videos') ? `${target}&mode=partial` : input, init);
+  };
+  try {
+    await youtube.publishScheduledYouTubePost(post);
+    writeLocalVideo('yt-media-drift.mp4', 8 * 1024);
+    const result = await youtube.reconcileYouTubeProviderOperation({ userId: 'owner', postId: post.id, accountId: post.accountId });
+    assert.equal(result.classification, 'media_identity_drift');
+    assert.equal(
+      requestsLog.filter((entry) => entry.path === '/upload/videos' && entry.query.mode === 'partial').length - initCountBefore,
+      1
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('public provider read-back becomes a critical contradiction instead of success', async () => {
+  writeLocalVideo('yt-public-contradiction.mp4', 8 * 1024);
+  installAccountFakes({});
+  const post = basePost({ id: 'job-public', fileName: 'yt-public-contradiction.mp4' });
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    const target = String(input);
+    return originalFetch(target.includes('/upload/videos') ? `${target}&mode=public` : input, init);
+  };
+  try {
+    const result = await youtube.publishScheduledYouTubePost(post);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'PROVIDER_VISIBILITY_CONTRADICTION');
+    assert.equal(providerOperations.get(post.id).operationState, 'contradictory_public');
+  } finally {
+    global.fetch = originalFetch;
   }
 });
 
