@@ -153,6 +153,16 @@ router.post('/api/platform/batches', requireAdminApi, uploadBatchMedia, asyncRou
   }
 }));
 
+router.get('/api/platform/destinations', requireAdminApi, asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const result = await batchService.listDestinations(websiteContext(req));
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    if (!sendServiceError(res, error)) throw error;
+  }
+}));
+
 router.get('/api/platform/batches', requireAdminApi, asyncRoute(async (req, res) => {
   res.set('Cache-Control', 'no-store');
   try {
@@ -197,7 +207,34 @@ router.patch(
         {
           caption: req.body.caption,
           hashtags: req.body.hashtags,
-          scheduleInput: req.body.scheduleInput
+          scheduleInput: req.body.scheduleInput,
+          youtubeTitle: req.body.youtubeTitle,
+          youtubeDescription: req.body.youtubeDescription
+        }
+      );
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      if (!sendServiceError(res, error)) throw error;
+    }
+  })
+);
+
+router.post(
+  '/api/platform/batches/:batchId/items/:postId/destination',
+  requireAdminApi,
+  express.json({ limit: '32kb' }),
+  asyncRoute(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+      const result = await batchService.changeItemDestination(
+        websiteContext(req),
+        req.params.batchId,
+        req.params.postId,
+        {
+          provider: req.body.provider,
+          accountId: req.body.accountId,
+          youtubeTitle: req.body.youtubeTitle,
+          youtubeDescription: req.body.youtubeDescription
         }
       );
       res.json({ ok: true, ...result });

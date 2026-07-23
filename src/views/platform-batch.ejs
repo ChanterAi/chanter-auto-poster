@@ -77,12 +77,28 @@
         missing_caption: 'Λείπει λεζάντα — γράψτε μία πριν την αποδοχή.',
         missing_media: 'Λείπει το αρχείο πολυμέσων.',
         missing_schedule: 'Δεν έχει οριστεί ώρα δημοσίευσης.',
-        schedule_in_past: 'Η ώρα έχει περάσει — θα μετατεθεί αυτόματα σε ασφαλές σημείο κατά την αποδοχή.'
+        schedule_in_past: 'Η ώρα έχει περάσει — θα μετατεθεί αυτόματα σε ασφαλές σημείο κατά την αποδοχή.',
+        missing_youtube_title: 'Λείπει τίτλος YouTube — συμπληρώστε τον πριν την αποδοχή.'
       };
+      var PROVIDER_LABELS = { tiktok: 'TikTok', youtube: 'YouTube' };
 
       var currentView = null;
+      var destinations = [];
       var dirtyItems = {};
       var pollTimer = null;
+
+      function destinationKey(provider, accountId) {
+        return provider + '|' + accountId;
+      }
+
+      function loadDestinations() {
+        return fetch('/api/platform/destinations', { headers: { Accept: 'application/json' } })
+          .then(function (response) { return response.json(); })
+          .then(function (payload) {
+            if (payload.ok && Array.isArray(payload.destinations)) destinations = payload.destinations;
+          })
+          .catch(function () { destinations = []; });
+      }
 
       function chip(map, key) {
         var meta = map[key] || [key, 'chip-neutral'];
@@ -165,6 +181,25 @@
             : 'Λεζάντα και hashtags από ' + (prep.provider || 'AI') + ' — ελέγξτε πριν την αποδοχή.';
         }
 
+        var currentKey = destinationKey(item.provider, item.accountId);
+        var knownDestination = destinations.some(function (dest) {
+          return destinationKey(dest.provider, dest.accountId) === currentKey;
+        });
+        var destinationOptions = destinations.map(function (dest) {
+          var key = destinationKey(dest.provider, dest.accountId);
+          return '<option value="' + escapeAttr(key) + '"' + (key === currentKey ? ' selected' : '') + '>'
+            + escapeHtml((PROVIDER_LABELS[dest.provider] || dest.providerDisplayName || dest.provider) + ' — ' + dest.label)
+            + '</option>';
+        }).join('');
+        if (!knownDestination) {
+          destinationOptions = '<option value="' + escapeAttr(currentKey) + '" selected>'
+            + escapeHtml((PROVIDER_LABELS[item.provider] || item.provider) + ' — ' + (item.username ? '@' + item.username : item.accountId) + ' (μη διαθέσιμο)')
+            + '</option>' + destinationOptions;
+        }
+        var youtubeTitle = item.providerMetadata && item.providerMetadata.youtube
+          ? item.providerMetadata.youtube.title
+          : '';
+
         card.innerHTML =
           '<div class="item-media">' +
             (item.mediaUrl
@@ -174,7 +209,7 @@
           '</div>' +
           '<div>' +
             '<div class="item-head">' +
-              '<span class="item-order">#' + (index + 1) + '</span>' +
+              '<span class="item-order">#' + (index + 1) + ' &middot; ' + escapeHtml(PROVIDER_LABELS[item.provider] || item.provider) + ' — ' + escapeHtml(item.username ? '@' + item.username : item.accountId) + '</span>' +
               chip(ITEM_STATES, item.itemState) +
             '</div>' +
             '<div class="item-fields">' +
@@ -182,6 +217,16 @@
               (prepError ? '<div class="item-error">Η προετοιμασία απέτυχε: ' + prepError + '</div>' : '') +
               (problems.length > 0 ? '<div class="item-warning">' + problems.join('<br>') + '</div>' : '') +
               (prepNote ? '<div class="item-note">' + prepNote + '</div>' : '') +
+              (item.approved
+                ? ''
+                : '<div>' +
+                    '<label class="field-label">Προορισμός &middot; Destination</label>' +
+                    '<select class="field-destination">' + destinationOptions + '</select>' +
+                  '</div>') +
+              '<div class="youtube-title-wrap' + (item.provider === 'youtube' ? '' : ' hidden') + '">' +
+                '<label class="field-label">Τίτλος YouTube (υποχρεωτικός, έως 100 χαρακτήρες) &middot; YouTube title</label>' +
+                '<input type="text" class="field-youtube-title" maxlength="100" value="' + escapeAttr(youtubeTitle) + '">' +
+              '</div>' +
               '<div>' +
                 '<label class="field-label">Λεζάντα &middot; Caption</label>' +
                 '<textarea class="field-caption" ' + (item.approved ? '' : '') + '>' + escapeHtml(item.caption || '') + '</textarea>' +
@@ -223,24 +268,71 @@
 
       function bindItemCard(card, item) {
         var markDirty = function () { dirtyItems[item.id] = true; };
-        card.querySelectorAll('.field-caption, .field-hashtags, .field-schedule').forEach(function (field) {
+        card.querySelectorAll('.field-caption, .field-hashtags, .field-schedule, .field-youtube-title').forEach(function (field) {
           field.addEventListener('input', markDirty);
         });
+
+        // The destination selector reveals the YouTube title field before
+        // anything is saved, so the operator always sees what the new
+        // destination will require.
+        var destinationSelect = card.querySelector('.field-destination');
+        if (destinationSelect) {
+          destinationSelect.addEventListener('change', function () {
+            markDirty();
+            var provider = destinationSelect.value.split('|')[0];
+            card.querySelector('.youtube-title-wrap').classList.toggle('hidden', provider !== 'youtube');
+          });
+        }
 
         card.querySelector('.save-btn').addEventListener('click', function () {
           var saveBtn = card.querySelector('.save-btn');
           saveBtn.disabled = true;
-          api('/items/' + encodeURIComponent(item.id), {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+
+          var selectedProvider = item.provider;
+          var selectedAccountId = item.accountId;
+          if (destinationSelect) {
+            var parts = destinationSelect.value.split('|');
+            selectedProvider = parts[0];
+            selectedAccountId = parts.slice(1).join('|');
+          }
+          var destinationChanged = selectedProvider !== item.provider || selectedAccountId !== item.accountId;
+          var titleField = card.querySelector('.field-youtube-title');
+          var titleValue = titleField ? titleField.value : '';
+
+          // Step 1 (only when the destination moved): apply the destination
+          // through its dedicated endpoint, carrying the title when the new
+          // provider requires one.
+          var destinationStep = destinationChanged
+            ? api('/items/' + encodeURIComponent(item.id) + '/destination', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  provider: selectedProvider,
+                  accountId: selectedAccountId,
+                  youtubeTitle: selectedProvider === 'youtube' ? titleValue : undefined
+                })
+              }).then(function (payload) {
+                if (!payload.ok) throw new Error(payload.reason || 'Η αλλαγή προορισμού απέτυχε.');
+              })
+            : Promise.resolve();
+
+          // Step 2: caption/hashtags/schedule (+ title edit when the item
+          // already lives on YouTube and the destination did not move).
+          destinationStep.then(function () {
+            var body = {
               caption: card.querySelector('.field-caption').value,
               hashtags: card.querySelector('.field-hashtags').value,
               scheduleInput: {
                 value: card.querySelector('.field-schedule').value,
                 timezoneOffsetMinutes: new Date().getTimezoneOffset()
               }
-            })
+            };
+            if (!destinationChanged && selectedProvider === 'youtube') body.youtubeTitle = titleValue;
+            return api('/items/' + encodeURIComponent(item.id), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
           }).then(function (payload) {
             saveBtn.disabled = false;
             if (payload.ok) {
@@ -250,9 +342,10 @@
             } else {
               showNotice(payload.reason || 'Η αποθήκευση απέτυχε.', 'error');
             }
-          }).catch(function () {
+          }).catch(function (error) {
             saveBtn.disabled = false;
-            showNotice('Η αποθήκευση απέτυχε — ελέγξτε τη σύνδεση.', 'error');
+            showNotice((error && error.message) || 'Η αποθήκευση απέτυχε — ελέγξτε τη σύνδεση.', 'error');
+            loadBatch();
           });
         });
 
@@ -340,14 +433,23 @@
           headers: { 'Content-Type': 'application/json' },
           body: '{}'
         }).then(function (payload) {
+          var blockedDetail = '';
+          if (payload.failed && payload.failed.length > 0 && currentView) {
+            var names = {};
+            currentView.items.forEach(function (item) { names[item.id] = item.originalName || item.fileName || item.id; });
+            blockedDetail = payload.failed.slice(0, 3).map(function (failure) {
+              return '«' + (names[failure.id] || failure.id) + '»: ' + failure.reason;
+            }).join(' ');
+            if (payload.failed.length > 3) blockedDetail += ' (+' + (payload.failed.length - 3) + ' ακόμη)';
+          }
           if (payload.accepted && payload.accepted.length > 0) {
             var message = 'Εγκρίθηκαν ' + payload.accepted.length + ' βίντεο με κλιμακωτό προγραμματισμό.';
             if (payload.failed && payload.failed.length > 0) {
-              message += ' ' + payload.failed.length + ' απέτυχαν — δείτε τα στοιχεία.';
+              message += ' Μπλοκαρισμένα: ' + payload.failed.length + '. ' + blockedDetail;
             }
             showNotice(message, payload.failed && payload.failed.length > 0 ? 'error' : 'ok');
           } else {
-            showNotice((payload.failed && payload.failed[0] && payload.failed[0].reason) || payload.reason || 'Δεν υπάρχουν έτοιμα στοιχεία για αποδοχή.', 'error');
+            showNotice(blockedDetail || payload.reason || 'Δεν υπάρχουν έτοιμα στοιχεία για αποδοχή.', 'error');
           }
           loadBatch();
         }).catch(function () {
@@ -356,7 +458,7 @@
         });
       });
 
-      loadBatch();
+      loadDestinations().then(loadBatch);
     })();
   </script>
 </body>

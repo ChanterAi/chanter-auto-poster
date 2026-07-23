@@ -47,8 +47,20 @@ function uploadFile(name) {
 }
 
 function makeWorld({ nowMs = BASE_NOW } = {}) {
+  // Acceptance re-validates each item's destination, so the fixture account
+  // must be genuinely publishing-ready (token + video.publish scope).
   const accounts = [
-    { accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok', username: 'creator_a', connected: true }
+    {
+      accountId: 'account-a',
+      open_id: 'open-a',
+      userId: 'owner',
+      platform: 'tiktok',
+      username: 'creator_a',
+      connected: true,
+      access_token: 'tt-access',
+      refresh_token: 'tt-refresh',
+      scope: 'user.info.basic,video.publish'
+    }
   ];
   const posts = [];
   const batchRecords = new Map();

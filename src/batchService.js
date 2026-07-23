@@ -114,6 +114,15 @@ function createBatchService(dependencies = {}) {
     const problems = [];
     if (!String(post.mediaUrl || '').trim()) problems.push('missing_media');
     if (!String(post.caption || '').trim()) problems.push('missing_caption');
+    // Provider-specific requirements follow the item's OWN destination: a
+    // YouTube item cannot be accepted without the title its provider
+    // contract requires (never silently derived from the caption).
+    if (String(post.provider || '') === 'youtube') {
+      const title = post.providerMetadata && post.providerMetadata.youtube
+        ? String(post.providerMetadata.youtube.title || '').trim()
+        : '';
+      if (!title) problems.push('missing_youtube_title');
+    }
     const preparation = post.preparation || null;
     if (preparation && (preparation.status === 'pending' || preparation.status === 'running')) {
       problems.push('preparation_in_progress');
@@ -407,15 +416,20 @@ function createBatchService(dependencies = {}) {
     return view;
   }
 
-  // ── Review: edit + accept ────────────────────────────────────────────────
+  // ── Review: edit + destination + accept ──────────────────────────────────
 
-  async function updateItem(context, batchId, postId, input = {}) {
-    const commercialContext = await resolveScope(context);
-    const posts = await storage.getBatchPosts(context.userId, batchId, commercialContext.workspaceScope);
+  async function findBatchItem(context, batchId, postId, workspaceScope) {
+    const posts = await storage.getBatchPosts(context.userId, batchId, workspaceScope);
     const post = posts.find((candidate) => candidate.id === String(postId || '').trim());
     if (!post) {
       throw new BatchServiceError('This item does not belong to the batch.', { status: 404, code: 'not_found' });
     }
+    return post;
+  }
+
+  async function updateItem(context, batchId, postId, input = {}) {
+    const commercialContext = await resolveScope(context);
+    let post = await findBatchItem(context, batchId, postId, commercialContext.workspaceScope);
 
     const patch = {};
     if (typeof input.caption === 'string') patch.caption = input.caption.trim().slice(0, 2200);
@@ -423,18 +437,94 @@ function createBatchService(dependencies = {}) {
     const scheduleInput = input.scheduleInput && typeof input.scheduleInput === 'object'
       ? { value: String(input.scheduleInput.value || ''), timezoneOffsetMinutes: input.scheduleInput.timezoneOffsetMinutes }
       : undefined;
-    if (Object.keys(patch).length === 0 && !scheduleInput) {
-      throw new BatchServiceError('Provide a caption, hashtags, or a new release time to update.');
+    const titleEdit = typeof input.youtubeTitle === 'string' || typeof input.youtubeDescription === 'string';
+    if (Object.keys(patch).length === 0 && !scheduleInput && !titleEdit) {
+      throw new BatchServiceError('Provide a caption, hashtags, a release time, or a YouTube title to update.');
     }
 
-    const updated = await applicationService.updatePost(context, {
+    // Provider-specific text lives behind the dedicated destination
+    // operation (generic patches strip providerMetadata). Same destination,
+    // new metadata — validated against the provider contract.
+    if (titleEdit) {
+      if (String(post.provider || '') !== 'youtube') {
+        throw new BatchServiceError('A YouTube title applies only to items whose destination is YouTube.', {
+          status: 409,
+          code: 'provider_mismatch'
+        });
+      }
+      const result = await applicationService.changePostDestination(context, {
+        postId: post.id,
+        provider: 'youtube',
+        accountId: post.accountId,
+        youtube: {
+          ...(typeof input.youtubeTitle === 'string' ? { title: input.youtubeTitle } : {}),
+          ...(typeof input.youtubeDescription === 'string' ? { description: input.youtubeDescription } : {})
+        }
+      });
+      post = result.post;
+    }
+
+    if (Object.keys(patch).length > 0 || scheduleInput) {
+      const updated = await applicationService.updatePost(context, {
+        postId: post.id,
+        accountId: post.accountId,
+        patch,
+        scheduleInput,
+        historyEvent: { event: 'edited', detail: 'Batch review edit from the Platform.' }
+      });
+      post = updated.post;
+    }
+    return { item: itemView(post) };
+  }
+
+  async function changeItemDestination(context, batchId, postId, input = {}) {
+    const commercialContext = await resolveScope(context);
+    const post = await findBatchItem(context, batchId, postId, commercialContext.workspaceScope);
+
+    const provider = String(input.provider || '').trim().toLowerCase();
+    const accountId = String(input.accountId || '').trim();
+    if (!provider || !accountId) {
+      throw new BatchServiceError('Select a destination provider and connected channel.');
+    }
+    const youtube = provider === 'youtube'
+      ? {
+          ...(typeof input.youtubeTitle === 'string' ? { title: input.youtubeTitle } : {}),
+          ...(typeof input.youtubeDescription === 'string' ? { description: input.youtubeDescription } : {})
+        }
+      : undefined;
+
+    const result = await applicationService.changePostDestination(context, {
       postId: post.id,
-      accountId: post.accountId,
-      patch,
-      scheduleInput,
-      historyEvent: { event: 'edited', detail: 'Batch review edit from the Platform.' }
+      provider,
+      accountId,
+      youtube
     });
-    return { item: itemView(updated.post) };
+    return { item: itemView(result.post), identityChanged: result.identityChanged };
+  }
+
+  // Connected destinations the review surface may offer. Only connected
+  // accounts of schedulable providers are listed; nothing is fabricated for
+  // unconfigured providers.
+  async function listDestinations(context) {
+    const resolved = await applicationService.listConnectedAccounts(context);
+    const schedulable = new Set(
+      (resolved.providers || [])
+        .filter((summary) => summary && summary.schedulable && summary.implementationStatus === 'active')
+        .map((summary) => summary.id)
+    );
+    return {
+      destinations: (resolved.accounts || [])
+        .filter((account) => account.connectionStatus === 'connected' && schedulable.has(account.provider))
+        .map((account) => ({
+          provider: account.provider,
+          providerDisplayName: account.providerDisplayName,
+          accountId: account.accountId,
+          label: account.username
+            ? `@${account.username}`
+            : (account.displayName || account.accountId),
+          publishingReady: account.publishingReady === true
+        }))
+    };
   }
 
   async function acceptItems(context, batchId, input = {}) {
@@ -499,6 +589,20 @@ function createBatchService(dependencies = {}) {
             { status: 409, code: 'item_not_ready' }
           );
         }
+        // Destination truth may have changed since review rendered: the
+        // item's OWN provider/account must still resolve to a connected,
+        // publishing-ready channel at the moment of acceptance.
+        try {
+          await applicationService.validateConnectedAccount(context, {
+            provider: item.provider,
+            accountId: item.accountId
+          });
+        } catch (error) {
+          throw new BatchServiceError(
+            `The destination channel is no longer available: ${error.message}`,
+            { status: 409, code: 'destination_unavailable' }
+          );
+        }
         const currentMs = item.scheduledAt ? Date.parse(item.scheduledAt) : NaN;
         const minimumMs = Math.max(
           now() + bufferMs,
@@ -540,9 +644,11 @@ function createBatchService(dependencies = {}) {
     createBatch,
     getBatchView,
     listBatches,
+    listDestinations,
     resumePreparation,
     startPreparation,
     updateItem,
+    changeItemDestination,
     acceptItems,
     // Exposed for tests: deterministic identity + derived views.
     deriveBatchId,

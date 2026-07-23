@@ -448,6 +448,19 @@ function mapPatchToFirestore(patch) {
   delete result.batchOrder;
   delete result.preparation;
 
+  // Destination identity, bounded provider metadata, and the provider
+  // attempt ceiling are owned by the dedicated destination operation
+  // (storage.changePostDestination) — a generic website patch must never
+  // move a job to another provider/account or loosen its attempt budget.
+  delete result.provider;
+  delete result.platform;
+  delete result.accountId;
+  delete result.connectedAccountId;
+  delete result.tiktokOpenId;
+  delete result.username;
+  delete result.providerMetadata;
+  delete result.publishAttemptBudget;
+
   if ('lastResult' in result) result.lastResult = sanitizePostResult(result.lastResult);
   if ('lastInstagramResult' in result) result.lastInstagramResult = sanitizePostResult(result.lastInstagramResult);
   if ('history' in result) result.history = sanitizeHistory(result.history);

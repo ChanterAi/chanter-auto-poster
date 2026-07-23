@@ -1599,6 +1599,119 @@ function createAutoPosterApplicationService(dependencies = {}) {
     return { ok: true, post };
   }
 
+  // Per-item destination override for the Platform batch review flow. The
+  // ONLY route by which an existing draft may move to another provider or
+  // connected account (generic patches strip destination identity). Reuses
+  // the exact validation the intake path uses: provider registry gate,
+  // canonical connected-account resolution, workspace scoping, and the
+  // provider-specific metadata contract. Approved jobs are locked.
+  async function changePostDestination(contextInput, input = {}) {
+    const context = createExecutionContext(contextInput);
+    const commercialContext = await resolveCommercialContext(context);
+    if (context.source !== 'website') {
+      throw new AutoPosterApplicationError('Only the website workflow can change a queue item destination.', {
+        status: 403,
+        code: 'forbidden'
+      });
+    }
+    const postId = String(input.postId || '').trim();
+    if (!postId) throw new AutoPosterApplicationError('postId is required.');
+
+    const requestedProvider = providers.normalizeStoredProviderId(input.provider);
+    let providerDefinition;
+    try {
+      providerDefinition = providers.assertSchedulableProvider(requestedProvider.providerId);
+      providers.assertProviderCapability(providerDefinition.id, 'schedulable');
+    } catch (error) {
+      throw translateProviderError(error);
+    }
+    const provider = providerDefinition.id;
+
+    const validated = await validateConnectedAccountForContext(
+      context,
+      { provider, accountId: String(input.accountId || '').trim() },
+      { requireConnected: true, commercialContext }
+    );
+
+    const { post: current } = await getPostStatus({ ...context, commercialContext }, { postId });
+    if (EDIT_BLOCKED_QUEUE_STATUSES.has(String(current.status || '').toLowerCase())) {
+      throw new AutoPosterApplicationError('A processing or completed queue item cannot change destination.', {
+        status: 409,
+        code: 'queue_transition_blocked'
+      });
+    }
+    if (current.approved) {
+      throw new AutoPosterApplicationError('Revoke approval before changing an approved item’s destination.', {
+        status: 409,
+        code: 'approval_locked'
+      });
+    }
+
+    // Provider metadata contract: YouTube requires a valid title. A caller
+    // may supply a new title/description; otherwise any previously stored
+    // human-entered values are re-validated and carried forward.
+    let youtubeMetadata = null;
+    if (provider === PROVIDER_YOUTUBE) {
+      const raw = input.youtube && typeof input.youtube === 'object' ? input.youtube : {};
+      const existing = current.providerMetadata && current.providerMetadata.youtube
+        ? current.providerMetadata.youtube
+        : {};
+      const checked = validateYouTubeMetadata({
+        title: raw.title !== undefined ? raw.title : existing.title,
+        description: raw.description !== undefined ? raw.description : existing.description
+      });
+      if (!checked.ok) {
+        throw new AutoPosterApplicationError(checked.reason, { code: 'invalid_provider_metadata' });
+      }
+      youtubeMetadata = { title: checked.title, description: checked.description };
+    }
+
+    const view = validated.view;
+    const result = await storageAdapter.changePostDestination(
+      context.userId,
+      postId,
+      {
+        provider,
+        accountId: view.accountId,
+        tiktokOpenId: provider === PROVIDER_TIKTOK ? view.providerAccountId : '',
+        username: view.username || view.displayName || '',
+        youtube: youtubeMetadata
+      },
+      commercialContext.workspaceScope
+    );
+    if (!result || result.outcome === 'not_found') {
+      throw new AutoPosterApplicationError('Post not found for this tenant/account scope.', {
+        status: 404,
+        code: 'not_found'
+      });
+    }
+    if (result.outcome === 'queue_transition_blocked') {
+      throw new AutoPosterApplicationError('A processing or completed queue item cannot change destination.', {
+        status: 409,
+        code: 'queue_transition_blocked'
+      });
+    }
+    if (result.outcome === 'approval_locked') {
+      throw new AutoPosterApplicationError('Revoke approval before changing an approved item’s destination.', {
+        status: 409,
+        code: 'approval_locked'
+      });
+    }
+    if (result.outcome !== 'changed') {
+      throw new AutoPosterApplicationError('The destination change was refused.', {
+        status: 400,
+        code: String(result.outcome || 'invalid_destination')
+      });
+    }
+    return {
+      ok: true,
+      identityChanged: Boolean(result.identityChanged),
+      post: sanitizePostView(result.post, {
+        advancedEvidence: commercialContext.entitlements.advancedEvidence === true
+      })
+    };
+  }
+
   async function markPostManually(contextInput, input = {}) {
     const context = createExecutionContext(contextInput);
     if (context.source !== 'website') {
@@ -1894,6 +2007,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   return {
     approvePost,
+    changePostDestination,
     deleteMarkedPosts,
     deletePost,
     authorizeAccountConnection,

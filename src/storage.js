@@ -2746,6 +2746,78 @@ async function getBatchPosts(userId, batchId, workspaceScope) {
     .sort((a, b) => (a.batchOrder ?? 0) - (b.batchOrder ?? 0));
 }
 
+// ── Destination custody ────────────────────────────────────────────────────
+// The one write path that may move an unapproved draft to another
+// provider/account. Runs as a transaction so a concurrent approval can never
+// interleave with a destination change: an approved job's destination is
+// locked until approval is explicitly revoked. Generic website patches
+// cannot reach these fields (postsMapper.mapPatchToFirestore strips them).
+
+async function changePostDestination(userId, postId, destination = {}, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const ref = postsCollection().doc(String(postId || ''));
+
+  const outcome = await getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return { outcome: 'not_found' };
+    const data = snap.data() || {};
+    if ((data.userId || DEFAULT_USER_ID) !== ownerId) return { outcome: 'not_found' };
+    if (!recordMatchesWorkspace(data, ownerId, workspaceScope)) return { outcome: 'not_found' };
+
+    const current = postFromDoc(snap);
+    if (!['pending', 'scheduled'].includes(current.status)) {
+      return { outcome: 'queue_transition_blocked', post: current };
+    }
+    if (current.approved) {
+      return { outcome: 'approval_locked', post: current };
+    }
+
+    const providerResolution = providers.normalizeStoredProviderId(destination.provider);
+    if (!providerResolution.known) {
+      return { outcome: 'unknown_provider' };
+    }
+    const providerId = providerResolution.providerId;
+    const accountId = String(destination.accountId || '').trim();
+    if (!accountId) return { outcome: 'invalid_destination' };
+
+    const identityChanged = current.provider !== providerId || current.accountId !== accountId;
+    const label = destination.username ? `@${destination.username}` : accountId;
+    const patch = {
+      provider: providerId,
+      platform: providerId,
+      accountId,
+      connectedAccountId: `${providerId}:${accountId}`,
+      tiktokOpenId: providerId === 'tiktok' ? String(destination.tiktokOpenId || accountId) : '',
+      username: String(destination.username || '').trim(),
+      // YouTube drafts keep a closed attempt ceiling until a human approval
+      // grants exactly one claim (approvePost); TikTok uses the scheduler's
+      // bounded default. Mirrors the creation-time contract exactly.
+      publishAttemptBudget: providerId === providers.PROVIDER_YOUTUBE ? 0 : null,
+      updatedAt: FieldValue.serverTimestamp()
+    };
+    // Bounded provider metadata: YouTube receives the validated envelope.
+    // On a switch AWAY from YouTube the stored metadata is intentionally
+    // retained so a human-entered title survives a provider round trip; the
+    // TikTok paths never read it, and a later switch back re-validates it.
+    if (providerId === providers.PROVIDER_YOUTUBE) {
+      patch.providerMetadata = boundedProviderMetadata(providerId, { youtube: destination.youtube });
+    }
+    patch.history = appendHistoryEntry(
+      data.history,
+      identityChanged ? 'destination_changed' : 'edited',
+      identityChanged
+        ? `Destination changed to ${providerId} ${label} in batch review. The draft still requires human approval.`
+        : 'YouTube title/description updated in batch review.'
+    );
+    tx.update(ref, patch);
+    return { outcome: 'changed', identityChanged };
+  });
+
+  if (outcome.outcome !== 'changed') return outcome;
+  const post = await getPost(ownerId, postId, undefined, workspaceScope);
+  return { ...outcome, post };
+}
+
 // ── Platform batch preparation custody ─────────────────────────────────────
 // Preparation runs at-most-once per lease: claim flips pending/stale/failed
 // work to running inside one transaction, so overlapping runners (resume
@@ -3064,6 +3136,7 @@ module.exports = {
   autoSchedulePosts,
   applyExplicitSchedule,
   applyStaggeredSchedule,
+  changePostDestination,
   createBatchRecord,
   getBatchRecord,
   listBatchRecords,
