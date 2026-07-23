@@ -68,6 +68,24 @@ module.exports = {
     )
   },
 
+  // Platform batch intake (src/batchService.js). Preparation runs with
+  // bounded parallelism and per-item leases so an interrupted batch can
+  // resume without double work; every bound fails closed to its default.
+  batchIntake: {
+    maxItems: Math.min(100, Math.max(1, Number(process.env.BATCH_MAX_ITEMS || 30))),
+    prepareConcurrency: Math.min(4, Math.max(1, Number(process.env.BATCH_PREPARE_CONCURRENCY || 2))),
+    prepareMaxAttempts: Math.min(5, Math.max(1, Number(process.env.BATCH_PREPARE_MAX_ATTEMPTS || 3))),
+    prepareLeaseMinutes: Math.max(2, Number(process.env.BATCH_PREPARE_LEASE_MINUTES || 10)),
+    staggerDefaultMinutes: Math.max(5, Number(process.env.BATCH_STAGGER_DEFAULT_MINUTES || 30)),
+    staggerMinMinutes: Math.max(1, Number(process.env.BATCH_STAGGER_MIN_MINUTES || 5)),
+    staggerMaxMinutes: Math.min(24 * 60, Math.max(5, Number(process.env.BATCH_STAGGER_MAX_MINUTES || 24 * 60))),
+    // Accepted items must stay at least this far in the future so an
+    // approval can never trigger an immediate publish.
+    safetyBufferMinutes: Math.max(5, Number(process.env.BATCH_SAFETY_BUFFER_MINUTES || 10)),
+    downloadTimeoutMs: Math.max(30_000, Number(process.env.BATCH_DOWNLOAD_TIMEOUT_MS || 120_000)),
+    maxDownloadBytes: Number(process.env.BATCH_MAX_DOWNLOAD_BYTES || 250 * 1024 * 1024)
+  },
+
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || '',
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',

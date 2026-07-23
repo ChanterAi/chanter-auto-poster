@@ -4,6 +4,7 @@ const path = require('path');
 const config = require('./config');
 const routes = require('./routes');
 const clientRoutes = require('./clientRoutes');
+const platformRoutes = require('./platformRoutes');
 const runtimeControlRoutes = require('./runtimeControlRoutes');
 const storage = require('./storage');
 const { attachUser, csrfOriginCheck, requireAdminPage, validateAdminConfig } = require('./auth');
@@ -36,6 +37,9 @@ app.use('/uploads', requireAdminPage, express.static(config.uploadsDir));
 // Client portal routes are mounted before the admin router so their more
 // specific /client/* paths never fall through to admin-only middleware.
 app.use('/', clientRoutes);
+// CHANTER Platform shell + AutoPoster batch module (Greek-first customer
+// surface). Same admin session/CSRF protections as the classic console.
+app.use('/', platformRoutes);
 app.use('/', routes);
 
 app.use((error, req, res, next) => {

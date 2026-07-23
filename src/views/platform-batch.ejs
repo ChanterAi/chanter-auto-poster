@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Έλεγχος παρτίδας — CHANTER Platform</title>
+  <link rel="stylesheet" href="/platform/platform.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="platform-header">
+      <div class="brand">
+        <span class="wordmark">CHANTER</span>
+        <span class="product">Platform</span>
+      </div>
+      <nav class="header-nav">
+        <a href="/platform">Πλατφόρμα</a>
+        <a href="/platform/autoposter">AutoPoster</a>
+      </nav>
+    </header>
+
+    <div class="breadcrumb">
+      <a href="/platform">Πλατφόρμα</a> / <a href="/platform/autoposter">AutoPoster</a> / Παρτίδα
+    </div>
+    <h1 class="page-title">Έλεγχος παρτίδας</h1>
+    <p class="page-subtitle">
+      Ελέγξτε κάθε βίντεο, διορθώστε ό,τι χρειάζεται και εγκρίνετε.
+      Οι εγκεκριμένες δημοσιεύσεις προγραμματίζονται κλιμακωτά — ποτέ άμεσα.
+      &middot; Review each video, edit freely, then accept. Accepted items are scheduled with safe staggered timing — never immediately.
+    </p>
+
+    <div id="notice" class="notice hidden"></div>
+
+    <div class="panel" id="summary-panel">
+      <div class="batch-summary" id="batch-summary">
+        <span class="stat"><span class="spin"></span> Φόρτωση παρτίδας…</span>
+      </div>
+      <div class="batch-actions">
+        <button id="accept-all-btn" class="btn btn-primary" disabled>Αποδοχή όλων</button>
+        <button id="resume-btn" class="btn hidden">Συνέχιση προετοιμασίας</button>
+        <button id="refresh-btn" class="btn btn-quiet">Ανανέωση</button>
+      </div>
+    </div>
+
+    <h2 class="section-title">Βίντεο παρτίδας</h2>
+    <div id="items"></div>
+
+    <p class="footer-note">
+      Κάθε στοιχείο παραμένει προσχέδιο μέχρι να το εγκρίνετε. Η ώρα δημοσίευσης μετατίθεται αυτόματα σε ασφαλές
+      μελλοντικό σημείο (τουλάχιστον <%= safetyBufferMinutes %> λεπτά μπροστά) αν έχει περάσει.
+      &middot; Every item stays a draft until you accept it.
+    </p>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var BATCH_ID = <%- JSON.stringify(batchId) %>;
+      var API_BASE = '/api/platform/batches/' + encodeURIComponent(BATCH_ID);
+
+      var ITEM_STATES = {
+        preparing: ['Προετοιμασία…', 'chip-preparing'],
+        ready: ['Έτοιμο', 'chip-ready'],
+        needs_attention: ['Χρειάζεται προσοχή', 'chip-attention'],
+        accepted: ['Εγκρίθηκε', 'chip-accepted']
+      };
+      var BATCH_STATES = {
+        preparing: ['Προετοιμασία', 'chip-preparing'],
+        ready: ['Έτοιμη για έλεγχο', 'chip-ready'],
+        attention_required: ['Χρειάζεται προσοχή', 'chip-attention'],
+        completed: ['Ολοκληρώθηκε', 'chip-completed'],
+        empty: ['Κενή', 'chip-neutral']
+      };
+      var PROBLEM_LABELS = {
+        missing_caption: 'Λείπει λεζάντα — γράψτε μία πριν την αποδοχή.',
+        missing_media: 'Λείπει το αρχείο πολυμέσων.',
+        missing_schedule: 'Δεν έχει οριστεί ώρα δημοσίευσης.',
+        schedule_in_past: 'Η ώρα έχει περάσει — θα μετατεθεί αυτόματα σε ασφαλές σημείο κατά την αποδοχή.'
+      };
+
+      var currentView = null;
+      var dirtyItems = {};
+      var pollTimer = null;
+
+      function chip(map, key) {
+        var meta = map[key] || [key, 'chip-neutral'];
+        return '<span class="chip ' + meta[1] + '">' + meta[0] + '</span>';
+      }
+
+      function showNotice(message, kind) {
+        var el = document.getElementById('notice');
+        el.textContent = message;
+        el.className = 'notice ' + (kind === 'error' ? 'notice-error' : 'notice-ok');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+
+      function formatLocal(iso) {
+        if (!iso) return '—';
+        return new Date(iso).toLocaleString('el-GR', {
+          day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+      }
+
+      function isoToLocalInput(iso) {
+        if (!iso) return '';
+        var date = new Date(iso);
+        if (isNaN(date.getTime())) return '';
+        var pad = function (value) { return String(value).padStart(2, '0'); };
+        return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate())
+          + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+      }
+
+      function api(path, options) {
+        options = options || {};
+        options.headers = Object.assign({ 'Accept': 'application/json' }, options.headers || {});
+        return fetch(API_BASE + (path || ''), options).then(function (response) {
+          return response.json().then(function (payload) { return payload; });
+        });
+      }
+
+      // ── Rendering ──
+
+      function renderSummary(view) {
+        var batch = view.batch;
+        var counts = batch.counts || {};
+        var summary = document.getElementById('batch-summary');
+        summary.innerHTML =
+          '<span class="stat">Κανάλι: <strong>' + (batch.accountLabel || batch.accountId) + '</strong></span>' +
+          '<span class="stat">Βίντεο: <strong>' + (counts.total || 0) + '</strong></span>' +
+          '<span class="stat">Έτοιμα: <strong>' + (counts.ready || 0) + '</strong></span>' +
+          '<span class="stat">Σε προετοιμασία: <strong>' + (counts.preparing || 0) + '</strong></span>' +
+          '<span class="stat">Προσοχή: <strong>' + (counts.needsAttention || 0) + '</strong></span>' +
+          '<span class="stat">Εγκεκριμένα: <strong>' + (counts.accepted || 0) + '</strong></span>' +
+          '<span class="stat">Κλιμάκωση: <strong>κάθε ' + batch.staggerMinutes + ' λεπτά</strong></span>' +
+          chip(BATCH_STATES, batch.status);
+
+        var acceptable = view.items.filter(function (item) { return item.readyToAccept; }).length;
+        var acceptAll = document.getElementById('accept-all-btn');
+        acceptAll.disabled = acceptable === 0;
+        acceptAll.textContent = acceptable > 0 ? 'Αποδοχή όλων (' + acceptable + ')' : 'Αποδοχή όλων';
+
+        var resume = document.getElementById('resume-btn');
+        var hasFailedPrep = view.items.some(function (item) {
+          return item.preparation && item.preparation.status === 'failed' && !item.approved;
+        });
+        resume.classList.toggle('hidden', !(batch.status === 'preparing' || hasFailedPrep));
+      }
+
+      function itemCard(item, index) {
+        var card = document.createElement('div');
+        card.className = 'item-card' + (item.approved ? ' accepted' : '');
+        card.dataset.postId = item.id;
+
+        var problems = (item.validationProblems || [])
+          .map(function (problem) { return PROBLEM_LABELS[problem] || ''; })
+          .filter(Boolean);
+        var prep = item.preparation || null;
+        var prepError = prep && prep.status === 'failed' && prep.error ? prep.error : '';
+        var prepNote = '';
+        if (prep && prep.status === 'succeeded') {
+          prepNote = prep.fallbackUsed
+            ? 'Η λεζάντα δημιουργήθηκε τοπικά (χωρίς AI πάροχο) — ελέγξτε την πριν την αποδοχή.'
+            : 'Λεζάντα και hashtags από ' + (prep.provider || 'AI') + ' — ελέγξτε πριν την αποδοχή.';
+        }
+
+        card.innerHTML =
+          '<div class="item-media">' +
+            (item.mediaUrl
+              ? '<video src="' + item.mediaUrl + '" controls preload="metadata" muted></video>'
+              : '<div class="item-error">Χωρίς πολυμέσα</div>') +
+            '<div class="item-file">' + (item.originalName || item.fileName || '') + '</div>' +
+          '</div>' +
+          '<div>' +
+            '<div class="item-head">' +
+              '<span class="item-order">#' + (index + 1) + '</span>' +
+              chip(ITEM_STATES, item.itemState) +
+            '</div>' +
+            '<div class="item-fields">' +
+              (item.duplicateWarning ? '<div class="item-warning">' + item.duplicateWarning + '</div>' : '') +
+              (prepError ? '<div class="item-error">Η προετοιμασία απέτυχε: ' + prepError + '</div>' : '') +
+              (problems.length > 0 ? '<div class="item-warning">' + problems.join('<br>') + '</div>' : '') +
+              (prepNote ? '<div class="item-note">' + prepNote + '</div>' : '') +
+              '<div>' +
+                '<label class="field-label">Λεζάντα &middot; Caption</label>' +
+                '<textarea class="field-caption" ' + (item.approved ? '' : '') + '>' + escapeHtml(item.caption || '') + '</textarea>' +
+              '</div>' +
+              '<div>' +
+                '<label class="field-label">Hashtags</label>' +
+                '<input type="text" class="field-hashtags" value="' + escapeAttr(item.hashtags || '') + '">' +
+              '</div>' +
+              '<div>' +
+                '<label class="field-label">Ώρα δημοσίευσης &middot; Release time</label>' +
+                '<input type="datetime-local" class="field-schedule" value="' + isoToLocalInput(item.scheduledAt) + '">' +
+              '</div>' +
+            '</div>' +
+            '<div class="item-footer">' +
+              '<span class="item-scheduled">' +
+                (item.approved
+                  ? 'Εγκρίθηκε — προγραμματισμένο για ' + formatLocal(item.scheduledAt)
+                  : 'Προτεινόμενη ώρα: ' + formatLocal(item.scheduledAt)) +
+              '</span>' +
+              '<div class="item-buttons">' +
+                '<button class="btn save-btn">Αποθήκευση</button>' +
+                (item.approved
+                  ? ''
+                  : '<button class="btn btn-primary accept-btn"' + (item.readyToAccept ? '' : ' disabled') + '>Αποδοχή</button>') +
+              '</div>' +
+            '</div>' +
+          '</div>';
+
+        bindItemCard(card, item);
+        return card;
+      }
+
+      function escapeHtml(value) {
+        return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+      function escapeAttr(value) {
+        return escapeHtml(value).replace(/"/g, '&quot;');
+      }
+
+      function bindItemCard(card, item) {
+        var markDirty = function () { dirtyItems[item.id] = true; };
+        card.querySelectorAll('.field-caption, .field-hashtags, .field-schedule').forEach(function (field) {
+          field.addEventListener('input', markDirty);
+        });
+
+        card.querySelector('.save-btn').addEventListener('click', function () {
+          var saveBtn = card.querySelector('.save-btn');
+          saveBtn.disabled = true;
+          api('/items/' + encodeURIComponent(item.id), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              caption: card.querySelector('.field-caption').value,
+              hashtags: card.querySelector('.field-hashtags').value,
+              scheduleInput: {
+                value: card.querySelector('.field-schedule').value,
+                timezoneOffsetMinutes: new Date().getTimezoneOffset()
+              }
+            })
+          }).then(function (payload) {
+            saveBtn.disabled = false;
+            if (payload.ok) {
+              delete dirtyItems[item.id];
+              showNotice('Οι αλλαγές αποθηκεύτηκαν.', 'ok');
+              loadBatch();
+            } else {
+              showNotice(payload.reason || 'Η αποθήκευση απέτυχε.', 'error');
+            }
+          }).catch(function () {
+            saveBtn.disabled = false;
+            showNotice('Η αποθήκευση απέτυχε — ελέγξτε τη σύνδεση.', 'error');
+          });
+        });
+
+        var acceptBtn = card.querySelector('.accept-btn');
+        if (acceptBtn) {
+          acceptBtn.addEventListener('click', function () {
+            acceptBtn.disabled = true;
+            api('/items/' + encodeURIComponent(item.id) + '/accept', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: '{}'
+            }).then(function (payload) {
+              if (payload.ok && payload.accepted && payload.accepted.length === 1) {
+                showNotice('Εγκρίθηκε. Προγραμματίστηκε για ' + formatLocal(payload.accepted[0].scheduledAt) + '.', 'ok');
+              } else {
+                var reason = payload.failed && payload.failed[0] ? payload.failed[0].reason : (payload.reason || 'Η αποδοχή απέτυχε.');
+                showNotice(reason, 'error');
+              }
+              loadBatch();
+            }).catch(function () {
+              acceptBtn.disabled = false;
+              showNotice('Η αποδοχή απέτυχε — ελέγξτε τη σύνδεση.', 'error');
+            });
+          });
+        }
+      }
+
+      function renderItems(view) {
+        var container = document.getElementById('items');
+        var focused = document.activeElement;
+        var focusedCard = focused && focused.closest ? focused.closest('.item-card') : null;
+
+        view.items.forEach(function (item, index) {
+          var existing = container.querySelector('.item-card[data-post-id="' + item.id + '"]');
+          // Never clobber a card the operator is editing or has unsaved edits in.
+          if (existing && (dirtyItems[item.id] || existing === focusedCard)) return;
+          var fresh = itemCard(item, index);
+          if (existing) container.replaceChild(fresh, existing);
+          else container.appendChild(fresh);
+        });
+      }
+
+      // ── Data flow ──
+
+      function loadBatch() {
+        return api('', {}).then(function (payload) {
+          if (!payload.ok) {
+            showNotice(payload.reason || 'Η παρτίδα δεν βρέθηκε.', 'error');
+            return;
+          }
+          currentView = payload;
+          renderSummary(payload);
+          renderItems(payload);
+          schedulePoll(payload);
+        }).catch(function () {
+          showNotice('Η φόρτωση απέτυχε — ελέγξτε τη σύνδεση.', 'error');
+        });
+      }
+
+      function schedulePoll(view) {
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        if (view.batch.status === 'preparing') {
+          pollTimer = setTimeout(loadBatch, 3500);
+        }
+      }
+
+      document.getElementById('refresh-btn').addEventListener('click', function () { loadBatch(); });
+
+      document.getElementById('resume-btn').addEventListener('click', function () {
+        var resumeBtn = document.getElementById('resume-btn');
+        resumeBtn.disabled = true;
+        api('/prepare', { method: 'POST' }).then(function (payload) {
+          resumeBtn.disabled = false;
+          if (payload.ok) showNotice('Η προετοιμασία συνεχίζεται.', 'ok');
+          else showNotice(payload.reason || 'Η προετοιμασία δεν μπόρεσε να συνεχιστεί.', 'error');
+          loadBatch();
+        }).catch(function () { resumeBtn.disabled = false; });
+      });
+
+      document.getElementById('accept-all-btn').addEventListener('click', function () {
+        var acceptAllBtn = document.getElementById('accept-all-btn');
+        acceptAllBtn.disabled = true;
+        api('/accept-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        }).then(function (payload) {
+          if (payload.accepted && payload.accepted.length > 0) {
+            var message = 'Εγκρίθηκαν ' + payload.accepted.length + ' βίντεο με κλιμακωτό προγραμματισμό.';
+            if (payload.failed && payload.failed.length > 0) {
+              message += ' ' + payload.failed.length + ' απέτυχαν — δείτε τα στοιχεία.';
+            }
+            showNotice(message, payload.failed && payload.failed.length > 0 ? 'error' : 'ok');
+          } else {
+            showNotice((payload.failed && payload.failed[0] && payload.failed[0].reason) || payload.reason || 'Δεν υπάρχουν έτοιμα στοιχεία για αποδοχή.', 'error');
+          }
+          loadBatch();
+        }).catch(function () {
+          acceptAllBtn.disabled = false;
+          showNotice('Η αποδοχή απέτυχε — ελέγξτε τη σύνδεση.', 'error');
+        });
+      });
+
+      loadBatch();
+    })();
+  </script>
+</body>
+</html>

@@ -189,6 +189,25 @@ function toIsoOrNull(value) {
   return null;
 }
 
+// Platform batch preparation lifecycle: a closed allowlist projection so
+// whatever lands in the document, only these safe fields reach app/UI code.
+const PREPARATION_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed']);
+
+function sanitizePreparation(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const status = String(raw.status || '').trim().toLowerCase();
+  if (!PREPARATION_STATUSES.has(status)) return null;
+  return {
+    status,
+    attempts: Number.isInteger(Number(raw.attempts)) ? Number(raw.attempts) : 0,
+    leaseAt: toIsoOrNull(raw.leaseAt),
+    finishedAt: toIsoOrNull(raw.finishedAt),
+    provider: typeof raw.provider === 'string' ? raw.provider.slice(0, 40) : '',
+    fallbackUsed: Boolean(raw.fallbackUsed),
+    error: typeof raw.error === 'string' ? scrubEvidenceText(raw.error, 500) : ''
+  };
+}
+
 function normalizeQueueStatus(value) {
   const status = String(value || 'pending').trim().toLowerCase() || 'pending';
   // Compatibility for documents created before the Firestore scheduler
@@ -294,6 +313,15 @@ function postFromDoc(doc) {
     seriesSourceCount: Number.isInteger(Number(data.seriesSourceCount)) ? Number(data.seriesSourceCount) : 0,
     seriesTimezone: String(data.seriesTimezone || '').trim(),
     seriesOccurrenceDate: String(data.seriesOccurrenceDate || '').trim(),
+    // Platform batch link. Older documents have no batch fields; the
+    // defaults keep them rendering exactly as standalone jobs.
+    batchId: String(data.batchId || '').trim(),
+    // Number(null) is 0, so absent values must be checked before coercion —
+    // a legacy post has no batch position, not position zero.
+    batchOrder: data.batchOrder === null || data.batchOrder === undefined || data.batchOrder === ''
+      ? null
+      : (Number.isInteger(Number(data.batchOrder)) ? Number(data.batchOrder) : null),
+    preparation: sanitizePreparation(data.preparation),
     title: data.title || data.postTitle || data.name || data.originalName || data.fileName || '',
     originalName: data.originalName || '',
     fileName: data.fileName || '',
@@ -414,6 +442,12 @@ function mapPatchToFirestore(patch) {
   // raw/encrypted session locator through a public patch surface.
   delete result.providerOperation;
 
+  // Batch identity and preparation lifecycle are owned by the batch intake
+  // and its transactional claim/record functions — never by generic edits.
+  delete result.batchId;
+  delete result.batchOrder;
+  delete result.preparation;
+
   if ('lastResult' in result) result.lastResult = sanitizePostResult(result.lastResult);
   if ('lastInstagramResult' in result) result.lastInstagramResult = sanitizePostResult(result.lastInstagramResult);
   if ('history' in result) result.history = sanitizeHistory(result.history);
@@ -450,6 +484,7 @@ module.exports = {
   sanitizePostResult,
   sanitizeProviderVerification,
   sanitizeHistory,
+  sanitizePreparation,
   postFromDoc,
   mapPatchToFirestore
 };

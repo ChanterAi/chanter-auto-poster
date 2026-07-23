@@ -128,6 +128,14 @@ function oauthTransactionsCollection() {
   return getFirestore().collection('oauthTransactions');
 }
 
+// One document per Platform batch intake. Batch ITEMS are ordinary posts
+// (drafts in the posts collection carrying batchId/batchOrder), so this
+// collection holds only the batch-level lifecycle record — never duplicated
+// item state.
+function postBatchesCollection() {
+  return getFirestore().collection('postBatches');
+}
+
 function configDoc(name) {
   return getFirestore().collection('config').doc(name);
 }
@@ -148,6 +156,7 @@ module.exports = {
   usageCountersCollection,
   connectedAccountCapacityCollection,
   oauthTransactionsCollection,
+  postBatchesCollection,
   configDoc,
   // Static namespaces — safe to read without an initialized app.
   Timestamp: admin.firestore.Timestamp,

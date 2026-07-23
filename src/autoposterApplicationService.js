@@ -13,7 +13,7 @@ const connectedAccounts = require('./connectedAccounts');
 const commercialService = require('./commercialService');
 const { sanitizePostResult, sanitizeHistory } = require('./postsMapper');
 const { parseDateTimeLocal } = require('./timeUtil');
-const { computeMaxSchedulePlan, computeDailySchedulePlan } = require('./maxScheduler');
+const { computeMaxSchedulePlan, computeDailySchedulePlan, computeBatchStaggerPlan } = require('./maxScheduler');
 const youtube = require('./youtube');
 const { sanitizeApprovedMediaIdentity } = require('./approvedMediaIdentity');
 const { validateYouTubeMetadata } = youtube;
@@ -274,6 +274,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
   const now = dependencies.now || (() => Date.now());
   const maxSchedulePlanner = dependencies.computeMaxSchedulePlan || computeMaxSchedulePlan;
   const dailySchedulePlanner = dependencies.computeDailySchedulePlan || computeDailySchedulePlan;
+  const batchStaggerPlanner = dependencies.computeBatchStaggerPlan || computeBatchStaggerPlan;
   const commercialAdapter = dependencies.commercialService || commercialService;
   const youtubeAdapter = dependencies.youtube || youtube;
   const injectFailure = typeof dependencies.failureInjector === 'function'
@@ -742,6 +743,31 @@ function createAutoPosterApplicationService(dependencies = {}) {
       return { mode, plan };
     }
 
+    if (mode === 'staggered') {
+      // Platform batch intake: item i releases at base + i * stagger on ONE
+      // channel. The planner enforces the single-channel constraint.
+      const plan = batchStaggerPlanner({
+        startDate: schedule.startDate,
+        startTime: schedule.startTime,
+        timezoneName: schedule.timezoneName,
+        timezoneOffsetMinutes: schedule.timezoneOffsetMinutes,
+        staggerMinutes: schedule.staggerMinutes,
+        sourceCount,
+        channels: accounts.map((account) => ({
+          accountId: account.accountId,
+          tiktokOpenId: account.open_id,
+          username: account.username,
+          connected: account.connected
+        }))
+      });
+      if (!plan.ok) throw new AutoPosterApplicationError(plan.reason);
+      const firstSlot = plan.slots[0];
+      if (!firstSlot || Date.parse(firstSlot.scheduledAt) <= now()) {
+        throw new AutoPosterApplicationError('The first batch release must be scheduled in the future.');
+      }
+      return { mode, plan };
+    }
+
     if (mode === 'recurring_daily') {
       const plan = dailySchedulePlanner({
         startDate: schedule.startDate,
@@ -828,6 +854,12 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   function entitlementScheduleTimestamp(schedule, commercialContext, accounts, sourceCount) {
     if (schedule.mode === 'explicit') return schedule.scheduledAt;
+    if (schedule.mode === 'staggered') {
+      const values = (schedule.plan && Array.isArray(schedule.plan.slots))
+        ? schedule.plan.slots.map((slot) => slot.scheduledAt).filter(Boolean)
+        : [];
+      return values.sort().at(-1) || null;
+    }
     if (schedule.mode === 'max' || schedule.mode === 'recurring_daily') {
       const values = (schedule.plan && Array.isArray(schedule.plan.jobs))
         ? schedule.plan.jobs.map((job) => job.scheduledAt).filter(Boolean)
@@ -1111,6 +1143,9 @@ function createAutoPosterApplicationService(dependencies = {}) {
                 detail: `Daily series scheduled from ${schedule.plan.series.startDate} through ${schedule.plan.series.endDate}.`
               }
             : null),
+      // Platform batch link: stamps batchId/batchOrder/preparation on every
+      // created item so the batch runner can claim preparation work.
+      batchId: String(input.batchId || '').trim(),
       documentId: deterministicId,
       createOnly: Boolean(deterministicId),
       workspaceId: commercialContext.workspace.workspaceId,
@@ -1263,6 +1298,13 @@ function createAutoPosterApplicationService(dependencies = {}) {
       let scheduledCount = 0;
       if (schedule.mode === 'max') {
         scheduledCount = await storageAdapter.applyExplicitSchedule(
+          context.userId,
+          created,
+          schedule.plan,
+          commercialContext.workspaceScope
+        );
+      } else if (schedule.mode === 'staggered') {
+        scheduledCount = await storageAdapter.applyStaggeredSchedule(
           context.userId,
           created,
           schedule.plan,

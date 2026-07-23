@@ -1,0 +1,644 @@
+'use strict';
+
+// Platform batch slice: intake -> persisted batch/items -> bounded-parallel
+// resumable preparation -> review edits -> staggered human acceptance.
+// The REAL application service (staggered schedule mode included) runs over
+// an in-memory storage fake; only Firestore, Cloudinary, FFmpeg, and AI
+// providers are faked. The transactional storage functions themselves are
+// covered separately in batch-storage.test.js.
+
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const { createCommercialFixture } = require('./helpers/commercial-fixture');
+const mediaPolicy = require('../src/mediaPolicy');
+const { postFromDoc } = require('../src/postsMapper');
+const { computeBatchStaggerPlan } = require('../src/maxScheduler');
+const {
+  createAutoPosterApplicationService,
+  createExecutionContext
+} = require('../src/autoposterApplicationService');
+const { createBatchService, BatchServiceError } = require('../src/batchService');
+
+const BASE_NOW = Date.parse('2026-07-10T10:00:00.000Z');
+
+const TEST_BATCH_CONFIG = {
+  batchIntake: {
+    maxItems: 10,
+    prepareConcurrency: 2,
+    prepareMaxAttempts: 3,
+    prepareLeaseMinutes: 10,
+    staggerDefaultMinutes: 30,
+    staggerMinMinutes: 5,
+    staggerMaxMinutes: 24 * 60,
+    safetyBufferMinutes: 10,
+    downloadTimeoutMs: 5_000,
+    maxDownloadBytes: 250 * 1024 * 1024
+  }
+};
+
+function uploadFile(name) {
+  return {
+    path: `/tmp/${name}`,
+    originalname: name,
+    filename: name,
+    mimetype: 'video/mp4',
+    size: 1024
+  };
+}
+
+function makeWorld({ nowMs = BASE_NOW } = {}) {
+  const accounts = [
+    { accountId: 'account-a', open_id: 'open-a', userId: 'owner', platform: 'tiktok', username: 'creator_a', connected: true }
+  ];
+  const posts = [];
+  const batchRecords = new Map();
+  const calls = { add: [], staggered: [], approve: [], update: [] };
+  let sequence = 0;
+  let now = nowMs;
+
+  const storage = {
+    async getCanonicalTikTokAccount(userId, accountId) {
+      if (userId !== 'owner') return null;
+      return accounts.find((account) => account.accountId === accountId) || null;
+    },
+    async getCanonicalTikTokAccounts(userId) {
+      return userId === 'owner' ? accounts : [];
+    },
+    async getTikTokAccount(userId, accountId) {
+      if (userId !== 'owner') return null;
+      return accounts.find((account) => account.accountId === accountId) || null;
+    },
+    async getPosts(userId, accountId) {
+      if (userId !== 'owner') return [];
+      return posts.filter((post) => !accountId || post.accountId === accountId);
+    },
+    async getPost(userId, id, accountId) {
+      if (userId !== 'owner') return null;
+      return posts.find((post) => post.id === id && (!accountId || post.accountId === accountId)) || null;
+    },
+    async addUploadedPosts(userId, files, defaults) {
+      calls.add.push({ userId, files, defaults });
+      const sources = Array.isArray(files) && files.length > 0 ? files : [null];
+      return sources.map((file, index) => {
+        const post = postFromDoc({
+          id: `post-${++sequence}`,
+          data: () => ({
+            userId,
+            workspaceId: defaults.workspaceId,
+            platform: defaults.provider,
+            provider: defaults.provider,
+            accountId: defaults.accountId,
+            tiktokOpenId: defaults.tiktokOpenId,
+            username: defaults.username,
+            originalName: file ? file.originalname : '',
+            fileName: file ? file.originalname : '',
+            mediaType: 'video',
+            mediaUrl: `https://cdn.example.com/${file ? file.originalname : 'url'}`,
+            caption: defaults.caption,
+            hashtags: defaults.hashtags,
+            scheduledAt: null,
+            status: 'pending',
+            approvedAt: null,
+            approvedBy: null,
+            createdAt: { toDate: () => new Date(now) },
+            updatedAt: { toDate: () => new Date(now) },
+            batchId: defaults.batchId || '',
+            batchOrder: defaults.batchId ? index : null,
+            preparation: defaults.batchId
+              ? { status: 'pending', attempts: 0, leaseAt: null, finishedAt: null, provider: '', fallbackUsed: false, error: '' }
+              : null
+          })
+        });
+        posts.push(post);
+        return post;
+      });
+    },
+    async applyStaggeredSchedule(userId, created, plan) {
+      calls.staggered.push({ userId, created, plan });
+      created.forEach((created_post, index) => {
+        const slot = plan.slots[index];
+        const stored = posts.find((post) => post.id === created_post.id);
+        stored.scheduledAt = slot.scheduledAt;
+        stored.status = 'scheduled';
+        stored.channelOffsetMinutes = slot.offsetMinutes;
+        stored.campaignStartAt = plan.baseAt;
+      });
+      return created.length;
+    },
+    async updatePost(userId, id, patch, accountId, historyEvent) {
+      calls.update.push({ userId, id, patch, accountId, historyEvent });
+      const post = posts.find((item) => item.id === id && (!accountId || item.accountId === accountId));
+      if (!post) return null;
+      Object.assign(post, patch);
+      if ('scheduledAt' in patch) post.status = patch.scheduledAt ? 'scheduled' : 'pending';
+      return post;
+    },
+    async approvePost(userId, id, { approvedBy }, accountId) {
+      calls.approve.push({ userId, id, approvedBy, accountId });
+      const post = posts.find((item) => item.id === id && (!accountId || item.accountId === accountId));
+      if (!post) return null;
+      if (!['pending', 'scheduled', 'failed', 'ready'].includes(post.status)) return null;
+      post.approved = true;
+      post.approvalState = 'approved';
+      post.approvedAt = new Date(now).toISOString();
+      post.approvedBy = approvedBy;
+      return post;
+    },
+
+    // Batch record CRUD (in-memory mirror of the Firestore-backed functions).
+    async createBatchRecord(record) {
+      if (batchRecords.has(record.batchId)) {
+        const error = new Error('already exists');
+        error.code = 6;
+        throw error;
+      }
+      const stored = {
+        ...record,
+        preparedCount: 0,
+        failedCount: 0,
+        acceptedCount: 0,
+        createdAt: new Date(now).toISOString(),
+        updatedAt: new Date(now).toISOString()
+      };
+      batchRecords.set(record.batchId, stored);
+      return { ...stored };
+    },
+    async getBatchRecord(userId, batchId) {
+      const record = batchRecords.get(batchId);
+      if (!record || record.userId !== userId) return null;
+      return { ...record };
+    },
+    async listBatchRecords(userId) {
+      return [...batchRecords.values()].filter((record) => record.userId === userId).map((record) => ({ ...record }));
+    },
+    async updateBatchRecord(userId, batchId, patch) {
+      const record = batchRecords.get(batchId);
+      if (!record || record.userId !== userId) return null;
+      Object.assign(record, patch, { updatedAt: new Date(now).toISOString() });
+      return { ...record };
+    },
+    async getBatchPosts(userId, batchId) {
+      return posts
+        .filter((post) => post.userId === userId && post.batchId === batchId)
+        .sort((a, b) => (a.batchOrder ?? 0) - (b.batchOrder ?? 0));
+    },
+    async claimBatchItemPreparation(userId, postId, options) {
+      const post = posts.find((item) => item.id === postId && item.userId === userId);
+      if (!post) return { outcome: 'not_found' };
+      if (!post.batchId) return { outcome: 'not_batch_item' };
+      if (!['pending', 'scheduled'].includes(post.status)) return { outcome: 'not_preparable', post };
+      const preparation = post.preparation || {};
+      const attempts = Number(preparation.attempts || 0);
+      if (preparation.status === 'succeeded') return { outcome: 'already_succeeded', post };
+      if (preparation.status === 'running') {
+        const leaseAtMs = preparation.leaseAt ? Date.parse(preparation.leaseAt) : 0;
+        if (leaseAtMs && Date.now() - leaseAtMs < options.leaseMs) {
+          return { outcome: 'in_progress', post };
+        }
+      }
+      if (attempts >= options.maxAttempts) return { outcome: 'attempts_exhausted', post };
+      post.preparation = {
+        ...preparation,
+        status: 'running',
+        attempts: attempts + 1,
+        leaseAt: new Date(now).toISOString(),
+        error: ''
+      };
+      return { outcome: 'claimed', post: { ...post }, attempt: attempts + 1 };
+    },
+    async recordBatchItemPreparationResult(userId, postId, result) {
+      const post = posts.find((item) => item.id === postId && item.userId === userId);
+      if (!post) return null;
+      const preparation = post.preparation || {};
+      if (preparation.status !== 'running') return null;
+      if (result.ok) {
+        if (result.caption && !String(post.caption || '').trim()) post.caption = result.caption;
+        if (result.hashtags && !String(post.hashtags || '').trim()) post.hashtags = result.hashtags;
+        post.preparation = {
+          ...preparation,
+          status: 'succeeded',
+          leaseAt: null,
+          finishedAt: new Date(now).toISOString(),
+          provider: result.provider || '',
+          fallbackUsed: Boolean(result.fallbackUsed),
+          error: ''
+        };
+      } else {
+        post.preparation = {
+          ...preparation,
+          status: 'failed',
+          leaseAt: null,
+          finishedAt: new Date(now).toISOString(),
+          error: String(result.error || 'Preparation failed.')
+        };
+      }
+      return { ok: Boolean(result.ok) };
+    }
+  };
+
+  const commercial = createCommercialFixture(storage, { planId: 'legacy_full_access' });
+  const applicationService = createAutoPosterApplicationService({
+    storage,
+    mediaPolicy,
+    commercialService: commercial,
+    now: () => now
+  });
+
+  // Preparation fakes: no disk, no FFmpeg, no AI provider network.
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const failFor = new Set();
+  const autoCaption = {
+    async analyzeVideoForCaption(videoPath, draft, options) {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      concurrent -= 1;
+      if (failFor.has(options.filename)) {
+        throw new Error(`analysis failed for ${options.filename}`);
+      }
+      return {
+        caption: `Generated caption for ${options.filename}`,
+        hashtags: '#chanter #auto',
+        provider: 'fake-ai',
+        fallbackUsed: false
+      };
+    }
+  };
+  const downloadCalls = [];
+  const downloadMedia = async (mediaUrl, options) => {
+    downloadCalls.push({ mediaUrl, targetPath: options.targetPath });
+    return { bytes: 10 };
+  };
+
+  const batchService = createBatchService({
+    config: TEST_BATCH_CONFIG,
+    storage,
+    autoCaption,
+    applicationService,
+    downloadMedia,
+    now: () => now,
+    logger: { warn() {} }
+  });
+
+  return {
+    accounts,
+    posts,
+    calls,
+    batchRecords,
+    storage,
+    applicationService,
+    batchService,
+    downloadCalls,
+    failFor,
+    stats: { get maxConcurrent() { return maxConcurrent; } },
+    setNow(value) { now = Date.parse(value); },
+    get nowMs() { return now; }
+  };
+}
+
+function websiteContext(overrides = {}) {
+  return createExecutionContext({ userId: 'owner', actorId: 'admin:owner', source: 'website', ...overrides });
+}
+
+function approverContext() {
+  return websiteContext({ approval: { approvedBy: 'admin:owner' } });
+}
+
+const INTAKE_DEFAULTS = {
+  provider: 'tiktok',
+  accountId: 'account-a',
+  startDate: '2026-07-11',
+  startTime: '09:00',
+  timezoneOffsetMinutes: 0,
+  staggerMinutes: 30,
+  intakeKey: 'intake-1'
+};
+
+// ── Pure stagger plan ───────────────────────────────────────────────────────
+
+test('computeBatchStaggerPlan staggers items on one channel and rejects multi-channel input', () => {
+  const plan = computeBatchStaggerPlan({
+    startDate: '2026-07-11',
+    startTime: '09:00',
+    timezoneOffsetMinutes: 0,
+    staggerMinutes: 20,
+    sourceCount: 3,
+    channels: [{ accountId: 'account-a', connected: true }]
+  });
+  assert.equal(plan.ok, true);
+  assert.deepEqual(plan.slots.map((slot) => slot.scheduledAt), [
+    '2026-07-11T09:00:00.000Z',
+    '2026-07-11T09:20:00.000Z',
+    '2026-07-11T09:40:00.000Z'
+  ]);
+  assert.equal(plan.jobCount, 3);
+
+  const multi = computeBatchStaggerPlan({
+    startDate: '2026-07-11',
+    startTime: '09:00',
+    timezoneOffsetMinutes: 0,
+    sourceCount: 2,
+    channels: [{ accountId: 'a' }, { accountId: 'b' }]
+  });
+  assert.equal(multi.ok, false);
+  assert.match(multi.reason, /exactly one publishing channel/);
+
+  const badStagger = computeBatchStaggerPlan({
+    startDate: '2026-07-11',
+    startTime: '09:00',
+    timezoneOffsetMinutes: 0,
+    staggerMinutes: 0,
+    sourceCount: 2,
+    channels: [{ accountId: 'a' }]
+  });
+  assert.equal(badStagger.ok, false);
+});
+
+// ── Intake ─────────────────────────────────────────────────────────────────
+
+test('batch intake persists batch + items with staggered future times, all unapproved drafts', async () => {
+  const world = makeWorld();
+  const result = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('a.mp4'), uploadFile('b.mp4'), uploadFile('c.mp4')]
+  });
+
+  assert.equal(result.replayed, false);
+  assert.equal(result.batch.itemCount, 3);
+  assert.equal(result.items.length, 3);
+  assert.deepEqual(result.items.map((item) => item.scheduledAt), [
+    '2026-07-11T09:00:00.000Z',
+    '2026-07-11T09:30:00.000Z',
+    '2026-07-11T10:00:00.000Z'
+  ]);
+  for (const item of result.items) {
+    assert.equal(item.approved, false, 'intake must never approve');
+    assert.equal(item.status, 'scheduled');
+    assert.equal(item.batchId, result.batch.batchId);
+  }
+  assert.equal(world.calls.add.length, 1);
+  assert.equal(world.calls.add[0].defaults.batchId, result.batch.batchId);
+  assert.equal(world.calls.staggered.length, 1);
+
+  // Preparation kicked off automatically; wait for it to settle.
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+  const view = await world.batchService.getBatchView(websiteContext(), result.batch.batchId);
+  assert.equal(view.batch.status, 'ready');
+  for (const item of view.items) {
+    assert.equal(item.preparation.status, 'succeeded');
+    assert.match(item.caption, /^Generated caption for/);
+    assert.equal(item.approved, false, 'preparation must never approve');
+  }
+});
+
+test('exact intake replay returns the existing batch without creating duplicates', async () => {
+  const world = makeWorld();
+  const first = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('a.mp4')]
+  });
+  await world.batchService.startPreparation(websiteContext(), first.batch.batchId);
+
+  const replay = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('a.mp4')]
+  });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.batch.batchId, first.batch.batchId);
+  assert.equal(world.calls.add.length, 1, 'no second queue creation');
+  assert.equal(world.posts.length, 1);
+});
+
+test('intake validation fails closed: no files, bad stagger, unsupported provider', async () => {
+  const world = makeWorld();
+  await assert.rejects(
+    world.batchService.createBatch(websiteContext(), { ...INTAKE_DEFAULTS, files: [] }),
+    BatchServiceError
+  );
+  await assert.rejects(
+    world.batchService.createBatch(websiteContext(), {
+      ...INTAKE_DEFAULTS,
+      files: [uploadFile('a.mp4')],
+      staggerMinutes: 1
+    }),
+    /stagger interval/
+  );
+  await assert.rejects(
+    world.batchService.createBatch(websiteContext(), {
+      ...INTAKE_DEFAULTS,
+      files: [uploadFile('a.mp4')],
+      provider: 'youtube'
+    }),
+    /single-video flow for YouTube/
+  );
+  assert.equal(world.posts.length, 0);
+});
+
+// ── Preparation ────────────────────────────────────────────────────────────
+
+test('preparation runs with bounded parallelism', async () => {
+  const world = makeWorld();
+  const result = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: ['a', 'b', 'c', 'd', 'e'].map((name) => uploadFile(`${name}.mp4`))
+  });
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+  assert.ok(world.stats.maxConcurrent <= 2, `expected concurrency <= 2, saw ${world.stats.maxConcurrent}`);
+  assert.equal(world.downloadCalls.length, 5, 'every item downloaded exactly once');
+});
+
+test('a failed item does not corrupt the batch; the rest prepare and stay acceptable', async () => {
+  const world = makeWorld();
+  world.failFor.add('bad.mp4');
+  const result = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('good1.mp4'), uploadFile('bad.mp4'), uploadFile('good2.mp4')]
+  });
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+
+  // The failed item is retried up to prepareMaxAttempts by later resumes.
+  world.failFor.delete('never'); // keep failing 'bad.mp4'
+  await world.batchService.resumePreparation(websiteContext(), result.batch.batchId);
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+
+  const view = await world.batchService.getBatchView(websiteContext(), result.batch.batchId, { autoResume: false });
+  const states = Object.fromEntries(view.items.map((item) => [item.originalName, item.preparation.status]));
+  assert.equal(states['good1.mp4'], 'succeeded');
+  assert.equal(states['good2.mp4'], 'succeeded');
+  assert.equal(states['bad.mp4'], 'failed');
+  assert.equal(view.batch.status, 'attention_required');
+
+  const failedItem = view.items.find((item) => item.originalName === 'bad.mp4');
+  assert.equal(failedItem.itemState, 'needs_attention');
+  assert.match(failedItem.preparation.error, /analysis failed/);
+  const goodItem = view.items.find((item) => item.originalName === 'good1.mp4');
+  assert.equal(goodItem.readyToAccept, true);
+});
+
+test('preparation resumes after interruption: stale running lease is reclaimed and finished', async () => {
+  const world = makeWorld();
+  const result = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('a.mp4'), uploadFile('b.mp4')]
+  });
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+
+  // Simulate a crash mid-preparation: durable state says one item is still
+  // running with a stale lease and one is pending again.
+  const [first, second] = world.posts;
+  first.caption = '';
+  first.preparation = {
+    status: 'running',
+    attempts: 1,
+    leaseAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    finishedAt: null,
+    provider: '',
+    fallbackUsed: false,
+    error: ''
+  };
+  second.caption = '';
+  second.preparation = { status: 'pending', attempts: 0, leaseAt: null, finishedAt: null, provider: '', fallbackUsed: false, error: '' };
+
+  await world.batchService.resumePreparation(websiteContext(), result.batch.batchId);
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+
+  const view = await world.batchService.getBatchView(websiteContext(), result.batch.batchId, { autoResume: false });
+  for (const item of view.items) {
+    assert.equal(item.preparation.status, 'succeeded');
+    assert.match(item.caption, /^Generated caption/);
+  }
+  assert.equal(view.batch.status, 'ready');
+});
+
+// ── Review: edit + accept ──────────────────────────────────────────────────
+
+test('item edits persist independently and human edits win over preparation copy', async () => {
+  const world = makeWorld();
+  const result = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('a.mp4'), uploadFile('b.mp4')]
+  });
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+
+  const view = await world.batchService.getBatchView(websiteContext(), result.batch.batchId);
+  const target = view.items[0];
+  const edited = await world.batchService.updateItem(websiteContext(), result.batch.batchId, target.id, {
+    caption: 'Χειροκίνητη λεζάντα',
+    hashtags: '#custom',
+    scheduleInput: { value: '2026-07-12T18:30', timezoneOffsetMinutes: 0 }
+  });
+  assert.equal(edited.item.caption, 'Χειροκίνητη λεζάντα');
+  assert.equal(edited.item.hashtags, '#custom');
+  assert.equal(edited.item.scheduledAt, '2026-07-12T18:30:00.000Z');
+
+  const after = await world.batchService.getBatchView(websiteContext(), result.batch.batchId);
+  assert.equal(after.items[1].caption.startsWith('Generated caption'), true, 'other item untouched');
+
+  await assert.rejects(
+    world.batchService.updateItem(websiteContext(), result.batch.batchId, 'missing-post', { caption: 'x' }),
+    /does not belong/
+  );
+});
+
+test('acceptance requires an explicit human approver context', async () => {
+  const world = makeWorld();
+  const result = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('a.mp4')]
+  });
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+  await assert.rejects(
+    world.batchService.acceptItems(websiteContext(), result.batch.batchId, { postIds: 'all' }),
+    /human approver/
+  );
+  assert.equal(world.calls.approve.length, 0);
+});
+
+test('accepting one item approves exactly that item and keeps its safe future slot', async () => {
+  const world = makeWorld();
+  const result = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('a.mp4'), uploadFile('b.mp4')]
+  });
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+  const view = await world.batchService.getBatchView(websiteContext(), result.batch.batchId);
+
+  const outcome = await world.batchService.acceptItems(approverContext(), result.batch.batchId, {
+    postIds: [view.items[0].id]
+  });
+  assert.deepEqual(outcome.failed, []);
+  assert.equal(outcome.accepted.length, 1);
+  assert.equal(outcome.accepted[0].scheduledAt, '2026-07-11T09:00:00.000Z', 'future slot kept as proposed');
+
+  const after = await world.batchService.getBatchView(websiteContext(), result.batch.batchId);
+  assert.equal(after.items[0].approved, true);
+  assert.equal(after.items[1].approved, false, 'sibling untouched');
+  assert.equal(world.calls.approve.length, 1);
+});
+
+test('Accept All approves every ready item with staggered future times and never immediately', async () => {
+  const world = makeWorld();
+  const result = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('a.mp4'), uploadFile('b.mp4'), uploadFile('c.mp4')]
+  });
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+
+  // Time passes: the original slots (07-11 09:00/09:30/10:00) are now in the
+  // past. Acceptance must push everything to safe staggered future slots.
+  world.setNow('2026-07-11T12:00:00.000Z');
+
+  const outcome = await world.batchService.acceptItems(approverContext(), result.batch.batchId, { postIds: 'all' });
+  assert.deepEqual(outcome.failed, []);
+  assert.equal(outcome.accepted.length, 3);
+
+  const bufferMs = 10 * 60_000;
+  const staggerMs = 30 * 60_000;
+  const times = outcome.accepted.map((item) => Date.parse(item.scheduledAt));
+  for (const timeMs of times) {
+    assert.ok(timeMs >= world.nowMs + bufferMs, 'every accepted slot is at least the safety buffer in the future');
+  }
+  for (let i = 1; i < times.length; i += 1) {
+    assert.ok(times[i] - times[i - 1] >= staggerMs, 'accepted slots keep the stagger spacing');
+  }
+
+  const after = await world.batchService.getBatchView(websiteContext(), result.batch.batchId);
+  assert.equal(after.batch.status, 'completed');
+  for (const item of after.items) assert.equal(item.approved, true);
+
+  // Accept All again: nothing left, nothing double-approved.
+  const again = await world.batchService.acceptItems(approverContext(), result.batch.batchId, { postIds: 'all' });
+  assert.equal(again.accepted.length, 0);
+  assert.equal(world.calls.approve.length, 3);
+});
+
+test('an unready item (failed preparation, empty caption) cannot be accepted until fixed', async () => {
+  const world = makeWorld();
+  world.failFor.add('bad.mp4');
+  const result = await world.batchService.createBatch(websiteContext(), {
+    ...INTAKE_DEFAULTS,
+    files: [uploadFile('bad.mp4')]
+  });
+  await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
+
+  const view = await world.batchService.getBatchView(websiteContext(), result.batch.batchId, { autoResume: false });
+  assert.equal(view.items[0].readyToAccept, false);
+
+  const refused = await world.batchService.acceptItems(approverContext(), result.batch.batchId, {
+    postIds: [view.items[0].id]
+  });
+  assert.equal(refused.accepted.length, 0);
+  assert.equal(refused.failed.length, 1);
+  assert.match(refused.failed[0].reason, /not ready/);
+
+  // Operator fixes it by hand; acceptance then succeeds.
+  await world.batchService.updateItem(websiteContext(), result.batch.batchId, view.items[0].id, {
+    caption: 'Manual rescue caption'
+  });
+  const accepted = await world.batchService.acceptItems(approverContext(), result.batch.batchId, {
+    postIds: [view.items[0].id]
+  });
+  assert.equal(accepted.accepted.length, 1);
+  assert.deepEqual(accepted.failed, []);
+});

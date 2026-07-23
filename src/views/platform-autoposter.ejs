@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>AutoPoster — CHANTER Platform</title>
+  <link rel="stylesheet" href="/platform/platform.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="platform-header">
+      <div class="brand">
+        <span class="wordmark">CHANTER</span>
+        <span class="product">Platform</span>
+      </div>
+      <nav class="header-nav">
+        <a href="/platform">Πλατφόρμα</a>
+        <a href="/private/autoposter">Κλασική κονσόλα</a>
+      </nav>
+    </header>
+
+    <div class="breadcrumb"><a href="/platform">Πλατφόρμα</a> / AutoPoster</div>
+    <h1 class="page-title">AutoPoster — Μαζική μεταφόρτωση</h1>
+    <p class="page-subtitle">
+      Ανεβάστε πολλά βίντεο μαζί. Η πλατφόρμα προετοιμάζει λεζάντα και hashtags για κάθε βίντεο·
+      εσείς ελέγχετε, διορθώνετε και εγκρίνετε πριν προγραμματιστεί οτιδήποτε.
+      &middot; Upload many videos at once; review and approve before anything is scheduled.
+    </p>
+
+    <div id="notice" class="notice hidden"></div>
+
+    <% if (accounts.length === 0) { %>
+      <div class="empty-state">
+        <div>Δεν υπάρχει συνδεδεμένο κανάλι TikTok.<br>Συνδέστε ένα κανάλι από την κλασική κονσόλα για να ξεκινήσετε.</div>
+        <div class="en">No connected TikTok channel. Connect one from the <a href="/private/autoposter">classic console</a> to begin.</div>
+        <% if (accountsError) { %><div class="en"><%= accountsError %></div><% } %>
+      </div>
+    <% } else { %>
+      <div class="panel">
+        <form id="batch-form">
+          <div id="dropzone" class="dropzone">
+            <div class="dz-primary">Σύρετε βίντεο εδώ ή κάντε κλικ για επιλογή</div>
+            <div class="dz-secondary">MP4, MOV ή WebM &middot; έως <%= batchDefaults.maxItems %> βίντεο &middot; έως 250MB το καθένα</div>
+            <input id="file-input" type="file" name="videos" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" multiple style="display:none">
+          </div>
+          <ul id="file-list" class="file-list"></ul>
+
+          <div class="form-row cols-2">
+            <div>
+              <label class="field-label" for="accountId">Κανάλι δημοσίευσης &middot; Publishing channel</label>
+              <select id="accountId" name="accountId" required>
+                <% for (const account of accounts) { %>
+                  <option value="<%= account.accountId %>"><%= account.username ? '@' + account.username : account.accountId %></option>
+                <% } %>
+              </select>
+            </div>
+            <div>
+              <label class="field-label" for="staggerMinutes">Απόσταση δημοσιεύσεων (λεπτά) &middot; Stagger (minutes)</label>
+              <input id="staggerMinutes" name="staggerMinutes" type="number"
+                     min="<%= batchDefaults.staggerMin %>" max="<%= batchDefaults.staggerMax %>"
+                     value="<%= batchDefaults.staggerMinutes %>" required>
+            </div>
+          </div>
+
+          <div class="form-row cols-2">
+            <div>
+              <label class="field-label" for="startDate">Ημερομηνία πρώτης δημοσίευσης &middot; First release date</label>
+              <input id="startDate" name="startDate" type="date" required>
+            </div>
+            <div>
+              <label class="field-label" for="startTime">Ώρα πρώτης δημοσίευσης &middot; First release time</label>
+              <input id="startTime" name="startTime" type="time" required>
+            </div>
+          </div>
+
+          <button id="submit-btn" type="submit" class="btn btn-primary" disabled>
+            Δημιουργία παρτίδας
+          </button>
+          <span id="submit-status" class="item-note" style="margin-left:12px"></span>
+        </form>
+      </div>
+    <% } %>
+
+    <h2 class="section-title">Πρόσφατες παρτίδες &middot; Recent batches</h2>
+    <div id="batch-list" class="batch-list">
+      <div class="empty-state" id="batch-list-empty">Δεν υπάρχουν παρτίδες ακόμη. <span class="en">No batches yet.</span></div>
+    </div>
+
+    <p class="footer-note">
+      Όλα τα βίντεο δημιουργούνται ως προσχέδια. Τίποτα δεν δημοσιεύεται χωρίς τη δική σας έγκριση.
+      &middot; Everything is created as a draft; nothing publishes without your approval.
+    </p>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var STATUS_LABELS = {
+        preparing: ['Προετοιμασία', 'chip-preparing'],
+        ready: ['Έτοιμη για έλεγχο', 'chip-ready'],
+        attention_required: ['Χρειάζεται προσοχή', 'chip-attention'],
+        completed: ['Ολοκληρώθηκε', 'chip-completed'],
+        empty: ['Κενή', 'chip-neutral']
+      };
+
+      function chip(status) {
+        var meta = STATUS_LABELS[status] || [status, 'chip-neutral'];
+        return '<span class="chip ' + meta[1] + '">' + meta[0] + '</span>';
+      }
+
+      function showNotice(message, kind) {
+        var el = document.getElementById('notice');
+        el.textContent = message;
+        el.className = 'notice ' + (kind === 'error' ? 'notice-error' : 'notice-ok');
+      }
+
+      // ── Recent batches ──
+      function loadBatches() {
+        fetch('/api/platform/batches', { headers: { 'Accept': 'application/json' } })
+          .then(function (response) { return response.json(); })
+          .then(function (payload) {
+            if (!payload.ok || !Array.isArray(payload.batches)) return;
+            var list = document.getElementById('batch-list');
+            var empty = document.getElementById('batch-list-empty');
+            if (payload.batches.length === 0) { empty.classList.remove('hidden'); return; }
+            empty.classList.add('hidden');
+            list.querySelectorAll('.batch-row').forEach(function (row) { row.remove(); });
+            payload.batches.forEach(function (batch) {
+              var row = document.createElement('a');
+              row.className = 'batch-row';
+              row.href = '/platform/autoposter/batches/' + encodeURIComponent(batch.batchId);
+              var when = batch.createdAt ? new Date(batch.createdAt).toLocaleString('el-GR') : '';
+              row.innerHTML =
+                '<div>' +
+                  '<div>' + (batch.accountLabel || batch.accountId || '') + ' &middot; ' + batch.itemCount + ' βίντεο</div>' +
+                  '<div class="meta">' + when + ' &middot; κάθε ' + batch.staggerMinutes + ' λεπτά</div>' +
+                '</div>' +
+                '<div style="display:flex;align-items:center;gap:14px">' +
+                  '<span class="counts">' + batch.preparedCount + '/' + batch.itemCount + ' έτοιμα' +
+                    (batch.failedCount > 0 ? ' · ' + batch.failedCount + ' σε εκκρεμότητα' : '') + '</span>' +
+                  chip(batch.status) +
+                '</div>';
+              list.appendChild(row);
+            });
+          })
+          .catch(function () { /* the empty state stays visible */ });
+      }
+      loadBatches();
+
+      // ── Upload form ──
+      var form = document.getElementById('batch-form');
+      if (!form) return;
+
+      var dropzone = document.getElementById('dropzone');
+      var fileInput = document.getElementById('file-input');
+      var fileList = document.getElementById('file-list');
+      var submitBtn = document.getElementById('submit-btn');
+      var submitStatus = document.getElementById('submit-status');
+      var selectedFiles = [];
+      var maxItems = <%= batchDefaults.maxItems %>;
+
+      // Sensible default: tomorrow at 10:00 local.
+      var tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      document.getElementById('startDate').value = tomorrow.toISOString().slice(0, 10);
+      document.getElementById('startTime').value = '10:00';
+
+      function refreshFileList() {
+        fileList.innerHTML = '';
+        selectedFiles.forEach(function (file) {
+          var li = document.createElement('li');
+          var size = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
+          li.innerHTML = '<span>' + file.name + '</span><span class="size">' + size + '</span>';
+          fileList.appendChild(li);
+        });
+        submitBtn.disabled = selectedFiles.length === 0;
+        submitBtn.textContent = selectedFiles.length > 0
+          ? 'Δημιουργία παρτίδας (' + selectedFiles.length + ' βίντεο)'
+          : 'Δημιουργία παρτίδας';
+      }
+
+      function addFiles(files) {
+        Array.prototype.slice.call(files).forEach(function (file) {
+          if (selectedFiles.length >= maxItems) return;
+          selectedFiles.push(file);
+        });
+        refreshFileList();
+      }
+
+      dropzone.addEventListener('click', function () { fileInput.click(); });
+      fileInput.addEventListener('change', function () { addFiles(fileInput.files); fileInput.value = ''; });
+      dropzone.addEventListener('dragover', function (event) { event.preventDefault(); dropzone.classList.add('dragover'); });
+      dropzone.addEventListener('dragleave', function () { dropzone.classList.remove('dragover'); });
+      dropzone.addEventListener('drop', function (event) {
+        event.preventDefault();
+        dropzone.classList.remove('dragover');
+        if (event.dataTransfer && event.dataTransfer.files) addFiles(event.dataTransfer.files);
+      });
+
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        if (selectedFiles.length === 0) return;
+        submitBtn.disabled = true;
+        submitStatus.innerHTML = '<span class="spin"></span> Μεταφόρτωση και δημιουργία παρτίδας…';
+
+        var data = new FormData();
+        selectedFiles.forEach(function (file) { data.append('videos', file); });
+        data.append('provider', 'tiktok');
+        data.append('accountId', document.getElementById('accountId').value);
+        data.append('startDate', document.getElementById('startDate').value);
+        data.append('startTime', document.getElementById('startTime').value);
+        data.append('staggerMinutes', document.getElementById('staggerMinutes').value);
+        data.append('timezoneName', (Intl.DateTimeFormat().resolvedOptions().timeZone || ''));
+        data.append('timezoneOffsetMinutes', String(new Date().getTimezoneOffset()));
+        data.append('intakeKey', (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()));
+
+        fetch('/api/platform/batches', { method: 'POST', body: data, headers: { 'Accept': 'application/json' } })
+          .then(function (response) { return response.json().then(function (payload) { return { status: response.status, payload: payload }; }); })
+          .then(function (result) {
+            if (result.payload && result.payload.ok && result.payload.batch) {
+              window.location.href = '/platform/autoposter/batches/' + encodeURIComponent(result.payload.batch.batchId);
+              return;
+            }
+            submitBtn.disabled = false;
+            submitStatus.textContent = '';
+            showNotice((result.payload && result.payload.reason) || 'Η δημιουργία της παρτίδας απέτυχε. Δοκιμάστε ξανά.', 'error');
+          })
+          .catch(function () {
+            submitBtn.disabled = false;
+            submitStatus.textContent = '';
+            showNotice('Η μεταφόρτωση διακόπηκε. Ελέγξτε τη σύνδεση και δοκιμάστε ξανά.', 'error');
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

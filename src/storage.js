@@ -8,6 +8,7 @@ const {
   tiktokAccountsCollection,
   youtubeAccountsCollection,
   connectedAccountCapacityCollection,
+  postBatchesCollection,
   configDoc,
   getFirestore,
   Timestamp,
@@ -1639,7 +1640,15 @@ async function addUploadedPosts(userId, files, defaults = {}) {
             : null,
           // Additive provider-operation authority. It stays null until a
           // YouTube worker transaction claims this exact queue row.
-          providerOperation: null
+          providerOperation: null,
+          // Platform batch link. batchOrder is the creation index inside this
+          // intake; preparation starts pending so the batch runner can claim
+          // it transactionally. Non-batch intakes keep the legacy nulls.
+          batchId: String(defaults.batchId || '').trim(),
+          batchOrder: defaults.batchId ? created.length : null,
+          preparation: defaults.batchId
+            ? { status: 'pending', attempts: 0, leaseAt: null, finishedAt: null, provider: '', fallbackUsed: false, error: '' }
+            : null
         };
 
         if (!defaults.usageReservation) {
@@ -2582,6 +2591,271 @@ async function applyExplicitSchedule(userId, posts, plan, workspaceScope) {
   return count;
 }
 
+/**
+ * Apply a per-item staggered batch plan (maxScheduler.computeBatchStaggerPlan)
+ * to freshly created posts: created[i] gets plan.slots[i].scheduledAt. The
+ * posts stay unapproved drafts — claimPost's approval gate is untouched, so
+ * assigning times here can never publish anything by itself.
+ */
+async function applyStaggeredSchedule(userId, posts, plan, workspaceScope) {
+  const slots = plan && Array.isArray(plan.slots) ? plan.slots : [];
+  const items = Array.isArray(posts) ? posts : [];
+  if (items.length !== slots.length) {
+    const error = new Error(`The staggered plan has ${slots.length} slots for ${items.length} queue items.`);
+    error.status = 500;
+    throw error;
+  }
+
+  const db = getFirestore();
+  const batch = db.batch();
+  let count = 0;
+
+  for (let index = 0; index < items.length; index += 1) {
+    const slot = slots[index];
+    batch.update(postsCollection().doc(items[index].id), {
+      scheduledAt: Timestamp.fromDate(new Date(slot.scheduledAt)),
+      campaignStartAt: Timestamp.fromDate(new Date(plan.baseAt)),
+      channelOffsetMinutes: slot.offsetMinutes,
+      channelOrder: 0,
+      status: 'scheduled',
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    count += 1;
+  }
+
+  if (count > 0) await batch.commit();
+  return count;
+}
+
+// ── Platform batch records ─────────────────────────────────────────────────
+// One postBatches document per batch intake. Items remain ordinary posts
+// (the durable truth); the record carries batch-level lifecycle and a
+// best-effort count summary for listing.
+
+function batchRecordFromDoc(doc) {
+  const data = doc.data() || {};
+  return {
+    batchId: doc.id,
+    userId: data.userId || DEFAULT_USER_ID,
+    workspaceId: String(data.workspaceId || '').trim(),
+    provider: String(data.provider || '').trim(),
+    accountId: String(data.accountId || '').trim(),
+    accountLabel: String(data.accountLabel || '').trim(),
+    status: String(data.status || 'preparing').trim(),
+    itemCount: Number(data.itemCount || 0),
+    preparedCount: Number(data.preparedCount || 0),
+    failedCount: Number(data.failedCount || 0),
+    acceptedCount: Number(data.acceptedCount || 0),
+    staggerMinutes: Number(data.staggerMinutes || 0),
+    baseAt: data.baseAt && typeof data.baseAt.toDate === 'function' ? data.baseAt.toDate().toISOString() : null,
+    timezoneName: String(data.timezoneName || '').trim(),
+    intakeKey: String(data.intakeKey || '').trim(),
+    createdAt: data.createdAt && typeof data.createdAt.toDate === 'function' ? data.createdAt.toDate().toISOString() : null,
+    updatedAt: data.updatedAt && typeof data.updatedAt.toDate === 'function' ? data.updatedAt.toDate().toISOString() : null
+  };
+}
+
+function batchRecordMatchesScope(record, ownerId, workspaceScope) {
+  if (record.userId !== ownerId) return false;
+  const scope = normalizeWorkspaceScope(workspaceScope);
+  if (!scope.workspaceId) return true;
+  if (record.workspaceId === scope.workspaceId) return true;
+  return scope.allowLegacyOwnerRecords && !record.workspaceId;
+}
+
+async function createBatchRecord(record) {
+  const batchId = String(record.batchId || '').trim();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(batchId)) {
+    const error = new Error('Invalid batch identifier');
+    error.status = 400;
+    throw error;
+  }
+  const now = Timestamp.now();
+  // create() (not set) so a concurrent duplicate intake fails loudly instead
+  // of silently overwriting the first record.
+  await postBatchesCollection().doc(batchId).create({
+    userId: record.userId || DEFAULT_USER_ID,
+    workspaceId: String(record.workspaceId || '').trim(),
+    provider: String(record.provider || '').trim(),
+    accountId: String(record.accountId || '').trim(),
+    accountLabel: String(record.accountLabel || '').trim(),
+    status: String(record.status || 'preparing').trim(),
+    itemCount: Number(record.itemCount || 0),
+    preparedCount: 0,
+    failedCount: 0,
+    acceptedCount: 0,
+    staggerMinutes: Number(record.staggerMinutes || 0),
+    baseAt: toTimestampOrNull(record.baseAt),
+    timezoneName: String(record.timezoneName || '').trim(),
+    intakeKey: String(record.intakeKey || '').trim(),
+    createdAt: now,
+    updatedAt: now
+  });
+  const snapshot = await postBatchesCollection().doc(batchId).get();
+  return batchRecordFromDoc(snapshot);
+}
+
+async function getBatchRecord(userId, batchId, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const id = String(batchId || '').trim();
+  if (!id) return null;
+  const snapshot = await postBatchesCollection().doc(id).get();
+  if (!snapshot.exists) return null;
+  const record = batchRecordFromDoc(snapshot);
+  if (!batchRecordMatchesScope(record, ownerId, workspaceScope)) return null;
+  return record;
+}
+
+async function listBatchRecords(userId, workspaceScope, limit = 20) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const snapshot = await postBatchesCollection().where('userId', '==', ownerId).get();
+  return snapshot.docs
+    .map(batchRecordFromDoc)
+    .filter((record) => batchRecordMatchesScope(record, ownerId, workspaceScope))
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    .slice(0, Math.max(1, Math.min(100, Number(limit) || 20)));
+}
+
+async function updateBatchRecord(userId, batchId, patch, workspaceScope) {
+  const existing = await getBatchRecord(userId, batchId, workspaceScope);
+  if (!existing) return null;
+  const safePatch = {};
+  if (typeof patch.status === 'string' && patch.status.trim()) safePatch.status = patch.status.trim();
+  for (const key of ['preparedCount', 'failedCount', 'acceptedCount', 'itemCount']) {
+    if (Number.isInteger(patch[key]) && patch[key] >= 0) safePatch[key] = patch[key];
+  }
+  await postBatchesCollection().doc(existing.batchId).update({
+    ...safePatch,
+    updatedAt: FieldValue.serverTimestamp()
+  });
+  const snapshot = await postBatchesCollection().doc(existing.batchId).get();
+  return batchRecordFromDoc(snapshot);
+}
+
+async function getBatchPosts(userId, batchId, workspaceScope) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const id = String(batchId || '').trim();
+  if (!id) return [];
+  const snapshot = await postsCollection()
+    .where('userId', '==', ownerId)
+    .where('batchId', '==', id)
+    .get();
+  return snapshot.docs
+    .map(postFromDoc)
+    .filter((post) => recordMatchesWorkspace({ userId: post.userId, workspaceId: post.workspaceId }, ownerId, workspaceScope))
+    .sort((a, b) => (a.batchOrder ?? 0) - (b.batchOrder ?? 0));
+}
+
+// ── Platform batch preparation custody ─────────────────────────────────────
+// Preparation runs at-most-once per lease: claim flips pending/stale/failed
+// work to running inside one transaction, so overlapping runners (resume
+// after a crash, double-clicked resume, two processes) can never prepare the
+// same item concurrently. Mirrors scheduler.claimPost's transactional shape.
+
+async function claimBatchItemPreparation(userId, postId, options = {}) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const leaseMs = Math.max(60_000, Number(options.leaseMs || 10 * 60_000));
+  const maxAttempts = Math.max(1, Number(options.maxAttempts || 3));
+  const ref = postsCollection().doc(String(postId || ''));
+
+  return getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return { outcome: 'not_found' };
+    const data = snap.data() || {};
+    if ((data.userId || DEFAULT_USER_ID) !== ownerId) return { outcome: 'not_found' };
+    if (!data.batchId) return { outcome: 'not_batch_item' };
+
+    const status = normalizeQueueStatus(data.status);
+    if (!['pending', 'scheduled'].includes(status)) {
+      return { outcome: 'not_preparable', post: postFromDoc(snap) };
+    }
+
+    const preparation = data.preparation && typeof data.preparation === 'object' ? data.preparation : {};
+    const prepStatus = String(preparation.status || 'pending');
+    const attempts = Number(preparation.attempts || 0);
+    if (prepStatus === 'succeeded') return { outcome: 'already_succeeded', post: postFromDoc(snap) };
+    if (prepStatus === 'running') {
+      const leaseAtMs = preparation.leaseAt && typeof preparation.leaseAt.toDate === 'function'
+        ? preparation.leaseAt.toDate().getTime()
+        : 0;
+      if (leaseAtMs && Date.now() - leaseAtMs < leaseMs) {
+        return { outcome: 'in_progress', post: postFromDoc(snap) };
+      }
+      // Stale lease: the previous runner died mid-preparation. Reclaim.
+    }
+    if (attempts >= maxAttempts) {
+      return { outcome: 'attempts_exhausted', post: postFromDoc(snap) };
+    }
+
+    tx.update(ref, {
+      preparation: {
+        ...preparation,
+        status: 'running',
+        attempts: attempts + 1,
+        leaseAt: Timestamp.now(),
+        error: ''
+      },
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    return { outcome: 'claimed', post: postFromDoc(snap), attempt: attempts + 1 };
+  });
+}
+
+async function recordBatchItemPreparationResult(userId, postId, result = {}) {
+  const ownerId = userId || DEFAULT_USER_ID;
+  const ref = postsCollection().doc(String(postId || ''));
+
+  return getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const data = snap.data() || {};
+    if ((data.userId || DEFAULT_USER_ID) !== ownerId) return null;
+    const preparation = data.preparation && typeof data.preparation === 'object' ? data.preparation : {};
+    if (String(preparation.status || '') !== 'running') return null;
+
+    const patch = { updatedAt: FieldValue.serverTimestamp() };
+    if (result.ok) {
+      // Preparation fills text only where the operator has not already
+      // written something — human edits always win over generated copy.
+      const caption = String(result.caption || '').trim();
+      const hashtags = String(result.hashtags || '').trim();
+      if (caption && !String(data.caption || '').trim()) patch.caption = caption;
+      if (hashtags && !String(data.hashtags || '').trim()) patch.hashtags = hashtags;
+      patch.preparation = {
+        ...preparation,
+        status: 'succeeded',
+        leaseAt: null,
+        finishedAt: Timestamp.now(),
+        provider: String(result.provider || '').slice(0, 40),
+        fallbackUsed: Boolean(result.fallbackUsed),
+        error: ''
+      };
+      patch.history = appendHistoryEntry(
+        data.history,
+        'prepared',
+        result.fallbackUsed
+          ? 'Caption and hashtags generated with the local fallback (no AI provider reachable). Review before accepting.'
+          : `Caption and hashtags generated by ${result.provider || 'the AI provider'}. Review before accepting.`
+      );
+    } else {
+      patch.preparation = {
+        ...preparation,
+        status: 'failed',
+        leaseAt: null,
+        finishedAt: Timestamp.now(),
+        error: String(result.error || 'Preparation failed.').slice(0, 500)
+      };
+      patch.history = appendHistoryEntry(
+        data.history,
+        'preparation_failed',
+        String(result.error || 'Preparation failed.').slice(0, 300)
+      );
+    }
+    tx.update(ref, patch);
+    return { ok: Boolean(result.ok) };
+  });
+}
+
 async function reschedulePendingQueue(userId, accountId, workspaceScope) {
   const ownerId = userId || DEFAULT_USER_ID;
   const posts = await getPosts(ownerId, accountId, workspaceScope);
@@ -2789,6 +3063,14 @@ module.exports = {
   movePost,
   autoSchedulePosts,
   applyExplicitSchedule,
+  applyStaggeredSchedule,
+  createBatchRecord,
+  getBatchRecord,
+  listBatchRecords,
+  updateBatchRecord,
+  getBatchPosts,
+  claimBatchItemPreparation,
+  recordBatchItemPreparationResult,
   reschedulePendingQueue,
   getCounts,
   DEFAULT_USER_ID

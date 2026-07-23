@@ -227,9 +227,75 @@ function computeDailySchedulePlan(options = {}) {
   };
 }
 
+/**
+ * Build a per-item staggered release plan on ONE publishing channel: item i
+ * releases at baseAt + i * staggerMinutes. Used by the Platform batch intake
+ * so a large upload never fires every item at the same instant. Pure and
+ * side-effect-free like the other planners; the server is authoritative.
+ */
+function computeBatchStaggerPlan(options = {}) {
+  const channelResult = normalizeChannels(options.channels);
+  if (!channelResult.ok) return channelResult;
+  if (channelResult.channels.length !== 1) {
+    return { ok: false, reason: 'A staggered batch targets exactly one publishing channel.' };
+  }
+
+  const combined = combineDateAndTime(options.startDate, options.startTime);
+  if (!combined) {
+    return { ok: false, reason: 'Set a batch start date and start time.' };
+  }
+  const baseAt = parseDateTimeInZone(combined, options.timezoneName, options.timezoneOffsetMinutes);
+  if (!baseAt) {
+    return { ok: false, reason: 'The batch start date/time could not be parsed.' };
+  }
+
+  const sourceCount = normalizeSourceCount(options.sourceCount);
+  if (sourceCount === null) {
+    return { ok: false, reason: `A batch can contain between 1 and ${MAX_SOURCE_COUNT} videos.` };
+  }
+
+  const staggerMinutes = options.staggerMinutes === undefined || options.staggerMinutes === null || options.staggerMinutes === ''
+    ? DEFAULT_BATCH_STAGGER_MINUTES
+    : Number(options.staggerMinutes);
+  if (
+    !Number.isFinite(staggerMinutes)
+    || staggerMinutes < 1
+    || staggerMinutes > MAX_OFFSET_MINUTES
+  ) {
+    return { ok: false, reason: `The stagger interval must be between 1 and ${MAX_OFFSET_MINUTES} minutes.` };
+  }
+
+  const channel = channelResult.channels[0];
+  const baseMillis = new Date(baseAt).getTime();
+  const slots = [];
+  for (let index = 0; index < sourceCount; index += 1) {
+    slots.push({
+      index,
+      offsetMinutes: index * staggerMinutes,
+      scheduledAt: new Date(baseMillis + index * staggerMinutes * 60000).toISOString()
+    });
+  }
+
+  return {
+    ok: true,
+    baseAt,
+    timezone: normalizeTimeZoneName(options.timezoneName),
+    staggerMinutes,
+    sourceCount,
+    jobCount: sourceCount,
+    accountId: channel.accountId,
+    slots,
+    summary: `This batch will schedule ${sourceCount} ${sourceCount === 1 ? 'video' : 'videos'} ${staggerMinutes} minutes apart on one channel.`
+  };
+}
+
+const DEFAULT_BATCH_STAGGER_MINUTES = 30;
+
 module.exports = {
   computeMaxSchedulePlan,
   computeDailySchedulePlan,
+  computeBatchStaggerPlan,
+  DEFAULT_BATCH_STAGGER_MINUTES,
   DEFAULT_OFFSET_MINUTES,
   MAX_OFFSET_MINUTES,
   MAX_DAILY_OCCURRENCES,
