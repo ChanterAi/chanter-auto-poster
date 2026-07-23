@@ -8,6 +8,10 @@ const express = require('express');
 const { createHash, timingSafeEqual } = require('crypto');
 const config = require('./config');
 const applicationService = require('./autoposterApplicationService');
+// Evolution mission runtime.connected-health: injectable Firestore-mode reader
+// (model-authored logic) + redaction boundary (existing runtime contract).
+const { readConnectedHealth } = require('./runtimeConnectedHealth');
+const { redactRuntimeValue } = require('./runtime/runtimeRedaction');
 const { normalizeQueueStatus, sanitizeHistory, sanitizePostResult } = require('./postsMapper');
 const { safeDiagnosticText, sanitizeProviderMaterial } = require('./forbiddenMaterial');
 
@@ -393,6 +397,30 @@ router.post('/schedule', applicationRoute(async (req, res) => {
     duplicate: result.duplicate,
     post: postStatusView(result.post)
   });
+}));
+
+// Cheap, bounded, read-only connected-health truth signal (evolution mission
+// runtime.connected-health). Token-gated like every route on this router; the
+// entire payload passes through runtime redaction so no secret can escape.
+router.get('/connected-health', asyncRoute(async (req, res) => {
+  const firestoreModule = require('./firestore');
+  let configured = false;
+  try { firestoreModule.validateFirebaseConfig(); configured = true; } catch { configured = false; }
+  const health = await readConnectedHealth({
+    getFirestore: firestoreModule.getFirestore,
+    configured,
+    emulatorHost: process.env.FIRESTORE_EMULATOR_HOST || '',
+    timeoutMs: 2500
+  });
+  const payload = redactRuntimeValue({
+    ok: Boolean(health && health.ok),
+    runtime: { configured: Boolean(config.runtimeControl.token), reachable: true },
+    storage: (health && health.storage) || { provider: 'firestore', mode: 'unknown', reachable: null },
+    publishing: { enabled: false },
+    scheduler: { mode: 'external_cron', lastTickAt: null, healthy: null },
+    observedAt: (health && health.observedAt) || new Date().toISOString()
+  });
+  res.json(payload);
 }));
 
 module.exports = router;
