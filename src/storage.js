@@ -1452,7 +1452,8 @@ async function addUploadedPosts(userId, files, defaults = {}) {
     // creates multiple queue records that share that one asset; deletePost
     // reference-checks before destroying it.
     for (const target of targetAccounts) {
-    for (const file of sources) {
+    for (let sourceIdx = 0; sourceIdx < sources.length; sourceIdx += 1) {
+      const file = sources[sourceIdx];
       const mediaType = file ? getUploadMediaType(file) : getPublicMediaType(fallbackUrl);
       const fileName = file ? getStoredFileName(file) : getPublicMediaName(fallbackUrl);
       const preparedMedia = file && defaults.preparedMedia
@@ -1646,6 +1647,11 @@ async function addUploadedPosts(userId, files, defaults = {}) {
           // it transactionally. Non-batch intakes keep the legacy nulls.
           batchId: String(defaults.batchId || '').trim(),
           batchOrder: defaults.batchId ? created.length : null,
+          // Source-video lineage for multi-account fan-out: every destination
+          // copy of the same uploaded video (same position in `sources`)
+          // shares this index, independent of which target account created
+          // it, so a synchronized schedule/grouping can find its siblings.
+          sourceIndex: defaults.batchId ? sourceIdx : null,
           preparation: defaults.batchId
             ? { status: 'pending', attempts: 0, leaseAt: null, finishedAt: null, provider: '', fallbackUsed: false, error: '' }
             : null
@@ -2627,6 +2633,45 @@ async function applyStaggeredSchedule(userId, posts, plan, workspaceScope) {
   return count;
 }
 
+/**
+ * Apply a channel-agnostic per-source-video plan (maxScheduler.computeBatch
+ * SchedulePlan) to freshly created posts. Unlike applyStaggeredSchedule
+ * (strict 1:1 by array position, one channel), this maps MANY posts sharing
+ * the same sourceIndex onto the SAME slot — every destination copy of one
+ * source video keeps the same synchronized release time by default, with no
+ * per-account offset. Posts stay unapproved drafts; nothing publishes here.
+ */
+async function applyBatchSourceSchedule(userId, posts, plan, workspaceScope) {
+  const slotsByIndex = new Map(
+    (plan && Array.isArray(plan.slots) ? plan.slots : []).map((slot) => [slot.index, slot])
+  );
+  const items = Array.isArray(posts) ? posts : [];
+  const db = getFirestore();
+  const batch = db.batch();
+  let count = 0;
+
+  for (const post of items) {
+    const slot = slotsByIndex.get(post.sourceIndex);
+    if (!slot) {
+      const error = new Error(`No schedule slot found for source video index ${post.sourceIndex}.`);
+      error.status = 500;
+      throw error;
+    }
+    batch.update(postsCollection().doc(post.id), {
+      scheduledAt: Timestamp.fromDate(new Date(slot.scheduledAt)),
+      campaignStartAt: Timestamp.fromDate(new Date(plan.baseAt || slot.scheduledAt)),
+      channelOffsetMinutes: 0,
+      channelOrder: 0,
+      status: 'scheduled',
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    count += 1;
+  }
+
+  if (count > 0) await batch.commit();
+  return count;
+}
+
 // ── Platform batch records ─────────────────────────────────────────────────
 // One postBatches document per batch intake. Items remain ordinary posts
 // (the durable truth); the record carries batch-level lifecycle and a
@@ -2646,6 +2691,22 @@ function batchRecordFromDoc(doc) {
     preparedCount: Number(data.preparedCount || 0),
     failedCount: Number(data.failedCount || 0),
     acceptedCount: Number(data.acceptedCount || 0),
+    // Deleted items are removed from itemCount's live-truth recount (see
+    // refreshBatchRecord/getBatchPosts); deletedCount is the only durable
+    // tally of how many were ever removed, atomically incremented so
+    // concurrent per-item and whole-batch deletes never lose an update.
+    deletedCount: Number(data.deletedCount || 0),
+    // Fan-out lineage (V1.2): videoCount is N (source videos uploaded),
+    // destinationCount is M (selected accounts); itemCount is the live
+    // N x M canonical post total. Both default to itemCount/1 for batches
+    // created before this field existed (single-destination V1/V1.1 shape).
+    videoCount: Number.isInteger(Number(data.videoCount)) && Number(data.videoCount) > 0
+      ? Number(data.videoCount)
+      : Number(data.itemCount || 0),
+    destinationCount: Number.isInteger(Number(data.destinationCount)) && Number(data.destinationCount) > 0
+      ? Number(data.destinationCount)
+      : 1,
+    scheduleMode: String(data.scheduleMode || 'interval').trim(),
     staggerMinutes: Number(data.staggerMinutes || 0),
     baseAt: data.baseAt && typeof data.baseAt.toDate === 'function' ? data.baseAt.toDate().toISOString() : null,
     timezoneName: String(data.timezoneName || '').trim(),
@@ -2684,6 +2745,10 @@ async function createBatchRecord(record) {
     preparedCount: 0,
     failedCount: 0,
     acceptedCount: 0,
+    deletedCount: 0,
+    videoCount: Number(record.videoCount || record.itemCount || 0),
+    destinationCount: Math.max(1, Number(record.destinationCount || 1)),
+    scheduleMode: String(record.scheduleMode || 'interval').trim(),
     staggerMinutes: Number(record.staggerMinutes || 0),
     baseAt: toTimestampOrNull(record.baseAt),
     timezoneName: String(record.timezoneName || '').trim(),
@@ -2744,6 +2809,33 @@ async function getBatchPosts(userId, batchId, workspaceScope) {
     .map(postFromDoc)
     .filter((post) => recordMatchesWorkspace({ userId: post.userId, workspaceId: post.workspaceId }, ownerId, workspaceScope))
     .sort((a, b) => (a.batchOrder ?? 0) - (b.batchOrder ?? 0));
+}
+
+// Monotonic tally of how many items were ever removed from this batch.
+// Atomic FieldValue.increment so concurrent per-item and whole-batch delete
+// calls can never lose an update (unlike the recomputed-from-truth counters
+// in updateBatchRecord, deletion history cannot be re-derived by re-querying
+// live posts once they are gone).
+async function incrementBatchDeletedCount(userId, batchId, delta, workspaceScope) {
+  const existing = await getBatchRecord(userId, batchId, workspaceScope);
+  if (!existing || !Number.isInteger(delta) || delta <= 0) return existing;
+  await postBatchesCollection().doc(existing.batchId).update({
+    deletedCount: FieldValue.increment(delta),
+    updatedAt: FieldValue.serverTimestamp()
+  });
+  const snapshot = await postBatchesCollection().doc(existing.batchId).get();
+  return batchRecordFromDoc(snapshot);
+}
+
+// Full cleanup: physically removes the postBatches document. Callers must
+// only invoke this once every child post has been reconciled (deleted or
+// otherwise resolved) — this function does not check child state itself, so
+// batchService is responsible for proving zero residue before calling it.
+async function deleteBatchRecord(userId, batchId, workspaceScope) {
+  const existing = await getBatchRecord(userId, batchId, workspaceScope);
+  if (!existing) return false;
+  await postBatchesCollection().doc(existing.batchId).delete();
+  return true;
 }
 
 // ── Destination custody ────────────────────────────────────────────────────
@@ -3136,11 +3228,14 @@ module.exports = {
   autoSchedulePosts,
   applyExplicitSchedule,
   applyStaggeredSchedule,
+  applyBatchSourceSchedule,
   changePostDestination,
   createBatchRecord,
   getBatchRecord,
   listBatchRecords,
   updateBatchRecord,
+  incrementBatchDeletedCount,
+  deleteBatchRecord,
   getBatchPosts,
   claimBatchItemPreparation,
   recordBatchItemPreparationResult,

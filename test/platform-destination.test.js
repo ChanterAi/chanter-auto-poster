@@ -420,6 +420,7 @@ function makeWorld({ nowMs = BASE_NOW } = {}) {
             updatedAt: { toDate: () => new Date(now) },
             batchId: defaults.batchId || '',
             batchOrder: defaults.batchId ? index : null,
+            sourceIndex: defaults.batchId ? index : null,
             preparation: defaults.batchId
               ? { status: 'pending', attempts: 0, leaseAt: null, finishedAt: null, provider: '', fallbackUsed: false, error: '' }
               : null
@@ -437,6 +438,21 @@ function makeWorld({ nowMs = BASE_NOW } = {}) {
         stored.status = 'scheduled';
       });
       return created.length;
+    },
+    async applyBatchSourceSchedule(userId, created, plan) {
+      const slotsByIndex = new Map((plan.slots || []).map((slot) => [slot.index, slot]));
+      let count = 0;
+      created.forEach((created_post) => {
+        const stored = posts.find((post) => post.id === created_post.id);
+        const slot = slotsByIndex.get(stored.sourceIndex);
+        if (!slot) throw new Error(`No schedule slot found for source video index ${stored.sourceIndex}.`);
+        stored.scheduledAt = slot.scheduledAt;
+        stored.status = 'scheduled';
+        stored.channelOffsetMinutes = 0;
+        stored.campaignStartAt = plan.baseAt || slot.scheduledAt;
+        count += 1;
+      });
+      return count;
     },
     async updatePost(userId, id, patch, accountId, historyEvent) {
       const post = posts.find((item) => item.id === id && (!accountId || item.accountId === accountId));
@@ -514,6 +530,19 @@ function makeWorld({ nowMs = BASE_NOW } = {}) {
       Object.assign(record, patch, { updatedAt: new Date(now).toISOString() });
       return { ...record };
     },
+    async incrementBatchDeletedCount(userId, batchId, delta) {
+      const record = batchRecords.get(batchId);
+      if (!record || record.userId !== userId || !Number.isInteger(delta) || delta <= 0) return record ? { ...record } : null;
+      record.deletedCount = Number(record.deletedCount || 0) + delta;
+      record.updatedAt = new Date(now).toISOString();
+      return { ...record };
+    },
+    async deleteBatchRecord(userId, batchId) {
+      const record = batchRecords.get(batchId);
+      if (!record || record.userId !== userId) return false;
+      batchRecords.delete(batchId);
+      return true;
+    },
     async getBatchPosts(userId, batchId) {
       return posts
         .filter((post) => post.userId === userId && post.batchId === batchId)
@@ -577,8 +606,8 @@ function approverContext() {
 }
 
 const INTAKE = {
-  provider: 'tiktok',
-  accountId: 'account-a',
+  destinations: [{ provider: 'tiktok', accountId: 'account-a' }],
+  scheduleMode: 'interval',
   startDate: '2026-07-11',
   startTime: '09:00',
   timezoneOffsetMinutes: 0,

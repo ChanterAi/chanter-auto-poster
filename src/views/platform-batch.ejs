@@ -26,8 +26,8 @@
     <h1 class="page-title">Έλεγχος παρτίδας</h1>
     <p class="page-subtitle">
       Ελέγξτε κάθε βίντεο, διορθώστε ό,τι χρειάζεται και εγκρίνετε.
-      Οι εγκεκριμένες δημοσιεύσεις προγραμματίζονται κλιμακωτά — ποτέ άμεσα.
-      &middot; Review each video, edit freely, then accept. Accepted items are scheduled with safe staggered timing — never immediately.
+      Οι εγκεκριμένες δημοσιεύσεις προγραμματίζονται με ασφάλεια — ποτέ άμεσα.
+      &middot; Review each video, edit freely, then accept. Accepted items are scheduled safely — never immediately.
     </p>
 
     <div id="notice" class="notice hidden"></div>
@@ -40,6 +40,9 @@
         <button id="accept-all-btn" class="btn btn-primary" disabled>Αποδοχή όλων</button>
         <button id="resume-btn" class="btn hidden">Συνέχιση προετοιμασίας</button>
         <button id="refresh-btn" class="btn btn-quiet">Ανανέωση</button>
+      </div>
+      <div class="danger-zone">
+        <button id="delete-batch-btn" class="btn btn-danger">Διαγραφή παρτίδας</button>
       </div>
     </div>
 
@@ -136,20 +139,51 @@
         });
       }
 
+      // ── Grouping (read model only — canonical truth stays the flat item list) ──
+      // Destination copies of the same source video share `sourceIndex`. A
+      // classic single-destination batch has one member per group, so it
+      // renders through the exact same flat item list as before this change.
+      function groupItems(items) {
+        var byKey = {};
+        var groups = [];
+        items.forEach(function (item) {
+          var key = (item.sourceIndex === null || item.sourceIndex === undefined) ? ('item:' + item.id) : ('src:' + item.sourceIndex);
+          if (!byKey[key]) {
+            byKey[key] = { key: key, sourceIndex: item.sourceIndex, members: [] };
+            groups.push(byKey[key]);
+          }
+          byKey[key].members.push(item);
+        });
+        groups.forEach(function (group) {
+          group.members.sort(function (a, b) { return (a.batchOrder || 0) - (b.batchOrder || 0); });
+        });
+        groups.sort(function (a, b) {
+          var aIdx = (a.sourceIndex === null || a.sourceIndex === undefined) ? Infinity : a.sourceIndex;
+          var bIdx = (b.sourceIndex === null || b.sourceIndex === undefined) ? Infinity : b.sourceIndex;
+          if (aIdx !== bIdx) return aIdx - bIdx;
+          return (a.members[0].batchOrder || 0) - (b.members[0].batchOrder || 0);
+        });
+        return groups;
+      }
+
       // ── Rendering ──
 
       function renderSummary(view) {
         var batch = view.batch;
         var counts = batch.counts || {};
         var summary = document.getElementById('batch-summary');
+        var fanOut = Number(batch.destinationCount || 1) > 1;
         summary.innerHTML =
-          '<span class="stat">Κανάλι: <strong>' + (batch.accountLabel || batch.accountId) + '</strong></span>' +
-          '<span class="stat">Βίντεο: <strong>' + (counts.total || 0) + '</strong></span>' +
+          (fanOut
+            ? '<span class="stat">Βίντεο: <strong>' + (batch.videoCount || 0) + '</strong></span>' +
+              '<span class="stat">Προορισμοί: <strong>' + (batch.destinationCount || 1) + '</strong></span>'
+            : '<span class="stat">Κανάλι: <strong>' + (batch.accountLabel || batch.accountId) + '</strong></span>') +
+          '<span class="stat">Εγγραφές: <strong>' + (counts.total || 0) + '</strong></span>' +
           '<span class="stat">Έτοιμα: <strong>' + (counts.ready || 0) + '</strong></span>' +
           '<span class="stat">Σε προετοιμασία: <strong>' + (counts.preparing || 0) + '</strong></span>' +
           '<span class="stat">Προσοχή: <strong>' + (counts.needsAttention || 0) + '</strong></span>' +
           '<span class="stat">Εγκεκριμένα: <strong>' + (counts.accepted || 0) + '</strong></span>' +
-          '<span class="stat">Κλιμάκωση: <strong>κάθε ' + batch.staggerMinutes + ' λεπτά</strong></span>' +
+          (batch.deletedCount > 0 ? '<span class="stat">Διαγράφηκαν: <strong>' + batch.deletedCount + '</strong></span>' : '') +
           chip(BATCH_STATES, batch.status);
 
         var acceptable = view.items.filter(function (item) { return item.readyToAccept; }).length;
@@ -164,11 +198,7 @@
         resume.classList.toggle('hidden', !(batch.status === 'preparing' || hasFailedPrep));
       }
 
-      function itemCard(item, index) {
-        var card = document.createElement('div');
-        card.className = 'item-card' + (item.approved ? ' accepted' : '');
-        card.dataset.postId = item.id;
-
+      function itemFieldsHtml(item) {
         var problems = (item.validationProblems || [])
           .map(function (problem) { return PROBLEM_LABELS[problem] || ''; })
           .filter(Boolean);
@@ -200,46 +230,58 @@
           ? item.providerMetadata.youtube.title
           : '';
 
-        card.innerHTML =
-          '<div class="item-media">' +
-            (item.mediaUrl
-              ? '<video src="' + item.mediaUrl + '" controls preload="metadata" muted></video>'
-              : '<div class="item-error">Χωρίς πολυμέσα</div>') +
-            '<div class="item-file">' + (item.originalName || item.fileName || '') + '</div>' +
+        return (item.duplicateWarning ? '<div class="item-warning">' + item.duplicateWarning + '</div>' : '') +
+          (prepError ? '<div class="item-error">Η προετοιμασία απέτυχε: ' + prepError + '</div>' : '') +
+          (problems.length > 0 ? '<div class="item-warning">' + problems.join('<br>') + '</div>' : '') +
+          (prepNote ? '<div class="item-note">' + prepNote + '</div>' : '') +
+          (item.approved
+            ? ''
+            : '<div>' +
+                '<label class="field-label">Προορισμός &middot; Destination</label>' +
+                '<select class="field-destination">' + destinationOptions + '</select>' +
+              '</div>') +
+          '<div class="youtube-title-wrap' + (item.provider === 'youtube' ? '' : ' hidden') + '">' +
+            '<label class="field-label">Τίτλος YouTube (υποχρεωτικός, έως 100 χαρακτήρες) &middot; YouTube title</label>' +
+            '<input type="text" class="field-youtube-title" maxlength="100" value="' + escapeAttr(youtubeTitle) + '">' +
           '</div>' +
           '<div>' +
+            '<label class="field-label">Λεζάντα &middot; Caption</label>' +
+            '<textarea class="field-caption">' + escapeHtml(item.caption || '') + '</textarea>' +
+          '</div>' +
+          '<div>' +
+            '<label class="field-label">Hashtags</label>' +
+            '<input type="text" class="field-hashtags" value="' + escapeAttr(item.hashtags || '') + '">' +
+          '</div>' +
+          '<div>' +
+            '<label class="field-label">Ώρα δημοσίευσης &middot; Release time</label>' +
+            '<input type="datetime-local" class="field-schedule" value="' + isoToLocalInput(item.scheduledAt) + '">' +
+          '</div>';
+      }
+
+      function itemCard(item, options) {
+        options = options || {};
+        var card = document.createElement('div');
+        card.className = 'item-card' + (item.approved ? ' accepted' : '') + (options.showMedia === false ? ' no-media' : '');
+        card.dataset.postId = item.id;
+
+        var headLabel = options.numberLabel
+          ? options.numberLabel + ' &middot; ' + escapeHtml(PROVIDER_LABELS[item.provider] || item.provider) + ' — ' + escapeHtml(item.username ? '@' + item.username : item.accountId)
+          : escapeHtml(PROVIDER_LABELS[item.provider] || item.provider) + ' — ' + escapeHtml(item.username ? '@' + item.username : item.accountId);
+
+        card.innerHTML =
+          (options.showMedia === false ? '' :
+            '<div class="item-media">' +
+              (item.mediaUrl
+                ? '<video src="' + item.mediaUrl + '" controls preload="metadata" muted></video>'
+                : '<div class="item-error">Χωρίς πολυμέσα</div>') +
+              '<div class="item-file">' + (item.originalName || item.fileName || '') + '</div>' +
+            '</div>') +
+          '<div>' +
             '<div class="item-head">' +
-              '<span class="item-order">#' + (index + 1) + ' &middot; ' + escapeHtml(PROVIDER_LABELS[item.provider] || item.provider) + ' — ' + escapeHtml(item.username ? '@' + item.username : item.accountId) + '</span>' +
+              '<span class="item-order">' + headLabel + '</span>' +
               chip(ITEM_STATES, item.itemState) +
             '</div>' +
-            '<div class="item-fields">' +
-              (item.duplicateWarning ? '<div class="item-warning">' + item.duplicateWarning + '</div>' : '') +
-              (prepError ? '<div class="item-error">Η προετοιμασία απέτυχε: ' + prepError + '</div>' : '') +
-              (problems.length > 0 ? '<div class="item-warning">' + problems.join('<br>') + '</div>' : '') +
-              (prepNote ? '<div class="item-note">' + prepNote + '</div>' : '') +
-              (item.approved
-                ? ''
-                : '<div>' +
-                    '<label class="field-label">Προορισμός &middot; Destination</label>' +
-                    '<select class="field-destination">' + destinationOptions + '</select>' +
-                  '</div>') +
-              '<div class="youtube-title-wrap' + (item.provider === 'youtube' ? '' : ' hidden') + '">' +
-                '<label class="field-label">Τίτλος YouTube (υποχρεωτικός, έως 100 χαρακτήρες) &middot; YouTube title</label>' +
-                '<input type="text" class="field-youtube-title" maxlength="100" value="' + escapeAttr(youtubeTitle) + '">' +
-              '</div>' +
-              '<div>' +
-                '<label class="field-label">Λεζάντα &middot; Caption</label>' +
-                '<textarea class="field-caption" ' + (item.approved ? '' : '') + '>' + escapeHtml(item.caption || '') + '</textarea>' +
-              '</div>' +
-              '<div>' +
-                '<label class="field-label">Hashtags</label>' +
-                '<input type="text" class="field-hashtags" value="' + escapeAttr(item.hashtags || '') + '">' +
-              '</div>' +
-              '<div>' +
-                '<label class="field-label">Ώρα δημοσίευσης &middot; Release time</label>' +
-                '<input type="datetime-local" class="field-schedule" value="' + isoToLocalInput(item.scheduledAt) + '">' +
-              '</div>' +
-            '</div>' +
+            '<div class="item-fields">' + itemFieldsHtml(item) + '</div>' +
             '<div class="item-footer">' +
               '<span class="item-scheduled">' +
                 (item.approved
@@ -251,6 +293,9 @@
                 (item.approved
                   ? ''
                   : '<button class="btn btn-primary accept-btn"' + (item.readyToAccept ? '' : ' disabled') + '>Αποδοχή</button>') +
+                (item.approved
+                  ? ''
+                  : '<button class="btn btn-danger delete-btn">Διαγραφή</button>') +
               '</div>' +
             '</div>' +
           '</div>';
@@ -371,20 +416,108 @@
             });
           });
         }
+
+        var deleteBtn = card.querySelector('.delete-btn');
+        if (deleteBtn) {
+          deleteBtn.addEventListener('click', function () {
+            var confirmed = window.confirm(
+              'Διαγραφή αυτού του βίντεο από την παρτίδα; Η ενέργεια δεν αναιρείται.\n\n' +
+              'Delete this video from the batch? This cannot be undone.'
+            );
+            if (!confirmed) return;
+            deleteBtn.disabled = true;
+            api('/items/' + encodeURIComponent(item.id) + '/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: '{}'
+            }).then(function (payload) {
+              if (payload.ok) {
+                delete dirtyItems[item.id];
+                showNotice('Το βίντεο διαγράφηκε.', 'ok');
+              } else {
+                deleteBtn.disabled = false;
+                showNotice(payload.reason || 'Η διαγραφή απέτυχε.', 'error');
+              }
+              loadBatch();
+            }).catch(function () {
+              deleteBtn.disabled = false;
+              showNotice('Η διαγραφή απέτυχε — ελέγξτε τη σύνδεση.', 'error');
+            });
+          });
+        }
       }
 
       function renderItems(view) {
         var container = document.getElementById('items');
         var focused = document.activeElement;
         var focusedCard = focused && focused.closest ? focused.closest('.item-card') : null;
+        var seenPostIds = {};
 
-        view.items.forEach(function (item, index) {
-          var existing = container.querySelector('.item-card[data-post-id="' + item.id + '"]');
-          // Never clobber a card the operator is editing or has unsaved edits in.
-          if (existing && (dirtyItems[item.id] || existing === focusedCard)) return;
-          var fresh = itemCard(item, index);
-          if (existing) container.replaceChild(fresh, existing);
-          else container.appendChild(fresh);
+        var groups = groupItems(view.items);
+        var fanOut = groups.some(function (group) { return group.members.length > 1; });
+
+        if (!fanOut) {
+          // Single-destination batch: render exactly the flat list this page
+          // has always used, unchanged.
+          view.items.forEach(function (item, index) {
+            seenPostIds[item.id] = true;
+            var existing = container.querySelector('.item-card[data-post-id="' + item.id + '"]');
+            if (existing && (dirtyItems[item.id] || existing === focusedCard)) return;
+            var fresh = itemCard(item, { numberLabel: '#' + (index + 1), showMedia: true });
+            if (existing) container.replaceChild(fresh, existing);
+            else container.appendChild(fresh);
+          });
+          container.querySelectorAll('.video-group').forEach(function (group) { group.remove(); });
+        } else {
+          groups.forEach(function (group, groupIndex) {
+            var groupKey = 'group:' + group.key;
+            var groupEl = container.querySelector('[data-group-key="' + groupKey + '"]');
+            var isDirtyGroup = group.members.some(function (member) {
+              return dirtyItems[member.id] || (focusedCard && focusedCard.dataset.postId === member.id);
+            });
+            if (groupEl && isDirtyGroup) {
+              group.members.forEach(function (member) { seenPostIds[member.id] = true; });
+              return;
+            }
+
+            var freshGroup = document.createElement('div');
+            freshGroup.className = 'video-group';
+            freshGroup.dataset.groupKey = groupKey;
+            var head = document.createElement('div');
+            head.className = 'video-group-head';
+            var first = group.members[0];
+            head.innerHTML = '<span class="video-group-title">Βίντεο #' + (groupIndex + 1) +
+              (first.originalName ? ' &middot; ' + escapeHtml(first.originalName) : '') +
+              ' &middot; ' + group.members.length + ' ' + (group.members.length === 1 ? 'προορισμός' : 'προορισμοί') + '</span>';
+            freshGroup.appendChild(head);
+
+            if (first.mediaUrl) {
+              var mediaWrap = document.createElement('div');
+              mediaWrap.className = 'video-group-media';
+              mediaWrap.innerHTML = '<video src="' + first.mediaUrl + '" controls preload="metadata" muted></video>';
+              freshGroup.appendChild(mediaWrap);
+            }
+
+            group.members.forEach(function (item) {
+              seenPostIds[item.id] = true;
+              freshGroup.appendChild(itemCard(item, { numberLabel: null, showMedia: false }));
+            });
+
+            if (groupEl) container.replaceChild(freshGroup, groupEl);
+            else container.appendChild(freshGroup);
+          });
+          container.querySelectorAll('.item-card').forEach(function (card) {
+            if (!card.closest('.video-group')) card.remove();
+          });
+        }
+
+        // Drop cards/groups for items that no longer exist (deleted).
+        container.querySelectorAll('.item-card[data-post-id]').forEach(function (card) {
+          if (!seenPostIds[card.dataset.postId]) {
+            var group = card.closest('.video-group');
+            if (group && group.querySelectorAll('.item-card').length === 1) group.remove();
+            else card.remove();
+          }
         });
       }
 
@@ -443,7 +576,7 @@
             if (payload.failed.length > 3) blockedDetail += ' (+' + (payload.failed.length - 3) + ' ακόμη)';
           }
           if (payload.accepted && payload.accepted.length > 0) {
-            var message = 'Εγκρίθηκαν ' + payload.accepted.length + ' βίντεο με κλιμακωτό προγραμματισμό.';
+            var message = 'Εγκρίθηκαν ' + payload.accepted.length + ' εγγραφές με ασφαλή προγραμματισμό.';
             if (payload.failed && payload.failed.length > 0) {
               message += ' Μπλοκαρισμένα: ' + payload.failed.length + '. ' + blockedDetail;
             }
@@ -455,6 +588,43 @@
         }).catch(function () {
           acceptAllBtn.disabled = false;
           showNotice('Η αποδοχή απέτυχε — ελέγξτε τη σύνδεση.', 'error');
+        });
+      });
+
+      document.getElementById('delete-batch-btn').addEventListener('click', function () {
+        if (!currentView) return;
+        var pendingCount = currentView.items.filter(function (item) { return !item.approved; }).length;
+        var approvedCount = currentView.items.length - pendingCount;
+        var message = 'Διαγραφή ολόκληρης της παρτίδας; Θα διαγραφούν ' + pendingCount + ' μη εγκεκριμένα στοιχεία.' +
+          (approvedCount > 0 ? ' ' + approvedCount + ' εγκεκριμένα στοιχεία θα διατηρηθούν.' : '') +
+          ' Η ενέργεια δεν αναιρείται.\n\n' +
+          'Delete the entire batch? This cannot be undone.';
+        if (!window.confirm(message)) return;
+
+        var deleteBatchBtn = document.getElementById('delete-batch-btn');
+        deleteBatchBtn.disabled = true;
+        api('/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        }).then(function (payload) {
+          var deletedCount = payload.deleted ? payload.deleted.length : 0;
+          var blockedCount = payload.blocked ? payload.blocked.length : 0;
+          var failedCount = payload.failed ? payload.failed.length : 0;
+          var summary = 'Διαγράφηκαν ' + deletedCount + ' στοιχεία.';
+          if (blockedCount > 0) summary += ' Μπλοκαρισμένα (εγκεκριμένα): ' + blockedCount + '.';
+          if (failedCount > 0) summary += ' Απέτυχαν: ' + failedCount + '.';
+          if (payload.batchClosed) {
+            showNotice(summary + ' Η παρτίδα έκλεισε.', 'ok');
+            setTimeout(function () { window.location.href = '/platform/autoposter'; }, 1200);
+            return;
+          }
+          deleteBatchBtn.disabled = false;
+          showNotice(summary, (blockedCount > 0 || failedCount > 0) ? 'error' : 'ok');
+          loadBatch();
+        }).catch(function () {
+          deleteBatchBtn.disabled = false;
+          showNotice('Η διαγραφή απέτυχε — ελέγξτε τη σύνδεση.', 'error');
         });
       });
 

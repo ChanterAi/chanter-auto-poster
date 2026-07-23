@@ -23,17 +23,17 @@
     <div class="breadcrumb"><a href="/platform">Πλατφόρμα</a> / AutoPoster</div>
     <h1 class="page-title">AutoPoster — Μαζική μεταφόρτωση</h1>
     <p class="page-subtitle">
-      Ανεβάστε πολλά βίντεο μαζί. Η πλατφόρμα προετοιμάζει λεζάντα και hashtags για κάθε βίντεο·
+      Ανεβάστε πολλά βίντεο μαζί σε έναν ή περισσότερους λογαριασμούς. Η πλατφόρμα προετοιμάζει λεζάντα και hashtags για κάθε βίντεο·
       εσείς ελέγχετε, διορθώνετε και εγκρίνετε πριν προγραμματιστεί οτιδήποτε.
-      &middot; Upload many videos at once; review and approve before anything is scheduled.
+      &middot; Upload many videos to one or more accounts; review and approve before anything is scheduled.
     </p>
 
     <div id="notice" class="notice hidden"></div>
 
-    <% if (accounts.length === 0) { %>
+    <% if (destinations.length === 0) { %>
       <div class="empty-state">
-        <div>Δεν υπάρχει συνδεδεμένο κανάλι TikTok.<br>Συνδέστε ένα κανάλι από την κλασική κονσόλα για να ξεκινήσετε.</div>
-        <div class="en">No connected TikTok channel. Connect one from the <a href="/private/autoposter">classic console</a> to begin.</div>
+        <div>Δεν υπάρχει συνδεδεμένος λογαριασμός έτοιμος για δημοσίευση.<br>Συνδέστε έναν λογαριασμό από την κλασική κονσόλα για να ξεκινήσετε.</div>
+        <div class="en">No connected, publishing-ready account. Connect one from the <a href="/private/autoposter">classic console</a> to begin.</div>
         <% if (accountsError) { %><div class="en"><%= accountsError %></div><% } %>
       </div>
     <% } else { %>
@@ -46,33 +46,91 @@
           </div>
           <ul id="file-list" class="file-list"></ul>
 
-          <div class="form-row cols-2">
-            <div>
-              <label class="field-label" for="accountId">Κανάλι δημοσίευσης &middot; Publishing channel</label>
-              <select id="accountId" name="accountId" required>
-                <% for (const account of accounts) { %>
-                  <option value="<%= account.accountId %>"><%= account.username ? '@' + account.username : account.accountId %></option>
-                <% } %>
-              </select>
+          <h3 class="section-title" style="margin-top:0">Προορισμοί &middot; Destinations</h3>
+          <p class="section-note">Επιλέξτε έναν ή περισσότερους συνδεδεμένους λογαριασμούς. Κάθε βίντεο θα δημιουργήσει ένα ξεχωριστό, ανεξάρτητο προσχέδιο για κάθε προορισμό.</p>
+          <div id="destination-list" class="destination-list">
+            <% for (const dest of destinations) { %>
+              <label class="destination-item">
+                <input type="checkbox" class="destination-checkbox" value="<%= dest.provider %>|<%= dest.accountId %>" data-provider="<%= dest.provider %>" data-account-id="<%= dest.accountId %>">
+                <span class="destination-provider"><%= dest.providerDisplayName || dest.provider %></span>
+                <span class="destination-label"><%= dest.label %></span>
+              </label>
+            <% } %>
+          </div>
+
+          <h3 class="section-title">Χρονοδιάγραμμα &middot; Scheduling</h3>
+          <div class="mode-tabs" id="mode-tabs">
+            <button type="button" class="mode-tab active" data-mode="interval">Σταθερό διάστημα</button>
+            <button type="button" class="mode-tab" data-mode="dateRange">Εύρος ημερομηνιών</button>
+            <button type="button" class="mode-tab" data-mode="dailySlots">Καθορισμένες ώρες</button>
+          </div>
+
+          <div class="mode-panel" data-mode-panel="interval">
+            <div class="form-row cols-2">
+              <div>
+                <label class="field-label" for="startDate">Ημερομηνία πρώτης δημοσίευσης &middot; First release date</label>
+                <input id="startDate" type="date" required>
+              </div>
+              <div>
+                <label class="field-label" for="startTime">Ώρα πρώτης δημοσίευσης &middot; First release time</label>
+                <input id="startTime" type="time" required>
+              </div>
             </div>
-            <div>
-              <label class="field-label" for="staggerMinutes">Απόσταση δημοσιεύσεων (λεπτά) &middot; Stagger (minutes)</label>
-              <input id="staggerMinutes" name="staggerMinutes" type="number"
-                     min="<%= batchDefaults.staggerMin %>" max="<%= batchDefaults.staggerMax %>"
-                     value="<%= batchDefaults.staggerMinutes %>" required>
+            <div class="form-row cols-2">
+              <div>
+                <label class="field-label" for="staggerMinutes">Απόσταση δημοσιεύσεων (λεπτά) &middot; Stagger (minutes)</label>
+                <input id="staggerMinutes" type="number"
+                       min="<%= batchDefaults.staggerMin %>" max="<%= batchDefaults.staggerMax %>"
+                       value="<%= batchDefaults.staggerMinutes %>">
+              </div>
+              <div></div>
             </div>
           </div>
 
-          <div class="form-row cols-2">
-            <div>
-              <label class="field-label" for="startDate">Ημερομηνία πρώτης δημοσίευσης &middot; First release date</label>
-              <input id="startDate" name="startDate" type="date" required>
+          <div class="mode-panel hidden" data-mode-panel="dateRange">
+            <div class="form-row cols-2">
+              <div>
+                <label class="field-label" for="firstDay">Πρώτη ημέρα &middot; First day</label>
+                <input id="firstDay" type="date">
+              </div>
+              <div>
+                <label class="field-label" for="lastDay">Τελευταία ημέρα &middot; Last day</label>
+                <input id="lastDay" type="date">
+              </div>
             </div>
-            <div>
-              <label class="field-label" for="startTime">Ώρα πρώτης δημοσίευσης &middot; First release time</label>
-              <input id="startTime" name="startTime" type="time" required>
+            <div class="form-row cols-3">
+              <div>
+                <label class="field-label" for="postsPerDay">Δημοσιεύσεις / ημέρα &middot; Posts per day</label>
+                <input id="postsPerDay" type="number" min="1" max="20" value="1">
+              </div>
+              <div>
+                <label class="field-label" for="dailyStartTime">Πρώτη ώρα ημέρας &middot; Daily start time</label>
+                <input id="dailyStartTime" type="time" value="10:00">
+              </div>
+              <div>
+                <label class="field-label" for="dailyEndTime">Τελευταία ώρα ημέρας (προαιρετικό) &middot; Daily end time (optional)</label>
+                <input id="dailyEndTime" type="time">
+              </div>
             </div>
           </div>
+
+          <div class="mode-panel hidden" data-mode-panel="dailySlots">
+            <div class="form-row cols-2">
+              <div>
+                <label class="field-label" for="slotsFirstDay">Πρώτη ημέρα &middot; First day</label>
+                <input id="slotsFirstDay" type="date">
+              </div>
+              <div>
+                <label class="field-label" for="slotsLastDay">Τελευταία ημέρα &middot; Last day</label>
+                <input id="slotsLastDay" type="date">
+              </div>
+            </div>
+            <label class="field-label">Καθημερινές ώρες δημοσίευσης &middot; Daily posting slots</label>
+            <div id="daily-slot-list" class="slot-list"></div>
+            <button type="button" id="add-slot-btn" class="btn btn-quiet">+ Προσθήκη ώρας &middot; Add time</button>
+          </div>
+
+          <div id="capacity-preview" class="capacity-preview"></div>
 
           <button id="submit-btn" type="submit" class="btn btn-primary" disabled>
             Δημιουργία παρτίδας
@@ -132,10 +190,13 @@
               row.className = 'batch-row';
               row.href = '/platform/autoposter/batches/' + encodeURIComponent(batch.batchId);
               var when = batch.createdAt ? new Date(batch.createdAt).toLocaleString('el-GR') : '';
+              var destLabel = batch.destinationCount > 1
+                ? (batch.videoCount + ' βίντεο × ' + batch.destinationCount + ' προορισμοί')
+                : ((batch.accountLabel || batch.accountId || '') + ' &middot; ' + batch.itemCount + ' βίντεο');
               row.innerHTML =
                 '<div>' +
-                  '<div>' + (batch.accountLabel || batch.accountId || '') + ' &middot; ' + batch.itemCount + ' βίντεο</div>' +
-                  '<div class="meta">' + when + ' &middot; κάθε ' + batch.staggerMinutes + ' λεπτά</div>' +
+                  '<div>' + destLabel + '</div>' +
+                  '<div class="meta">' + when + '</div>' +
                 '</div>' +
                 '<div style="display:flex;align-items:center;gap:14px">' +
                   '<span class="counts">' + batch.preparedCount + '/' + batch.itemCount + ' έτοιμα' +
@@ -160,11 +221,18 @@
       var submitStatus = document.getElementById('submit-status');
       var selectedFiles = [];
       var maxItems = <%= batchDefaults.maxItems %>;
+      var maxDestinations = <%= batchDefaults.maxDestinations %>;
+      var currentMode = 'interval';
 
-      // Sensible default: tomorrow at 10:00 local.
+      // Sensible defaults: tomorrow at 10:00 local, a same-length date range.
       var tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      document.getElementById('startDate').value = tomorrow.toISOString().slice(0, 10);
+      var tomorrowStr = tomorrow.toISOString().slice(0, 10);
+      document.getElementById('startDate').value = tomorrowStr;
       document.getElementById('startTime').value = '10:00';
+      document.getElementById('firstDay').value = tomorrowStr;
+      document.getElementById('lastDay').value = tomorrowStr;
+      document.getElementById('slotsFirstDay').value = tomorrowStr;
+      document.getElementById('slotsLastDay').value = tomorrowStr;
 
       function refreshFileList() {
         fileList.innerHTML = '';
@@ -174,10 +242,7 @@
           li.innerHTML = '<span>' + file.name + '</span><span class="size">' + size + '</span>';
           fileList.appendChild(li);
         });
-        submitBtn.disabled = selectedFiles.length === 0;
-        submitBtn.textContent = selectedFiles.length > 0
-          ? 'Δημιουργία παρτίδας (' + selectedFiles.length + ' βίντεο)'
-          : 'Δημιουργία παρτίδας';
+        updatePreview();
       }
 
       function addFiles(files) {
@@ -198,22 +263,151 @@
         if (event.dataTransfer && event.dataTransfer.files) addFiles(event.dataTransfer.files);
       });
 
+      // ── Destinations ──
+      var destinationCheckboxes = Array.prototype.slice.call(document.querySelectorAll('.destination-checkbox'));
+      destinationCheckboxes.forEach(function (box) {
+        box.addEventListener('change', function () {
+          var checkedCount = destinationCheckboxes.filter(function (b) { return b.checked; }).length;
+          if (checkedCount > maxDestinations) {
+            box.checked = false;
+            showNotice('Έως ' + maxDestinations + ' προορισμοί ανά παρτίδα.', 'error');
+          }
+          updatePreview();
+        });
+      });
+      function selectedDestinations() {
+        return destinationCheckboxes
+          .filter(function (box) { return box.checked; })
+          .map(function (box) { return { provider: box.dataset.provider, accountId: box.dataset.accountId }; });
+      }
+
+      // ── Scheduling mode tabs ──
+      var modeTabs = Array.prototype.slice.call(document.querySelectorAll('.mode-tab'));
+      var modePanels = Array.prototype.slice.call(document.querySelectorAll('.mode-panel'));
+      modeTabs.forEach(function (tab) {
+        tab.addEventListener('click', function () {
+          currentMode = tab.dataset.mode;
+          modeTabs.forEach(function (t) { t.classList.toggle('active', t === tab); });
+          modePanels.forEach(function (panel) {
+            panel.classList.toggle('hidden', panel.dataset.modePanel !== currentMode);
+          });
+          updatePreview();
+        });
+      });
+
+      // ── Daily slots (Mode 3) ──
+      var slotList = document.getElementById('daily-slot-list');
+      function addSlotRow(value) {
+        var row = document.createElement('div');
+        row.className = 'slot-row';
+        row.innerHTML = '<input type="time" class="slot-time" value="' + (value || '10:00') + '">' +
+          '<button type="button" class="btn btn-quiet slot-remove">✕</button>';
+        row.querySelector('.slot-time').addEventListener('input', updatePreview);
+        row.querySelector('.slot-remove').addEventListener('click', function () {
+          if (slotList.children.length <= 1) return;
+          row.remove();
+          updatePreview();
+        });
+        slotList.appendChild(row);
+      }
+      addSlotRow('10:00');
+      document.getElementById('add-slot-btn').addEventListener('click', function () { addSlotRow(); updatePreview(); });
+      function dailySlotValues() {
+        return Array.prototype.slice.call(slotList.querySelectorAll('.slot-time'))
+          .map(function (input) { return input.value; })
+          .filter(function (value) { return /^\d{2}:\d{2}$/.test(value); });
+      }
+
+      ['firstDay', 'lastDay', 'postsPerDay', 'dailyStartTime', 'dailyEndTime', 'slotsFirstDay', 'slotsLastDay', 'staggerMinutes', 'startDate', 'startTime']
+        .forEach(function (id) {
+          var el = document.getElementById(id);
+          if (el) el.addEventListener('input', updatePreview);
+        });
+
+      // Mirrors the server's capacity math (maxScheduler.computeBatchSchedulePlan)
+      // for a live preview only — the server remains authoritative at submit time.
+      function daysBetween(firstStr, lastStr) {
+        var first = new Date(firstStr + 'T00:00:00Z');
+        var last = new Date(lastStr + 'T00:00:00Z');
+        if (isNaN(first.getTime()) || isNaN(last.getTime())) return null;
+        var days = Math.round((last.getTime() - first.getTime()) / 86400000) + 1;
+        return days > 0 ? days : null;
+      }
+
+      function updatePreview() {
+        var sourceCount = selectedFiles.length;
+        var destCount = selectedDestinations().length;
+        var preview = document.getElementById('capacity-preview');
+        var lines = [];
+        var capacityOk = true;
+
+        if (sourceCount > 0 && destCount > 0) {
+          lines.push(sourceCount + ' βίντεο × ' + destCount + ' ' + (destCount === 1 ? 'προορισμός' : 'προορισμοί') +
+            ' = ' + (sourceCount * destCount) + ' προγραμματισμένες εγγραφές');
+        }
+
+        if (currentMode === 'dateRange') {
+          var days = daysBetween(document.getElementById('firstDay').value, document.getElementById('lastDay').value);
+          var postsPerDay = Number(document.getElementById('postsPerDay').value) || 0;
+          if (days && postsPerDay > 0) {
+            var available = days * postsPerDay;
+            lines.push('Απαιτούνται ' + sourceCount + ' θέσεις χρονοδιαγράμματος · διαθέσιμες ' + available +
+              ' (' + days + ' ημέρες × ' + postsPerDay + '/ημέρα)');
+            capacityOk = sourceCount <= available;
+          }
+        } else if (currentMode === 'dailySlots') {
+          var slotDays = daysBetween(document.getElementById('slotsFirstDay').value, document.getElementById('slotsLastDay').value);
+          var slotsPerDay = dailySlotValues().length;
+          if (slotDays && slotsPerDay > 0) {
+            var availableSlots = slotDays * slotsPerDay;
+            lines.push('Απαιτούνται ' + sourceCount + ' θέσεις χρονοδιαγράμματος · διαθέσιμες ' + availableSlots +
+              ' (' + slotDays + ' ημέρες × ' + slotsPerDay + ' ώρες/ημέρα)');
+            capacityOk = sourceCount <= availableSlots;
+          }
+        }
+
+        if (!capacityOk) lines.push('Ανεπαρκής χωρητικότητα χρονοδιαγράμματος — αυξήστε το εύρος ημερομηνιών ή τις θέσεις ανά ημέρα.');
+
+        preview.innerHTML = lines.map(function (line) { return '<div>' + line + '</div>'; }).join('');
+        preview.classList.toggle('capacity-warning', !capacityOk);
+
+        submitBtn.disabled = sourceCount === 0 || destCount === 0 || !capacityOk;
+        submitBtn.textContent = sourceCount > 0
+          ? 'Δημιουργία παρτίδας (' + sourceCount + ' βίντεο)'
+          : 'Δημιουργία παρτίδας';
+      }
+      updatePreview();
+
       form.addEventListener('submit', function (event) {
         event.preventDefault();
-        if (selectedFiles.length === 0) return;
+        var destinations = selectedDestinations();
+        if (selectedFiles.length === 0 || destinations.length === 0) return;
         submitBtn.disabled = true;
         submitStatus.innerHTML = '<span class="spin"></span> Μεταφόρτωση και δημιουργία παρτίδας…';
 
         var data = new FormData();
         selectedFiles.forEach(function (file) { data.append('videos', file); });
-        data.append('provider', 'tiktok');
-        data.append('accountId', document.getElementById('accountId').value);
-        data.append('startDate', document.getElementById('startDate').value);
-        data.append('startTime', document.getElementById('startTime').value);
-        data.append('staggerMinutes', document.getElementById('staggerMinutes').value);
+        data.append('destinations', JSON.stringify(destinations));
+        data.append('scheduleMode', currentMode);
         data.append('timezoneName', (Intl.DateTimeFormat().resolvedOptions().timeZone || ''));
         data.append('timezoneOffsetMinutes', String(new Date().getTimezoneOffset()));
         data.append('intakeKey', (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()));
+
+        if (currentMode === 'interval') {
+          data.append('startDate', document.getElementById('startDate').value);
+          data.append('startTime', document.getElementById('startTime').value);
+          data.append('staggerMinutes', document.getElementById('staggerMinutes').value);
+        } else if (currentMode === 'dateRange') {
+          data.append('firstDay', document.getElementById('firstDay').value);
+          data.append('lastDay', document.getElementById('lastDay').value);
+          data.append('postsPerDay', document.getElementById('postsPerDay').value);
+          data.append('dailyStartTime', document.getElementById('dailyStartTime').value);
+          data.append('dailyEndTime', document.getElementById('dailyEndTime').value);
+        } else if (currentMode === 'dailySlots') {
+          data.append('firstDay', document.getElementById('slotsFirstDay').value);
+          data.append('lastDay', document.getElementById('slotsLastDay').value);
+          data.append('dailySlots', JSON.stringify(dailySlotValues()));
+        }
 
         fetch('/api/platform/batches', { method: 'POST', body: data, headers: { 'Accept': 'application/json' } })
           .then(function (response) { return response.json().then(function (payload) { return { status: response.status, payload: payload }; }); })

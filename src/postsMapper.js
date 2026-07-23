@@ -321,6 +321,13 @@ function postFromDoc(doc) {
     batchOrder: data.batchOrder === null || data.batchOrder === undefined || data.batchOrder === ''
       ? null
       : (Number.isInteger(Number(data.batchOrder)) ? Number(data.batchOrder) : null),
+    // Source-video lineage for multi-account fan-out (V1.2): every
+    // destination copy of the same uploaded video shares this index, so the
+    // review UI can group copies without duplicating canonical state. Absent
+    // on single-destination/legacy batch items and non-batch posts.
+    sourceIndex: data.sourceIndex === null || data.sourceIndex === undefined || data.sourceIndex === ''
+      ? null
+      : (Number.isInteger(Number(data.sourceIndex)) ? Number(data.sourceIndex) : null),
     preparation: sanitizePreparation(data.preparation),
     title: data.title || data.postTitle || data.name || data.originalName || data.fileName || '',
     originalName: data.originalName || '',
@@ -446,6 +453,7 @@ function mapPatchToFirestore(patch) {
   // and its transactional claim/record functions — never by generic edits.
   delete result.batchId;
   delete result.batchOrder;
+  delete result.sourceIndex;
   delete result.preparation;
 
   // Destination identity, bounded provider metadata, and the provider

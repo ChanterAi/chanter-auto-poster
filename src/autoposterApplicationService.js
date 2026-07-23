@@ -768,6 +768,29 @@ function createAutoPosterApplicationService(dependencies = {}) {
       return { mode, plan };
     }
 
+    if (mode === 'batch_sync') {
+      // Multi-account batch fan-out (V1.2): batchService computes ONE
+      // channel-agnostic plan (maxScheduler.computeBatchSchedulePlan) and
+      // reuses it across one schedulePost call per selected provider, so
+      // every destination copy of the same source video is stamped with the
+      // identical slot. This mode only validates the already-built plan; it
+      // never builds one from raw date/time inputs (that stays batchService's
+      // job, once, before any provider-specific account resolution happens).
+      const plan = schedule.plan;
+      const slots = plan && Array.isArray(plan.slots) ? plan.slots : [];
+      if (slots.length === 0) {
+        throw new AutoPosterApplicationError('The batch schedule plan has no release slots.');
+      }
+      const earliestMs = slots.reduce(
+        (min, slot) => Math.min(min, Date.parse(slot.scheduledAt)),
+        Number.POSITIVE_INFINITY
+      );
+      if (!Number.isFinite(earliestMs) || earliestMs <= now()) {
+        throw new AutoPosterApplicationError('The first batch release must be scheduled in the future.');
+      }
+      return { mode, plan };
+    }
+
     if (mode === 'recurring_daily') {
       const plan = dailySchedulePlanner({
         startDate: schedule.startDate,
@@ -854,7 +877,7 @@ function createAutoPosterApplicationService(dependencies = {}) {
 
   function entitlementScheduleTimestamp(schedule, commercialContext, accounts, sourceCount) {
     if (schedule.mode === 'explicit') return schedule.scheduledAt;
-    if (schedule.mode === 'staggered') {
+    if (schedule.mode === 'staggered' || schedule.mode === 'batch_sync') {
       const values = (schedule.plan && Array.isArray(schedule.plan.slots))
         ? schedule.plan.slots.map((slot) => slot.scheduledAt).filter(Boolean)
         : [];
@@ -1305,6 +1328,13 @@ function createAutoPosterApplicationService(dependencies = {}) {
         );
       } else if (schedule.mode === 'staggered') {
         scheduledCount = await storageAdapter.applyStaggeredSchedule(
+          context.userId,
+          created,
+          schedule.plan,
+          commercialContext.workspaceScope
+        );
+      } else if (schedule.mode === 'batch_sync') {
+        scheduledCount = await storageAdapter.applyBatchSourceSchedule(
           context.userId,
           created,
           schedule.plan,

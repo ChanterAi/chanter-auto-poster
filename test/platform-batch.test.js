@@ -64,7 +64,7 @@ function makeWorld({ nowMs = BASE_NOW } = {}) {
   ];
   const posts = [];
   const batchRecords = new Map();
-  const calls = { add: [], staggered: [], approve: [], update: [] };
+  const calls = { add: [], staggered: [], batchSourceSchedule: [], approve: [], update: [] };
   let sequence = 0;
   let now = nowMs;
 
@@ -116,6 +116,7 @@ function makeWorld({ nowMs = BASE_NOW } = {}) {
             updatedAt: { toDate: () => new Date(now) },
             batchId: defaults.batchId || '',
             batchOrder: defaults.batchId ? index : null,
+            sourceIndex: defaults.batchId ? index : null,
             preparation: defaults.batchId
               ? { status: 'pending', attempts: 0, leaseAt: null, finishedAt: null, provider: '', fallbackUsed: false, error: '' }
               : null
@@ -136,6 +137,22 @@ function makeWorld({ nowMs = BASE_NOW } = {}) {
         stored.campaignStartAt = plan.baseAt;
       });
       return created.length;
+    },
+    async applyBatchSourceSchedule(userId, created, plan) {
+      calls.batchSourceSchedule.push({ userId, created, plan });
+      const slotsByIndex = new Map((plan.slots || []).map((slot) => [slot.index, slot]));
+      let count = 0;
+      created.forEach((created_post) => {
+        const stored = posts.find((post) => post.id === created_post.id);
+        const slot = slotsByIndex.get(stored.sourceIndex);
+        if (!slot) throw new Error(`No schedule slot found for source video index ${stored.sourceIndex}.`);
+        stored.scheduledAt = slot.scheduledAt;
+        stored.status = 'scheduled';
+        stored.channelOffsetMinutes = 0;
+        stored.campaignStartAt = plan.baseAt || slot.scheduledAt;
+        count += 1;
+      });
+      return count;
     },
     async updatePost(userId, id, patch, accountId, historyEvent) {
       calls.update.push({ userId, id, patch, accountId, historyEvent });
@@ -188,6 +205,19 @@ function makeWorld({ nowMs = BASE_NOW } = {}) {
       if (!record || record.userId !== userId) return null;
       Object.assign(record, patch, { updatedAt: new Date(now).toISOString() });
       return { ...record };
+    },
+    async incrementBatchDeletedCount(userId, batchId, delta) {
+      const record = batchRecords.get(batchId);
+      if (!record || record.userId !== userId || !Number.isInteger(delta) || delta <= 0) return record ? { ...record } : null;
+      record.deletedCount = Number(record.deletedCount || 0) + delta;
+      record.updatedAt = new Date(now).toISOString();
+      return { ...record };
+    },
+    async deleteBatchRecord(userId, batchId) {
+      const record = batchRecords.get(batchId);
+      if (!record || record.userId !== userId) return false;
+      batchRecords.delete(batchId);
+      return true;
     },
     async getBatchPosts(userId, batchId) {
       return posts
@@ -318,8 +348,8 @@ function approverContext() {
 }
 
 const INTAKE_DEFAULTS = {
-  provider: 'tiktok',
-  accountId: 'account-a',
+  destinations: [{ provider: 'tiktok', accountId: 'account-a' }],
+  scheduleMode: 'interval',
   startDate: '2026-07-11',
   startTime: '09:00',
   timezoneOffsetMinutes: 0,
@@ -391,7 +421,11 @@ test('batch intake persists batch + items with staggered future times, all unapp
   }
   assert.equal(world.calls.add.length, 1);
   assert.equal(world.calls.add[0].defaults.batchId, result.batch.batchId);
-  assert.equal(world.calls.staggered.length, 1);
+  // V1.2: single-destination intake now goes through the channel-agnostic
+  // batch_sync schedule application (applyBatchSourceSchedule), not the
+  // single-channel 'staggered' mode it replaced.
+  assert.equal(world.calls.staggered.length, 0);
+  assert.equal(world.calls.batchSourceSchedule.length, 1);
 
   // Preparation kicked off automatically; wait for it to settle.
   await world.batchService.startPreparation(websiteContext(), result.batch.batchId);
@@ -422,7 +456,7 @@ test('exact intake replay returns the existing batch without creating duplicates
   assert.equal(world.posts.length, 1);
 });
 
-test('intake validation fails closed: no files, bad stagger, unsupported provider', async () => {
+test('intake validation fails closed: no files, bad stagger, unavailable destination', async () => {
   const world = makeWorld();
   await assert.rejects(
     world.batchService.createBatch(websiteContext(), { ...INTAKE_DEFAULTS, files: [] }),
@@ -436,13 +470,16 @@ test('intake validation fails closed: no files, bad stagger, unsupported provide
     }),
     /stagger interval/
   );
+  // Fan-out (V1.2) validates every requested destination against connected,
+  // publishing-ready accounts before any upload/creation work — nothing is
+  // invented for a provider/account this fixture never connected.
   await assert.rejects(
     world.batchService.createBatch(websiteContext(), {
       ...INTAKE_DEFAULTS,
       files: [uploadFile('a.mp4')],
-      provider: 'youtube'
+      destinations: [{ provider: 'tiktok', accountId: 'account-does-not-exist' }]
     }),
-    /single-video flow for YouTube/
+    /not connected and publishing-ready/
   );
   assert.equal(world.posts.length, 0);
 });

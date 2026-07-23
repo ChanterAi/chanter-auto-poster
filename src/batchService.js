@@ -21,6 +21,13 @@ const defaultConfig = require('./config');
 const defaultStorage = require('./storage');
 const defaultAutoCaption = require('./autoCaption');
 const defaultApplicationService = require('./autoposterApplicationService');
+const { computeBatchSchedulePlan } = require('./maxScheduler');
+const providers = require('./providers');
+
+// Fan-out destination count bound. Source-video count is already bounded by
+// config.batchIntake.maxItems; this guards against an unbounded N x M
+// explosion independent of that.
+const MAX_DESTINATIONS = 10;
 
 class BatchServiceError extends Error {
   constructor(message, { status = 400, code = 'validation_failed', details = {} } = {}) {
@@ -38,6 +45,26 @@ function deriveBatchId(userId, workspaceId, intakeKey) {
     .digest('hex')
     .slice(0, 40);
   return `batch-${digest}`;
+}
+
+// Multi-account fan-out (V1.2): dedupe and shape the requested destination
+// list. Anything malformed is silently dropped here — createBatch rejects an
+// empty or unavailable result explicitly, so nothing invalid can proceed.
+function normalizeDestinations(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  const seen = new Set();
+  const result = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue;
+    const provider = String(entry.provider || '').trim().toLowerCase();
+    const accountId = String(entry.accountId || '').trim();
+    if (!provider || !accountId) continue;
+    const key = `${provider}|${accountId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ provider, accountId });
+  }
+  return result;
 }
 
 // Streamed HTTPS download with a hard byte cap and timeout. Used to bring a
@@ -189,27 +216,78 @@ function createBatchService(dependencies = {}) {
         code: 'batch_too_large'
       });
     }
-    const staggerMinutes = normalizeStagger(input.staggerMinutes);
-    if (staggerMinutes === null) {
+
+    const destinations = normalizeDestinations(input.destinations);
+    if (destinations.length === 0) {
+      throw new BatchServiceError('Select at least one connected publishing account for this batch.');
+    }
+    if (destinations.length > MAX_DESTINATIONS) {
+      throw new BatchServiceError(`A batch can target at most ${MAX_DESTINATIONS} destination accounts.`, {
+        code: 'too_many_destinations'
+      });
+    }
+    // Stated boundary, unchanged from V1: YouTube requires a human-entered
+    // per-video title (never AI-generated), which cannot exist yet at bulk
+    // intake time. YouTube stays reachable per item during review, through
+    // the existing changeItemDestination override. Fan-out at intake is
+    // scoped to providers that need no upfront per-item metadata.
+    const unbatchable = destinations.filter((dest) => dest.provider === providers.PROVIDER_YOUTUBE);
+    if (unbatchable.length > 0) {
+      throw new BatchServiceError(
+        'YouTube requires a human-entered title per video and cannot be selected at batch intake. Add it as a destination for individual items during review.',
+        { status: 409, code: 'provider_not_batchable' }
+      );
+    }
+
+    // Fail closed before any upload/creation work: every requested
+    // destination must already be a connected, schedulable, publishing-ready
+    // account. Nothing is invented for a disconnected or unknown provider.
+    const known = await listDestinations(context);
+    const knownKeys = new Set(known.destinations.map((dest) => `${dest.provider}|${dest.accountId}`));
+    const unavailable = destinations.filter((dest) => !knownKeys.has(`${dest.provider}|${dest.accountId}`));
+    if (unavailable.length > 0) {
+      throw new BatchServiceError(
+        `${unavailable.length === 1 ? 'This destination is' : 'These destinations are'} not connected and publishing-ready: `
+          + unavailable.map((dest) => `${dest.provider}:${dest.accountId}`).join(', '),
+        { status: 409, code: 'destination_unavailable' }
+      );
+    }
+
+    const scheduleMode = String(input.scheduleMode || 'interval').trim();
+    const staggerMinutes = scheduleMode === 'interval' ? normalizeStagger(input.staggerMinutes) : null;
+    if (scheduleMode === 'interval' && staggerMinutes === null) {
       throw new BatchServiceError(
         `The stagger interval must be between ${settings.staggerMinMinutes} and ${settings.staggerMaxMinutes} minutes.`
       );
     }
-    const provider = String(input.provider || 'tiktok').trim().toLowerCase();
-    if (provider !== 'tiktok') {
-      // v1 boundary, stated honestly: YouTube requires a per-video title and
-      // keeps its dedicated single-video flow. The batch surface does not
-      // silently invent titles.
-      throw new BatchServiceError('Batch intake currently supports TikTok channels. Use the single-video flow for YouTube.', {
-        code: 'provider_not_batchable'
+    const plan = computeBatchSchedulePlan({
+      mode: scheduleMode,
+      sourceCount: files.length,
+      timezoneName: input.timezoneName,
+      timezoneOffsetMinutes: input.timezoneOffsetMinutes,
+      startDate: input.startDate,
+      startTime: input.startTime,
+      staggerMinutes,
+      firstDay: input.firstDay,
+      lastDay: input.lastDay,
+      postsPerDay: input.postsPerDay,
+      dailyStartTime: input.dailyStartTime,
+      dailyEndTime: input.dailyEndTime,
+      intraDayIntervalMinutes: input.intraDayIntervalMinutes,
+      dailySlots: input.dailySlots
+    });
+    if (!plan.ok) {
+      throw new BatchServiceError(plan.reason, {
+        code: 'schedule_invalid',
+        details: { requiredSlots: plan.requiredSlots, availableSlots: plan.availableSlots }
       });
     }
-    const accountId = String(input.accountId || '').trim();
-    if (!accountId) {
-      throw new BatchServiceError('Select a connected publishing channel for this batch.');
+    const earliestMs = plan.slots.reduce((min, slot) => Math.min(min, Date.parse(slot.scheduledAt)), Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(earliestMs) || earliestMs <= now()) {
+      throw new BatchServiceError('The first batch release must be scheduled in the future.');
     }
-    const intakeKey = String(input.intakeKey || '').trim() || randomUUID();
 
+    const intakeKey = String(input.intakeKey || '').trim() || randomUUID();
     const commercialContext = await resolveScope(context);
     const workspaceId = commercialContext.workspace.workspaceId;
     const batchId = deriveBatchId(context.userId, workspaceId, intakeKey);
@@ -221,38 +299,63 @@ function createBatchService(dependencies = {}) {
       return { replayed: true, ...(await getBatchView(context, batchId)) };
     }
 
-    const scheduleResult = await applicationService.schedulePost(context, {
-      provider,
-      accountIds: [accountId],
-      files,
-      caption: String(input.caption || ''),
-      hashtags: String(input.hashtags || ''),
-      batchId,
-      schedule: {
-        mode: 'staggered',
-        startDate: String(input.startDate || '').trim(),
-        startTime: String(input.startTime || '').trim(),
-        timezoneName: input.timezoneName,
-        timezoneOffsetMinutes: input.timezoneOffsetMinutes,
-        staggerMinutes
-      }
-    });
+    const byProvider = new Map();
+    for (const dest of destinations) {
+      if (!byProvider.has(dest.provider)) byProvider.set(dest.provider, []);
+      byProvider.get(dest.provider).push(dest.accountId);
+    }
+    const singleDestination = destinations.length === 1 ? destinations[0] : null;
 
-    const account = scheduleResult.accounts[0];
+    // Reserve the batch record BEFORE any post is created (create(), not
+    // set() — a concurrent duplicate intake fails loudly). If the
+    // multi-provider creation loop below fails partway, the catch block
+    // removes both this record and any posts already created, so a retry
+    // with the same intakeKey starts clean instead of duplicating copies.
     const record = await storage.createBatchRecord({
       batchId,
       userId: context.userId,
       workspaceId,
-      provider,
-      accountId: account.accountId,
-      accountLabel: account.username ? `@${account.username}` : account.accountId,
+      provider: singleDestination ? singleDestination.provider : 'mixed',
+      accountId: singleDestination ? singleDestination.accountId : '',
+      accountLabel: singleDestination ? singleDestination.accountId : `${destinations.length} destination accounts`,
       status: 'preparing',
-      itemCount: scheduleResult.posts.length,
-      staggerMinutes,
-      baseAt: scheduleResult.schedule.plan.baseAt,
-      timezoneName: scheduleResult.schedule.plan.timezone,
+      itemCount: 0,
+      videoCount: files.length,
+      destinationCount: destinations.length,
+      scheduleMode,
+      staggerMinutes: staggerMinutes || 0,
+      baseAt: plan.baseAt || plan.slots[0].scheduledAt,
+      timezoneName: plan.timezone,
       intakeKey
     });
+
+    let createdPosts = [];
+    try {
+      for (const [provider, accountIds] of byProvider) {
+        const result = await applicationService.schedulePost(context, {
+          provider,
+          accountIds,
+          files,
+          caption: String(input.caption || ''),
+          hashtags: String(input.hashtags || ''),
+          batchId,
+          schedule: { mode: 'batch_sync', plan }
+        });
+        createdPosts = createdPosts.concat(result.posts);
+      }
+    } catch (error) {
+      // Compensating cleanup: a retry with the same intakeKey must not see a
+      // half-created batch and must not multiply destination copies.
+      await Promise.allSettled(
+        createdPosts.map((post) =>
+          applicationService.deletePost(context, { postId: post.id, accountId: post.accountId }).catch(() => {})
+        )
+      );
+      await storage.deleteBatchRecord(context.userId, batchId, commercialContext.workspaceScope).catch(() => {});
+      throw error;
+    }
+
+    await storage.updateBatchRecord(context.userId, batchId, { itemCount: createdPosts.length }, commercialContext.workspaceScope);
 
     startPreparation(context, batchId).catch((error) => {
       log.warn('[batch] preparation kickoff failed', { batchId, message: error.message });
@@ -260,8 +363,8 @@ function createBatchService(dependencies = {}) {
 
     return {
       replayed: false,
-      batch: record,
-      items: scheduleResult.posts.map(itemView)
+      batch: { ...record, itemCount: createdPosts.length },
+      items: createdPosts.map(itemView)
     };
   }
 
@@ -565,79 +668,198 @@ function createBatchService(dependencies = {}) {
 
     // Safe staggered acceptance: walk targets in release order and guarantee
     // every accepted slot is (a) at least the safety buffer in the future and
-    // (b) at least one stagger interval after the previous accepted slot.
-    // Nothing is ever pulled earlier, so nothing can publish immediately.
+    // (b) at least one stagger interval after the previous slot. Nothing is
+    // ever pulled earlier, so nothing can publish immediately.
+    //
+    // Fan-out awareness: destination copies of the SAME source video
+    // (matching sourceIndex) are one GROUP and move together — they keep one
+    // shared slot rather than drifting apart from each other, even though
+    // each member can still independently succeed, fail, or be skipped
+    // (spec: synchronized fan-out slots must survive acceptance-time safety
+    // correction). A non-batch/legacy item with no sourceIndex is its own
+    // singleton group, so single-destination batches behave exactly as
+    // before this change.
     const staggerMs = Math.max(1, record.staggerMinutes || settings.staggerDefaultMinutes) * 60_000;
     const bufferMs = settings.safetyBufferMinutes * 60_000;
-    const ordered = [...targets].sort((a, b) => {
-      const aMs = a.scheduledAt ? Date.parse(a.scheduledAt) : Number.MAX_SAFE_INTEGER;
-      const bMs = b.scheduledAt ? Date.parse(b.scheduledAt) : Number.MAX_SAFE_INTEGER;
-      if (aMs !== bMs) return aMs - bMs;
-      return (a.batchOrder ?? 0) - (b.batchOrder ?? 0);
-    });
+
+    const groupKey = (item) => (item.sourceIndex !== null && item.sourceIndex !== undefined)
+      ? `src:${item.sourceIndex}`
+      : `item:${item.id}`;
+    const groupsByKey = new Map();
+    for (const item of targets) {
+      const key = groupKey(item);
+      if (!groupsByKey.has(key)) groupsByKey.set(key, []);
+      groupsByKey.get(key).push(item);
+    }
+    const groups = [...groupsByKey.values()]
+      .map((members) => {
+        const sortedMembers = [...members].sort((a, b) => (a.batchOrder ?? 0) - (b.batchOrder ?? 0));
+        const msValues = sortedMembers
+          .map((member) => (member.scheduledAt ? Date.parse(member.scheduledAt) : NaN))
+          .filter((value) => Number.isFinite(value));
+        const representativeMs = msValues.length > 0 ? Math.min(...msValues) : Number.MAX_SAFE_INTEGER;
+        return { members: sortedMembers, representativeMs, minBatchOrder: sortedMembers[0] ? (sortedMembers[0].batchOrder ?? 0) : 0 };
+      })
+      .sort((a, b) => {
+        if (a.representativeMs !== b.representativeMs) return a.representativeMs - b.representativeMs;
+        return a.minBatchOrder - b.minBatchOrder;
+      });
 
     const accepted = [];
     const failed = [];
     let previousMs = 0;
-    for (const item of ordered) {
-      try {
-        if (!item.readyToAccept) {
-          throw new BatchServiceError(
-            item.itemState === 'preparing'
-              ? 'This item is still being prepared.'
-              : `This item is not ready: ${item.validationProblems.join(', ') || item.itemState}.`,
-            { status: 409, code: 'item_not_ready' }
-          );
-        }
-        // Destination truth may have changed since review rendered: the
-        // item's OWN provider/account must still resolve to a connected,
-        // publishing-ready channel at the moment of acceptance.
+    for (const group of groups) {
+      const currentMs = group.representativeMs !== Number.MAX_SAFE_INTEGER ? group.representativeMs : NaN;
+      const minimumMs = Math.max(now() + bufferMs, previousMs > 0 ? previousMs + staggerMs : 0);
+      let finalMs = Number.isFinite(currentMs) ? currentMs : minimumMs;
+      if (finalMs < minimumMs) finalMs = minimumMs;
+
+      for (const item of group.members) {
         try {
-          await applicationService.validateConnectedAccount(context, {
-            provider: item.provider,
-            accountId: item.accountId
-          });
-        } catch (error) {
-          throw new BatchServiceError(
-            `The destination channel is no longer available: ${error.message}`,
-            { status: 409, code: 'destination_unavailable' }
-          );
-        }
-        const currentMs = item.scheduledAt ? Date.parse(item.scheduledAt) : NaN;
-        const minimumMs = Math.max(
-          now() + bufferMs,
-          previousMs > 0 ? previousMs + staggerMs : 0
-        );
-        let finalMs = Number.isFinite(currentMs) ? currentMs : minimumMs;
-        if (finalMs < minimumMs) finalMs = minimumMs;
-        if (finalMs !== currentMs) {
-          await applicationService.updatePost(context, {
+          if (!item.readyToAccept) {
+            throw new BatchServiceError(
+              item.itemState === 'preparing'
+                ? 'This item is still being prepared.'
+                : `This item is not ready: ${item.validationProblems.join(', ') || item.itemState}.`,
+              { status: 409, code: 'item_not_ready' }
+            );
+          }
+          // Destination truth may have changed since review rendered: the
+          // item's OWN provider/account must still resolve to a connected,
+          // publishing-ready channel at the moment of acceptance.
+          try {
+            await applicationService.validateConnectedAccount(context, {
+              provider: item.provider,
+              accountId: item.accountId
+            });
+          } catch (error) {
+            throw new BatchServiceError(
+              `The destination channel is no longer available: ${error.message}`,
+              { status: 409, code: 'destination_unavailable' }
+            );
+          }
+          const itemCurrentMs = item.scheduledAt ? Date.parse(item.scheduledAt) : NaN;
+          if (itemCurrentMs !== finalMs) {
+            await applicationService.updatePost(context, {
+              postId: item.id,
+              accountId: item.accountId,
+              patch: { scheduledAt: new Date(finalMs).toISOString() },
+              historyEvent: {
+                event: 'rescheduled',
+                detail: `Moved to ${new Date(finalMs).toISOString()} at acceptance to keep a safe, synchronized release.`
+              }
+            });
+          }
+          const approval = await applicationService.approvePost(context, {
             postId: item.id,
             accountId: item.accountId,
-            patch: { scheduledAt: new Date(finalMs).toISOString() },
-            historyEvent: {
-              event: 'rescheduled',
-              detail: `Moved to ${new Date(finalMs).toISOString()} at acceptance to keep a safe staggered release.`
-            }
+            approvedBy: context.approval.approvedBy
           });
+          if (!approval.ok) {
+            throw new BatchServiceError('Approval was refused for this item.', { status: 409, code: 'approval_refused' });
+          }
+          accepted.push({ id: item.id, scheduledAt: new Date(finalMs).toISOString() });
+        } catch (error) {
+          failed.push({ id: item.id, reason: error.message || 'Acceptance failed.' });
         }
-        const approval = await applicationService.approvePost(context, {
-          postId: item.id,
-          accountId: item.accountId,
-          approvedBy: context.approval.approvedBy
-        });
-        if (!approval.ok) {
-          throw new BatchServiceError('Approval was refused for this item.', { status: 409, code: 'approval_refused' });
-        }
-        previousMs = finalMs;
-        accepted.push({ id: item.id, scheduledAt: new Date(finalMs).toISOString() });
-      } catch (error) {
-        failed.push({ id: item.id, reason: error.message || 'Acceptance failed.' });
       }
+      // The slot is considered occupied once its group has been processed,
+      // regardless of individual member failures, so later groups never
+      // collide with a partially-accepted group's reserved time.
+      previousMs = finalMs;
     }
 
     const derived = await refreshBatchRecord(context, batchId, scope);
     return { accepted, failed, skipped: [], batchStatus: derived.status };
+  }
+
+  // ── Deletion (Phase A: safe delete) ───────────────────────────────────────
+  // Batch items ARE ordinary posts, so the canonical delete authority stays
+  // storage.deletePost's own transaction (state gates, usage release,
+  // Cloudinary reference-count cleanup) via applicationService.deletePost.
+  // This layer adds only what that canonical delete does not already know:
+  // batch membership, the approval lock — approving a draft never changes
+  // its queue `status`, so the generic status gate alone would otherwise
+  // allow deleting an approved/accepted item — and batch-record bookkeeping.
+
+  function approvalLockError() {
+    return new BatchServiceError(
+      'This item is already approved. Revoke its approval before deleting it.',
+      { status: 409, code: 'approval_locked' }
+    );
+  }
+
+  async function deleteItem(context, batchId, postId) {
+    const commercialContext = await resolveScope(context);
+    const scope = commercialContext.workspaceScope;
+    const record = await storage.getBatchRecord(context.userId, batchId, scope);
+    if (!record) {
+      throw new BatchServiceError('Batch not found for this workspace.', { status: 404, code: 'not_found' });
+    }
+    const post = await findBatchItem(context, batchId, postId, scope);
+    if (post.approved) throw approvalLockError();
+
+    const result = await applicationService.deletePost(context, { postId: post.id, accountId: post.accountId });
+    if (!result.deleted) {
+      throw new BatchServiceError('This item could not be deleted (it may already be gone).', {
+        status: 404,
+        code: 'not_found'
+      });
+    }
+
+    await storage.incrementBatchDeletedCount(context.userId, batchId, 1, scope);
+    const derived = await refreshBatchRecord(context, batchId, scope);
+    return { deleted: true, postId: post.id, batchStatus: derived.status };
+  }
+
+  async function deleteBatch(context, batchId) {
+    const commercialContext = await resolveScope(context);
+    const scope = commercialContext.workspaceScope;
+    const record = await storage.getBatchRecord(context.userId, batchId, scope);
+    if (!record) {
+      throw new BatchServiceError('Batch not found for this workspace.', { status: 404, code: 'not_found' });
+    }
+    const posts = await storage.getBatchPosts(context.userId, batchId, scope);
+
+    const deleted = [];
+    const blocked = [];
+    const failed = [];
+    for (const post of posts) {
+      try {
+        if (post.approved) throw approvalLockError();
+        const result = await applicationService.deletePost(context, { postId: post.id, accountId: post.accountId });
+        if (!result.deleted) {
+          throw new BatchServiceError('Item was already gone.', { status: 404, code: 'not_found' });
+        }
+        deleted.push(post.id);
+      } catch (error) {
+        const code = error && error.code;
+        const entry = { id: post.id, reason: (error && error.message) || 'Delete failed.' };
+        if (code === 'approval_locked' || code === 'queue_transition_blocked') blocked.push(entry);
+        else failed.push(entry);
+      }
+    }
+
+    if (deleted.length > 0) {
+      await storage.incrementBatchDeletedCount(context.userId, batchId, deleted.length, scope);
+    }
+
+    const remaining = await storage.getBatchPosts(context.userId, batchId, scope);
+    let batchClosed = false;
+    let batchStatus;
+    if (remaining.length === 0 && blocked.length === 0 && failed.length === 0) {
+      // Full cleanup: every child post is gone and nothing was skipped —
+      // close the batch record itself so zero residue remains (spec: never
+      // report full success while residue exists; close/delete only after
+      // child-state reconciliation).
+      batchClosed = await storage.deleteBatchRecord(context.userId, batchId, scope);
+      batchStatus = 'deleted';
+    } else {
+      const derived = await refreshBatchRecord(context, batchId, scope);
+      batchStatus = derived.status;
+    }
+
+    return { deleted, blocked, failed, batchClosed, batchStatus };
   }
 
   return {
@@ -650,6 +872,8 @@ function createBatchService(dependencies = {}) {
     updateItem,
     changeItemDestination,
     acceptItems,
+    deleteItem,
+    deleteBatch,
     // Exposed for tests: deterministic identity + derived views.
     deriveBatchId,
     itemView,
@@ -663,5 +887,6 @@ module.exports = {
   BatchServiceError,
   createBatchService,
   deriveBatchId,
+  MAX_DESTINATIONS,
   ...defaultService
 };

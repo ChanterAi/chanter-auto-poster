@@ -357,6 +357,91 @@ textarea { resize: vertical; min-height: 64px; }
 }
 @keyframes platform-spin { to { transform: rotate(360deg); } }
 
+/* Destination multi-select (intake) */
+.destination-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.destination-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.destination-item:has(input:checked) { border-color: var(--accent); background: rgba(201, 169, 97, 0.06); }
+.destination-item input { margin: 0; }
+.destination-provider { color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+.destination-label { color: var(--text); }
+
+/* Scheduling mode tabs (intake) */
+.mode-tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+.mode-tab {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-dim);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 15px;
+  cursor: pointer;
+}
+.mode-tab.active { border-color: var(--accent); color: var(--accent); background: rgba(201, 169, 97, 0.08); }
+.mode-panel { margin-bottom: 6px; }
+
+.capacity-preview {
+  font-size: 13px;
+  color: var(--text-dim);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 10px 13px;
+  margin: 6px 0 18px;
+}
+.capacity-preview:empty { display: none; }
+.capacity-preview.capacity-warning { color: var(--warn); border-color: rgba(217, 160, 63, 0.4); }
+
+.slot-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.slot-row { display: flex; align-items: center; gap: 8px; }
+.slot-row .slot-time { max-width: 140px; }
+.slot-row .slot-remove { padding: 6px 10px; }
+
+/* Fan-out source-video grouping (review) */
+.video-group {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 16px;
+}
+.video-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.video-group-title { font-weight: 650; font-size: 14px; color: var(--text-dim); }
+.video-group .item-card { border: 1px solid var(--border-soft); }
+.item-card.no-media { grid-template-columns: 1fr; }
+.video-group-media { margin-bottom: 14px; }
+.video-group-media video {
+  width: 160px;
+  border-radius: var(--radius-sm);
+  background: #000;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+}
+
+/* Destructive actions: visually separated from Αποδοχή/Αποδοχή όλων */
+.danger-zone { display: flex; justify-content: flex-end; }
+.item-buttons .btn-danger { margin-inline-start: 4px; }
+
 .footer-note {
   margin-top: 48px;
   font-size: 12px;

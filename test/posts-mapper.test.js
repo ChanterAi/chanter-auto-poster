@@ -167,3 +167,18 @@ test('write patches retain safe provider IDs while dropping nested credential an
   }));
   assert.equal(JSON.stringify(patch).includes('CANARY'), false);
 });
+
+test('a generic write patch can never smuggle batch identity, lineage, or preparation state', () => {
+  const patch = mapPatchToFirestore({
+    caption: 'allowed edit',
+    batchId: 'batch-smuggled',
+    batchOrder: 7,
+    sourceIndex: 3,
+    preparation: { status: 'succeeded' }
+  });
+  assert.equal(patch.caption, 'allowed edit');
+  assert.equal('batchId' in patch, false);
+  assert.equal('batchOrder' in patch, false);
+  assert.equal('sourceIndex' in patch, false);
+  assert.equal('preparation' in patch, false);
+});

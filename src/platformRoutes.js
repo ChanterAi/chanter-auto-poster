@@ -62,6 +62,20 @@ function approverContext(req) {
   return websiteContext(req, { approval: { approvedBy: `admin:${userId}` } });
 }
 
+// Multipart intake carries array/object fields (destinations, dailySlots) as
+// JSON-encoded strings. Anything malformed collapses to an empty array —
+// batchService's own validation produces the actual user-facing error.
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 async function removeTemporaryUploads(files) {
   for (const file of Array.isArray(files) ? files : []) {
     if (file && file.path) await fs.unlink(file.path).catch(() => {});
@@ -89,23 +103,31 @@ router.get('/platform', requireAdminPage, (req, res) => {
 
 router.get('/platform/autoposter', requireAdminPage, asyncRoute(async (req, res) => {
   const context = websiteContext(req);
-  let accounts = [];
+  let destinations = [];
   let accountsError = '';
   try {
-    const resolved = await applicationService.listConnectedAccounts(context, { provider: 'tiktok' });
-    accounts = resolved.accounts.filter((account) => account.connectionStatus === 'connected');
+    const resolved = await batchService.listDestinations(context);
+    // Intake only offers destinations ready to receive a fan-out draft right
+    // now, AND excludes YouTube (requires a human-entered per-item title
+    // that cannot exist yet at bulk intake — add it per item during review
+    // instead). Review's existing destination selector deliberately still
+    // shows every connected account (unchanged from V1.1).
+    destinations = resolved.destinations.filter(
+      (destination) => destination.publishingReady && destination.provider !== 'youtube'
+    );
   } catch (error) {
     accountsError = error.message || 'Connected channels are unavailable right now.';
   }
   res.render('platform-autoposter', {
     appName: config.appName,
-    accounts,
+    destinations,
     accountsError,
     batchDefaults: {
       staggerMinutes: config.batchIntake.staggerDefaultMinutes,
       staggerMin: config.batchIntake.staggerMinMinutes,
       staggerMax: config.batchIntake.staggerMaxMinutes,
-      maxItems: config.batchIntake.maxItems
+      maxItems: config.batchIntake.maxItems,
+      maxDestinations: batchService.MAX_DESTINATIONS
     }
   });
 }));
@@ -136,13 +158,20 @@ router.post('/api/platform/batches', requireAdminApi, uploadBatchMedia, asyncRou
   try {
     const result = await batchService.createBatch(websiteContext(req), {
       files,
-      provider: req.body.provider,
-      accountId: req.body.accountId,
+      destinations: parseJsonArray(req.body.destinations),
+      scheduleMode: req.body.scheduleMode,
       startDate: req.body.startDate,
       startTime: req.body.startTime,
       timezoneName: req.body.timezoneName,
       timezoneOffsetMinutes: req.body.timezoneOffsetMinutes,
       staggerMinutes: req.body.staggerMinutes,
+      firstDay: req.body.firstDay,
+      lastDay: req.body.lastDay,
+      postsPerDay: req.body.postsPerDay,
+      dailyStartTime: req.body.dailyStartTime,
+      dailyEndTime: req.body.dailyEndTime,
+      intraDayIntervalMinutes: req.body.intraDayIntervalMinutes,
+      dailySlots: parseJsonArray(req.body.dailySlots),
       intakeKey: req.body.intakeKey
     });
     if (result.replayed) await removeTemporaryUploads(files);
@@ -272,6 +301,38 @@ router.post(
         postIds: 'all'
       });
       res.json({ ok: result.failed.length === 0, ...result });
+    } catch (error) {
+      if (!sendServiceError(res, error)) throw error;
+    }
+  })
+);
+
+// ── Deletion (Phase A: safe delete) ─────────────────────────────────────────
+
+router.post(
+  '/api/platform/batches/:batchId/items/:postId/delete',
+  requireAdminApi,
+  express.json({ limit: '16kb' }),
+  asyncRoute(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+      const result = await batchService.deleteItem(websiteContext(req), req.params.batchId, req.params.postId);
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      if (!sendServiceError(res, error)) throw error;
+    }
+  })
+);
+
+router.post(
+  '/api/platform/batches/:batchId/delete',
+  requireAdminApi,
+  express.json({ limit: '16kb' }),
+  asyncRoute(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+      const result = await batchService.deleteBatch(websiteContext(req), req.params.batchId);
+      res.json({ ok: result.blocked.length === 0 && result.failed.length === 0, ...result });
     } catch (error) {
       if (!sendServiceError(res, error)) throw error;
     }
